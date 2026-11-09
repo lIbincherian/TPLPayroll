@@ -151,6 +151,7 @@ export type CorrectionErrorCode =
   | 'CORRECTION_HAS_INCOMPLETE_PAIRS'
   | 'EXCEL_ERA_ATTENDANCE_CORRECTION'
   | 'REVISION_NOT_DRAFT'
+  | 'REVISION_STALE'
 
 export class CorrectionServiceError extends Error {
   constructor(

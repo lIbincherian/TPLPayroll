@@ -56,6 +56,13 @@ vi.mock('@/features/attendance-sync/services/punch-review.service', () => ({
 vi.mock('@/features/attendance-sync/services/attendance-audit.service', () => ({
   auditEntry: vi.fn(),
 }))
+// approveRevision locks the week row of a correction session, and carries forward left-out adjustments.
+vi.mock('@/features/attendance-sync/services/week-lock.service', () => ({
+  lockWeekRow: vi.fn(),
+}))
+vi.mock('@/features/payroll-adjustments/services/adjustment.service', () => ({
+  skipAdjustmentApplication: vi.fn(),
+}))
 
 // ─── Mock payroll calc helpers ────────────────────────────────────────────────
 vi.mock('@/features/payroll-generation/services/payroll.service', () => ({
@@ -483,6 +490,9 @@ describe('approveRevision', () => {
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(null)
     vi.mocked(prisma.payrollRevision.updateMany).mockResolvedValue({ count: 1 } as never)
     vi.mocked(prisma.payrollRun.update).mockResolvedValue(makePayrollRun() as never)
+    // Everyone in the draft is paid, so no adjustment is carried forward.
+    vi.mocked(prisma.payrollRunEmployee.findMany).mockResolvedValue([{ employeeId: 'emp-uuid-1' }] as never)
+    vi.mocked(prisma.payrollAdjustmentApplication.findMany).mockResolvedValue([])
     vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 } as never)
 
     const result = await approveRevision('revision-uuid-2')

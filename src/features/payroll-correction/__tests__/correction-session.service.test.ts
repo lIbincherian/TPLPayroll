@@ -27,6 +27,9 @@ vi.mock('@/lib/prisma', () => {
 
 vi.mock('@/features/attendance-sync/services/punch-review.service', () => ({ getPunchReview: vi.fn() }))
 vi.mock('@/features/attendance-sync/services/attendance-audit.service', () => ({ auditEntry: vi.fn() }))
+// approveRevision locks the week row first (SELECT ... FOR UPDATE), and carries forward left-out adjustments.
+vi.mock('@/features/attendance-sync/services/week-lock.service', () => ({ lockWeekRow: vi.fn() }))
+vi.mock('@/features/payroll-adjustments/services/adjustment.service', () => ({ skipAdjustmentApplication: vi.fn() }))
 
 // Plain arithmetic stand-ins for the payroll maths; this file is about which hours go in.
 vi.mock('@/features/payroll-generation/services/payroll.service', () => ({
@@ -55,6 +58,7 @@ import {
 } from '@/features/payroll-correction/services/correction.service'
 import { auditEntry } from '@/features/attendance-sync/services/attendance-audit.service'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
+import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
 import { buildGridEmployees } from '@/features/attendance-sync/lib/review'
 import { getWeekDates, weekFromStartISO } from '@/features/attendance-sync/lib/week'
 import type { EmployeeLite, StoredPunchRow } from '@/features/attendance-sync/types/attendance-sync.types'
@@ -187,9 +191,10 @@ function makeTx() {
   return {
     payrollRun: { findUnique: m(), update: m() },
     payrollRevision: { updateMany: m(), deleteMany: m() },
-    payrollRunEmployee: { deleteMany: m() },
-    payrollCorrectionSession: { create: m(), update: m() },
-    payrollAdjustmentApplication: { updateMany: m() },
+    payrollRunEmployee: { findMany: m(), deleteMany: m() },
+    payrollCorrectionSession: { create: m(), update: m(), findUnique: m() },
+    payrollAdjustmentApplication: { findMany: m(), updateMany: m() },
+    attendanceEmployeeDecision: { findMany: m() },
     attendancePunch: { count: m(), findMany: m(), createMany: m(), deleteMany: m(), updateMany: m() },
     attendanceRecord: { deleteMany: m(), createMany: m() },
     auditLog: { create: m(), update: m(), delete: m(), deleteMany: m(), updateMany: m() },
@@ -795,15 +800,28 @@ describe('approveRevision for an attendance correction', () => {
     opts: { clonedPunches?: number; session?: ReturnType<typeof makeSession> | null; review?: ReturnType<typeof correctedReview> } = {},
   ) {
     useInteractiveTransaction(tx)
+    const session = opts.session === undefined ? makeSession({ draftRevisionId: 'revision-uuid-2' }) : opts.session
     vi.mocked(prisma.payrollRevision.findUnique).mockResolvedValue(makeDraft() as never)
-    vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(
-      (opts.session === undefined ? makeSession({ draftRevisionId: 'revision-uuid-2' }) : opts.session) as never,
-    )
-    vi.mocked(prisma.attendancePunch.count).mockResolvedValue(opts.clonedPunches ?? 28)
+    // The session is found before the transaction, and read again inside it (after the week row is locked).
+    vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(session as never)
+    tx.payrollCorrectionSession.findUnique.mockResolvedValue(session)
+    vi.mocked(lockWeekRow).mockResolvedValue({
+      id: UPLOAD_ID,
+      source: 'ETIMEOFFICE',
+      status: 'APPROVED',
+      syncLockedAt: null,
+      approvedAt: new Date('2025-03-14'),
+      payrollWeekStartDate: WEEK_START,
+    })
+    // The corrected punches and decisions are read on the transaction client.
+    tx.attendancePunch.count.mockResolvedValue(opts.clonedPunches ?? 28)
     vi.mocked(getPunchReview).mockResolvedValue((opts.review ?? correctedReview({ withZeroHourEmployee: true })) as never)
-    vi.mocked(prisma.attendanceEmployeeDecision.findMany).mockResolvedValue([
+    tx.attendanceEmployeeDecision.findMany.mockResolvedValue([
       { employeeId: EMPLOYEE_ONE.id, decision: 'APPROVED' },
-    ] as never)
+    ])
+    // Everyone in the draft is paid, so no adjustment is carried forward.
+    tx.payrollRunEmployee.findMany.mockResolvedValue([{ employeeId: EMPLOYEE_ONE.id }, { employeeId: EMPLOYEE_TWO.id }])
+    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([])
     tx.payrollRevision.updateMany.mockResolvedValue({ count: 1 })
   }
 
@@ -861,7 +879,12 @@ describe('approveRevision for an attendance correction', () => {
     expect(rows[0]).toMatchObject({ attendanceDate: THU, regularHours: 8, overtimeHours: 1.47, verificationDecision: 'APPROVED' })
     expect(rows.slice(1).every((r) => r.regularHours === 0 && r.overtimeHours === 0)).toBe(true)
     expect(callOrder(tx.attendanceRecord.deleteMany)).toBeLessThan(callOrder(tx.attendanceRecord.createMany))
-    expect(getPunchReview).toHaveBeenCalledWith('2025-03-06', expect.objectContaining({ kind: 'CORRECTION', correctionId: SESSION_ID }))
+    // The review is read on the transaction client, so it sees the punches the lock protects.
+    expect(getPunchReview).toHaveBeenCalledWith(
+      '2025-03-06',
+      expect.objectContaining({ kind: 'CORRECTION', correctionId: SESSION_ID }),
+      tx,
+    )
   })
 
   it('replaces the live punches with the corrected copy: delete live first, then promote the copy', async () => {

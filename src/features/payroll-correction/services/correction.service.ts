@@ -20,8 +20,10 @@ import {
   calculateOvertimePay,
   calculateNetPayable,
 } from '@/features/payroll-generation/services/payroll.service'
+import { skipAdjustmentApplication } from '@/features/payroll-adjustments/services/adjustment.service'
 import { auditEntry } from '@/features/attendance-sync/services/attendance-audit.service'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
+import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
 import { buildAttendanceRecords, getPayrollEmployees } from '@/features/attendance-sync/lib/review'
 import { toISODate } from '@/features/attendance-sync/lib/week'
 import type { DiscardedEdit } from '@/features/attendance-sync/types/attendance-sync.types'
@@ -825,12 +827,25 @@ export async function approveCorrectionPunches(payrollRunId: string): Promise<Cr
 
 // ─── approveRevision ──────────────────────────────────────────────────────────
 
+function staleRevisionError(): CorrectionServiceError {
+  return new CorrectionServiceError(
+    'REVISION_STALE',
+    'This preview is out of date: the punches changed after it was calculated. Approve the punches again.',
+  )
+}
+
 /**
  * Make the draft revision current. One transaction: the draft becomes the current approved
  * revision, the one it replaces is superseded, the run takes the new totals, the week's
- * adjustment applications move to the new revision, and, for an attendance correction,
- * the corrected punches and attendance records replace the live ones. If anything fails the
- * current revision stays exactly as it was.
+ * adjustment applications move to the new revision (those of employees the revision leaves out
+ * are carried forward instead), and, for an attendance correction, the corrected punches and
+ * attendance records replace the live ones. If anything fails the current revision stays
+ * exactly as it was.
+ *
+ * A correction session approves only the draft its punches produced: editing punches clears
+ * the session's draft pointer, so a preview calculated from earlier punches is REVISION_STALE.
+ * The week's row lock is taken first and the punches are read inside the transaction, so no
+ * edit can land between the check and the write.
  */
 export async function approveRevision(
   revisionId: string,
@@ -848,37 +863,53 @@ export async function approveRevision(
   }
 
   const run = revision.payrollRun
+  // No session means a draft made without one (adjustments only, or older data): it approves as before.
   const session = await prisma.payrollCorrectionSession.findFirst({
-    where: { draftRevisionId: revisionId, status: 'IN_PROGRESS' },
+    where: { payrollRunId: run.id, status: 'IN_PROGRESS' },
     include: { attendanceUpload: { select: { id: true, payrollWeekStartDate: true } } },
   })
-
-  // Read the corrected punches before the transaction (the pool is small, so nothing inside
-  // the transaction may use a second connection).
-  const clonedPunches = session ? await prisma.attendancePunch.count({ where: { correctionId: session.id } }) : 0
-  let correctedRecords: Prisma.AttendanceRecordCreateManyInput[] = []
-  if (session && clonedPunches > 0) {
-    const review = await getPunchReview(toISODate(session.attendanceUpload.payrollWeekStartDate), {
-      kind: 'CORRECTION',
-      payrollRunId: run.id,
-      correctionId: session.id,
-      revisionNumber: run.currentRevisionNumber,
-    })
-    const decisions = await prisma.attendanceEmployeeDecision.findMany({
-      where: { attendanceUploadId: session.attendanceUploadId },
-      select: { employeeId: true, decision: true },
-    })
-    correctedRecords = buildAttendanceRecords(
-      session.attendanceUploadId,
-      review,
-      decisions.map((d) => ({ employeeId: d.employeeId, decision: d.decision as 'APPROVED' | 'REJECTED' })),
-    )
-  }
+  if (session && session.draftRevisionId !== revisionId) throw staleRevisionError()
 
   const now = new Date()
 
   await prisma.$transaction(
     async (tx) => {
+      // Corrected punches and records, read inside the transaction once the week is locked.
+      let clonedPunches = 0
+      let correctedRecords: Prisma.AttendanceRecordCreateManyInput[] = []
+      if (session) {
+        await lockWeekRow(tx, { id: session.attendanceUploadId })
+
+        const current = await tx.payrollCorrectionSession.findUnique({ where: { id: session.id } })
+        if (!current || current.status !== 'IN_PROGRESS') {
+          throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'This correction is no longer in progress.')
+        }
+        if (current.draftRevisionId !== revisionId) throw staleRevisionError()
+
+        clonedPunches = await tx.attendancePunch.count({ where: { correctionId: session.id } })
+        if (clonedPunches > 0) {
+          const review = await getPunchReview(
+            toISODate(session.attendanceUpload.payrollWeekStartDate),
+            {
+              kind: 'CORRECTION',
+              payrollRunId: run.id,
+              correctionId: session.id,
+              revisionNumber: run.currentRevisionNumber,
+            },
+            tx,
+          )
+          const decisions = await tx.attendanceEmployeeDecision.findMany({
+            where: { attendanceUploadId: session.attendanceUploadId },
+            select: { employeeId: true, decision: true },
+          })
+          correctedRecords = buildAttendanceRecords(
+            session.attendanceUploadId,
+            review,
+            decisions.map((d) => ({ employeeId: d.employeeId, decision: d.decision as 'APPROVED' | 'REJECTED' })),
+          )
+        }
+      }
+
       // Only one caller can promote the draft (guards a double approve).
       const promoted = await tx.payrollRevision.updateMany({
         where: { id: revisionId, status: 'DRAFT' },
@@ -905,6 +936,26 @@ export async function approveRevision(
           totalNetPayable: revision.totalNetPayable,
         },
       })
+
+      // An employee the new revision leaves out is not paid this week, so their adjustments move
+      // to the next week instead of staying attached to this run. Skip them before the link step
+      // below, which would otherwise point them at the new revision.
+      const paid = await tx.payrollRunEmployee.findMany({
+        where: { payrollRevisionId: revisionId },
+        select: { employeeId: true },
+      })
+      const includedIds = paid.map((p) => p.employeeId)
+      const leftOut = await tx.payrollAdjustmentApplication.findMany({
+        where: {
+          payrollWeekStartDate: run.payrollWeekStartDate,
+          approvalStatus: { in: ['PENDING', 'APPROVED'] },
+          employeeId: { notIn: includedIds },
+          OR: [{ payrollRunId: run.id }, { payrollRunId: null }],
+          payrollAdjustment: { status: { not: 'CANCELLED' } },
+        },
+        select: { id: true },
+      })
+      for (const application of leftOut) await skipAdjustmentApplication(application.id, tx)
 
       // Update adjustment applications to point to the new revision ID.
       // Also link any newly approved applications that weren't previously attached.

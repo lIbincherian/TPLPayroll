@@ -43,6 +43,17 @@ export default async function RevisedPreviewPage({ params }: Props) {
   if (!draftRevision) redirect(`/payroll/run/${payrollRunId}/correct`)
   if (!currentRevision) notFound()
 
+  // Back goes to the punches when this was an Attendance correction, otherwise to the reason step.
+  const activeSession = await getActiveCorrection(payrollRunId)
+  const editsPunches = !!activeSession?.hasPunchClone
+  const backHref = editsPunches
+    ? `/payroll/run/${payrollRunId}/correct/punches`
+    : `/payroll/run/${payrollRunId}/correct`
+
+  // Editing punches clears the session's draft pointer, so a draft the session no longer points
+  // at was calculated from earlier punches. Show the punches again instead of a stale preview.
+  if (activeSession && activeSession.draftRevisionId !== draftRevision.id) redirect(backHref)
+
   const weekLabel = formatWeekRange(run.payrollWeekStartDate, run.payrollWeekEndDate)
 
   // Fetch employee data with diffs against the current revision
@@ -69,13 +80,6 @@ export default async function RevisedPreviewPage({ params }: Props) {
     totalDeductions: Number(currentRevision.totalDeductions),
     totalNetPayable: Number(currentRevision.totalNetPayable),
   }
-
-  // Back goes to the punches when this was an Attendance correction, otherwise to the reason step.
-  const activeSession = await getActiveCorrection(payrollRunId)
-  const editsPunches = !!activeSession?.hasPunchClone
-  const backHref = editsPunches
-    ? `/payroll/run/${payrollRunId}/correct/punches`
-    : `/payroll/run/${payrollRunId}/correct`
 
   return (
     <AppShell>

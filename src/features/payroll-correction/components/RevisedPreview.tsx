@@ -91,6 +91,9 @@ export function RevisedPreview({
       if (res.ok) {
         // The run page is rendered fresh on every request, so no refresh is needed.
         router.push(`/payroll/run/${payrollRunId}`)
+      } else if (res.code === 'REVISION_STALE') {
+        // The punches changed after this preview was calculated: go back and approve them again.
+        router.push(backHref)
       } else {
         setError(res.error)
         setShowConfirm(false)
