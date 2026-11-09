@@ -20,6 +20,10 @@ export default prisma;
 export async function cleanupDatabase() {
   const tables = [
     '"AuditLog"',
+    '"AttendancePunch"',
+    '"PayrollCorrectionSession"',
+    '"AttendanceEmployeeDecision"',
+    '"AttendanceCodeException"',
     '"InvoiceSnapshot"',
     '"PayrollRunEmployee"',
     '"PayrollRevision"',

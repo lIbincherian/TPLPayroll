@@ -369,7 +369,7 @@ export async function getAttendanceUploadsAction(): Promise<ActionResult<Attenda
     ok: true,
     data: uploads.map((u) => ({
       id: u.id,
-      fileName: u.fileName,
+      fileName: u.fileName ?? '',
       payrollWeekStartDate: u.payrollWeekStartDate.toISOString().slice(0, 10),
       payrollWeekEndDate: u.payrollWeekEndDate.toISOString().slice(0, 10),
       status: u.status,
@@ -433,7 +433,7 @@ export async function getAttendanceUploadPreviewAction(
           data: {
             upload: {
               id: upload.id,
-              fileName: upload.fileName,
+              fileName: upload.fileName ?? '',
               payrollWeekStartDate: upload.payrollWeekStartDate.toISOString().slice(0, 10),
               payrollWeekEndDate: upload.payrollWeekEndDate.toISOString().slice(0, 10),
               status: upload.status,
@@ -500,7 +500,7 @@ export async function getAttendanceUploadPreviewAction(
     data: {
       upload: {
         id: upload.id,
-        fileName: upload.fileName,
+        fileName: upload.fileName ?? '',
         payrollWeekStartDate: upload.payrollWeekStartDate.toISOString().slice(0, 10),
         payrollWeekEndDate: upload.payrollWeekEndDate.toISOString().slice(0, 10),
         status: upload.status,

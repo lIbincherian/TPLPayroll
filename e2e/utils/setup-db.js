@@ -16,6 +16,10 @@ async function runSetup() {
       
       const tables = [
         '"AuditLog"',
+        '"AttendancePunch"',
+        '"PayrollCorrectionSession"',
+        '"AttendanceEmployeeDecision"',
+        '"AttendanceCodeException"',
         '"InvoiceSnapshot"',
         '"PayrollRunEmployee"',
         '"PayrollRevision"',

@@ -49,6 +49,14 @@ function makeUpload(overrides: Partial<AttendanceUpload> = {}): AttendanceUpload
     uploadedBy: null,
     uploadedAt: new Date(),
     sourceStorageKey: 'attendance/old-uuid_old.xlsx',
+    source: 'EXCEL',
+    lastSyncAttemptAt: null,
+    lastSyncedAt: null,
+    lastSyncError: null,
+    lastSyncTrigger: null,
+    staleNoticeAt: null,
+    syncLockedAt: null,
+    approvedAt: null,
     ...overrides,
   }
 }
