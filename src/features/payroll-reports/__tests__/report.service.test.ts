@@ -833,7 +833,7 @@ describe('generatePayrollSlipsZip', () => {
 
   /** The slip snapshots the zip run saved, as the JSON that was stored. */
   function savedSlips(): PayrollSlipData[] {
-    const call = vi.mocked(prisma.invoiceSnapshot.createMany).mock.calls[0][0] as {
+    const call = vi.mocked(prisma.invoiceSnapshot.createMany).mock.calls[0][0] as unknown as {
       data: Array<{ invoiceSnapshotJson: PayrollSlipData }>
     }
     return call.data.map((d) => d.invoiceSnapshotJson)
