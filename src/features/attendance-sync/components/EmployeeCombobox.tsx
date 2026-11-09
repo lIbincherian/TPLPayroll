@@ -3,8 +3,8 @@
 import { useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { cn } from '@/lib/utils'
 
-// A searchable employee picker (by name or Employee ID). Copied from the attendance-upload
-// verification dialog and given keyboard support and combobox semantics.
+// A searchable employee picker (by name or Employee ID) with keyboard support and
+// combobox semantics. Moved here from the retired Excel upload verification dialog.
 
 export interface EmployeeOption {
   id: string

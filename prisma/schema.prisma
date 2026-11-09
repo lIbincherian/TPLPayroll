@@ -328,22 +328,6 @@ model InvoiceSnapshot {
   employee        Employee        @relation(fields: [employeeId], references: [id])
 }
 
-model AttendanceUploadSession {
-  id              String   @id @default(uuid())
-  storageKey      String   // Supabase Storage key within attendance-files bucket
-  fileName        String
-  fileType        String
-  weekStart       String // YYYY-MM-DD
-  weekEnd         String // YYYY-MM-DD
-  weekSource      String // PayrollWeekSource value
-  decisionsJson   String // JSON: { verificationDecisions, manualMatchDecisions, rejectedBlockKeys }
-  pendingBlockKey String
-  expiresAt       DateTime
-  createdAt       DateTime @default(now())
-
-  @@index([expiresAt])
-}
-
 model AuditLog {
   id          String   @id @default(uuid())
   actionType  String // "CREATE", "UPDATE", "DELETE", "SYNC", "PULL", "APPROVE", "REOPEN", "DISCARD"
