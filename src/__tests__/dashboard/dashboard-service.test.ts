@@ -22,7 +22,7 @@ import prisma from '@/lib/prisma'
 import {
   countActiveEmployees,
   getLatestPayrollTotal,
-  countPendingAttendanceErrors,
+  countAttendanceWeeksAwaitingReview,
   countPendingAdjustmentApprovals,
 } from '@/services/dashboard.service'
 
@@ -120,36 +120,37 @@ describe('getLatestPayrollTotal', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// US-01.3: countPendingAttendanceErrors
+// US-01.3: countAttendanceWeeksAwaitingReview (F12 — replaces countPendingAttendanceErrors)
 // ─────────────────────────────────────────────────────────────────────────────
-describe('countPendingAttendanceErrors', () => {
+describe('countAttendanceWeeksAwaitingReview', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('returns count of active uploads with blocking errors', async () => {
-    // GIVEN 3 active attendance uploads exist — 1 has unmatched employees (status ERROR),
-    // 1 has all matches (status PROCESSED), 1 has invalid hours (status ERROR)
-    // DB returns 2 (the two in error state)
+  it('returns the count of eTimeOffice weeks that failed to sync or await review', async () => {
+    // GIVEN 3 active attendance weeks: 1 SYNC_FAILED, 1 REVIEW, 1 APPROVED
+    // DB returns 2 (the two that are not approved)
     vi.mocked(prisma.attendanceUpload.count).mockResolvedValue(2)
 
     // WHEN
-    const result = await countPendingAttendanceErrors()
+    const result = await countAttendanceWeeksAwaitingReview()
 
     // THEN
     expect(result).toBe(2)
-    expect(prisma.attendanceUpload.count).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ isActiveForPayrollWeek: true }),
-      })
-    )
+    expect(prisma.attendanceUpload.count).toHaveBeenCalledWith({
+      where: {
+        isActiveForPayrollWeek: true,
+        source: 'ETIMEOFFICE',
+        status: { in: ['SYNC_FAILED', 'REVIEW'] },
+      },
+    })
   })
 
-  it('returns 0 when all active uploads are clean', async () => {
-    // GIVEN 2 active attendance uploads with no blocking errors
+  it('returns 0 when every eTimeOffice week is approved', async () => {
+    // GIVEN 2 active attendance weeks, both approved
     vi.mocked(prisma.attendanceUpload.count).mockResolvedValue(0)
 
-    const result = await countPendingAttendanceErrors()
+    const result = await countAttendanceWeeksAwaitingReview()
 
     expect(result).toBe(0)
   })

@@ -10,7 +10,13 @@ import {
   type ApprovePayrollResult,
 } from '@/features/payroll-generation/types/payroll.types'
 import type { WeeklyReviewItem } from '@/features/payroll-adjustments/types/adjustment.types'
-import { getAdjustmentsForWeekReview } from '@/features/payroll-adjustments/services/adjustment.service'
+import {
+  getAdjustmentsForWeekReview,
+  skipAdjustmentApplication,
+} from '@/features/payroll-adjustments/services/adjustment.service'
+import { listAttendanceWeeks } from '@/features/attendance-sync/services/week-list.service'
+import { getApprovalSummary } from '@/features/attendance-sync/services/week-approval.service'
+import { toISODate } from '@/features/attendance-sync/lib/week'
 
 // ─── Pure calculation helpers (exported for unit testing) ────────────────────
 
@@ -42,72 +48,27 @@ export function calculateNetPayable(
 
 // ─── getAvailablePayrollWeeks ─────────────────────────────────────────────────
 
+/**
+ * The payroll week list, built on the attendance week list so both pages show the same
+ * statuses. Only an approved eTimeOffice week without a payroll run can be generated.
+ */
 export async function getAvailablePayrollWeeks(): Promise<PayrollWeekItem[]> {
-  const uploads = await prisma.attendanceUpload.findMany({
-    where: { isActiveForPayrollWeek: true },
-    orderBy: { payrollWeekStartDate: 'desc' },
-    take: 20,
-  })
+  const weeks = await listAttendanceWeeks()
 
-  if (uploads.length === 0) return []
-
-  const weekStarts = uploads.map((u) => u.payrollWeekStartDate)
-
-  const [payrollRuns, recordGroups, hourSums] = await Promise.all([
-    prisma.payrollRun.findMany({
-      where: { payrollWeekStartDate: { in: weekStarts }, status: { in: ['APPROVED', 'REVISED'] } },
-      select: { id: true, payrollWeekStartDate: true, status: true },
-    }),
-    prisma.attendanceRecord.groupBy({
-      by: ['attendanceUploadId', 'employeeId'],
-      where: { attendanceUploadId: { in: uploads.map((u) => u.id) } },
-    }),
-    prisma.attendanceRecord.groupBy({
-      by: ['attendanceUploadId'],
-      where: { attendanceUploadId: { in: uploads.map((u) => u.id) } },
-      _sum: { regularHours: true, overtimeHours: true },
-    }),
-  ])
-
-  const runByWeek = new Map(payrollRuns.map((r) => [r.payrollWeekStartDate.toISOString(), { id: r.id, status: r.status }]))
-
-  const employeesByUpload = new Map<string, Set<string>>()
-  for (const r of recordGroups) {
-    if (!employeesByUpload.has(r.attendanceUploadId)) {
-      employeesByUpload.set(r.attendanceUploadId, new Set())
-    }
-    employeesByUpload.get(r.attendanceUploadId)!.add(r.employeeId)
-  }
-
-  const hoursByUpload = new Map(
-    hourSums.map((h) => [
-      h.attendanceUploadId,
-      {
-        regularHours: Number(h._sum.regularHours ?? 0),
-        overtimeHours: Number(h._sum.overtimeHours ?? 0),
-      },
-    ]),
-  )
-
-  return uploads.map((u): PayrollWeekItem => {
-    const weekId = u.payrollWeekStartDate.toISOString().slice(0, 10)
-    const runInfo = runByWeek.get(u.payrollWeekStartDate.toISOString()) ?? null
-    const payrollRunId = runInfo?.id ?? null
-    const hours = hoursByUpload.get(u.id) ?? { regularHours: 0, overtimeHours: 0 }
-    const matchedEmployeeCount = employeesByUpload.get(u.id)?.size ?? 0
-
+  return weeks.map((week): PayrollWeekItem => {
+    const source = week.source === 'EXCEL' ? 'EXCEL' : 'ETIMEOFFICE'
     return {
-      weekId,
-      weekStart: u.payrollWeekStartDate,
-      weekEnd: u.payrollWeekEndDate,
-      attendanceStatus: (u.status === 'ERRORS' ? 'ERRORS' : 'READY') as PayrollWeekItem['attendanceStatus'],
-      matchedEmployeeCount,
-      totalRegularHours: hours.regularHours,
-      totalOvertimeHours: hours.overtimeHours,
-      payrollStatus: runInfo
-        ? (runInfo.status === 'REVISED' ? 'REVISED' as const : 'APPROVED' as const)
-        : 'NOT_GENERATED' as const,
-      payrollRunId,
+      weekId: week.weekId,
+      weekStart: new Date(`${week.week.start}T00:00:00.000Z`),
+      weekEnd: new Date(`${week.week.end}T00:00:00.000Z`),
+      attendanceStatus: week.status,
+      source,
+      matchedEmployeeCount: week.employeeCount,
+      totalRegularHours: week.totalRegularHours,
+      totalOvertimeHours: week.totalOvertimeHours,
+      payrollStatus: week.payrollStatus,
+      payrollRunId: week.payrollRunId,
+      canGenerate: source === 'ETIMEOFFICE' && week.status === 'APPROVED' && week.payrollStatus === 'NOT_GENERATED',
     }
   })
 }
@@ -126,8 +87,10 @@ export async function checkAttendanceReadiness(
     },
   })
 
-  if (!upload) return { ready: false, reason: 'NO_UPLOAD' }
-  if (upload.status === 'ERRORS') return { ready: false, reason: 'UNRESOLVED_ERRORS' }
+  if (!upload) return { ready: false, reason: 'NO_DATA' }
+  if (upload.source === 'EXCEL') return { ready: false, reason: 'EXCEL_ERA' }
+  if (upload.status === 'SYNC_FAILED') return { ready: false, reason: 'SYNC_FAILED' }
+  if (upload.status !== 'APPROVED') return { ready: false, reason: 'NOT_APPROVED' }
 
   const records = await prisma.attendanceRecord.findMany({
     where: { attendanceUploadId: upload.id },
@@ -138,9 +101,13 @@ export async function checkAttendanceReadiness(
   const totalRegularHours = records.reduce((sum, r) => sum + Number(r.regularHours), 0)
   const totalOvertimeHours = records.reduce((sum, r) => sum + Number(r.overtimeHours), 0)
 
+  // "Left out" is what the approval summary showed: zero-hour employees plus rejected ones.
+  const summary = await getApprovalSummary(toISODate(weekStart))
+
   return {
     ready: true,
     matchedEmployeeCount: employeeIds.size,
+    leftOutCount: summary.leftOut.length,
     totalRegularHours,
     totalOvertimeHours,
   }
@@ -148,12 +115,36 @@ export async function checkAttendanceReadiness(
 
 // ─── getPendingAdjustmentsForWeek ─────────────────────────────────────────────
 
+/**
+ * Pending adjustments for the employees who are in this week's approved attendance.
+ * A left-out employee's adjustments are not reviewed here; approvePayroll carries them
+ * forward instead.
+ */
 export async function getPendingAdjustmentsForWeek(
   weekStart: Date,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _weekEnd: Date,
+  weekEnd: Date,
 ): Promise<WeeklyReviewItem[]> {
-  return getAdjustmentsForWeekReview(weekStart)
+  const upload = await prisma.attendanceUpload.findFirst({
+    where: {
+      payrollWeekStartDate: weekStart,
+      payrollWeekEndDate: weekEnd,
+      isActiveForPayrollWeek: true,
+    },
+    select: { id: true },
+  })
+  if (!upload) return []
+
+  const [items, included] = await Promise.all([
+    getAdjustmentsForWeekReview(weekStart),
+    prisma.attendanceRecord.findMany({
+      where: { attendanceUploadId: upload.id },
+      select: { employeeId: true },
+      distinct: ['employeeId'],
+    }),
+  ])
+
+  const includedIds = new Set(included.map((r) => r.employeeId))
+  return items.filter((item) => includedIds.has(item.employeeId))
 }
 
 // ─── calculatePayroll ─────────────────────────────────────────────────────────
@@ -171,10 +162,13 @@ export async function calculatePayroll(
   })
 
   if (!upload) {
-    throw new PayrollServiceError('NO_ATTENDANCE_UPLOAD', 'No attendance upload found for this week')
+    throw new PayrollServiceError('NO_ATTENDANCE_UPLOAD', 'No attendance has been loaded for this week')
   }
-  if (upload.status === 'ERRORS') {
-    throw new PayrollServiceError('ATTENDANCE_HAS_ERRORS', 'Attendance has unresolved errors')
+  if (upload.source === 'EXCEL') {
+    throw new PayrollServiceError('EXCEL_ERA_WEEK', "Excel-era weeks can't start payroll")
+  }
+  if (upload.status !== 'APPROVED') {
+    throw new PayrollServiceError('ATTENDANCE_NOT_APPROVED', "Attendance for this week isn't approved yet")
   }
 
   const attendanceRecords = await prisma.attendanceRecord.findMany({
@@ -310,6 +304,12 @@ export async function calculatePayroll(
 
 // ─── approvePayroll ───────────────────────────────────────────────────────────
 
+/**
+ * Approve the payroll: create the run, revision 1 and the employee rows, link the week's
+ * approved adjustments, and carry forward the adjustments of employees who were left out
+ * of this payroll. All of it is one transaction, so a carry-forward can never be applied
+ * without the approval (or the approval without the carry-forward).
+ */
 export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePayrollResult> {
   const existing = await prisma.payrollRun.findFirst({
     where: {
@@ -328,71 +328,89 @@ export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePa
 
   const runId = randomUUID()
   const revisionId = randomUUID()
+  const includedIds = employees.map((emp) => emp.employeeId)
 
-  const promises = [
-    prisma.payrollRun.create({
-      data: {
-        id: runId,
-        payrollWeekStartDate: weekStart,
-        payrollWeekEndDate: weekEnd,
-        status: 'APPROVED',
-        currentRevisionNumber: 1,
-        totalRegularPay: totals.totalRegularPay,
-        totalOvertimePay: totals.totalOvertimePay,
-        totalAdditions: totals.totalAdditions,
-        totalDeductions: totals.totalDeductions,
-        totalNetPayable: totals.totalNetPayable,
-        approvedAt: now,
-      },
-    }),
+  await prisma.$transaction(
+    async (tx) => {
+      // Carry forward first. Skipping moves a left-out employee's pending or approved
+      // application to the next week, so the link step below can never attach it to this run.
+      const leftOutApplications = await tx.payrollAdjustmentApplication.findMany({
+        where: {
+          payrollWeekStartDate: weekStart,
+          payrollRunId: null,
+          approvalStatus: { in: ['PENDING', 'APPROVED'] },
+          employeeId: { notIn: includedIds },
+          payrollAdjustment: { status: { not: 'CANCELLED' } },
+        },
+        select: { id: true },
+      })
+      for (const application of leftOutApplications) {
+        await skipAdjustmentApplication(application.id, tx)
+      }
 
-    prisma.payrollRevision.create({
-      data: {
-        id: revisionId,
-        payrollRunId: runId,
-        revisionNumber: 1,
-        status: 'APPROVED',
-        isCurrent: true,
-        totalRegularPay: totals.totalRegularPay,
-        totalOvertimePay: totals.totalOvertimePay,
-        totalAdditions: totals.totalAdditions,
-        totalDeductions: totals.totalDeductions,
-        totalNetPayable: totals.totalNetPayable,
-        approvedAt: now,
-      },
-    }),
+      await tx.payrollRun.create({
+        data: {
+          id: runId,
+          payrollWeekStartDate: weekStart,
+          payrollWeekEndDate: weekEnd,
+          status: 'APPROVED',
+          currentRevisionNumber: 1,
+          totalRegularPay: totals.totalRegularPay,
+          totalOvertimePay: totals.totalOvertimePay,
+          totalAdditions: totals.totalAdditions,
+          totalDeductions: totals.totalDeductions,
+          totalNetPayable: totals.totalNetPayable,
+          approvedAt: now,
+        },
+      })
 
-    prisma.payrollRunEmployee.createMany({
-      data: employees.map((emp) => ({
-        payrollRunId: runId,
-        payrollRevisionId: revisionId,
-        employeeId: emp.employeeId,
-        weeklySalaryUsed: emp.weeklySalaryUsed,
-        hourlyRateUsed: emp.hourlyRateUsed,
-        regularHours: emp.regularHours,
-        overtimeHours: emp.overtimeHours,
-        regularPay: emp.regularPay,
-        overtimePay: emp.overtimePay,
-        additions: emp.additions,
-        deductions: emp.deductions,
-        netPayable: emp.netPayable,
-      })),
-    }),
+      await tx.payrollRevision.create({
+        data: {
+          id: revisionId,
+          payrollRunId: runId,
+          revisionNumber: 1,
+          status: 'APPROVED',
+          isCurrent: true,
+          totalRegularPay: totals.totalRegularPay,
+          totalOvertimePay: totals.totalOvertimePay,
+          totalAdditions: totals.totalAdditions,
+          totalDeductions: totals.totalDeductions,
+          totalNetPayable: totals.totalNetPayable,
+          approvedAt: now,
+        },
+      })
 
-    prisma.payrollAdjustmentApplication.updateMany({
-      where: {
-        payrollWeekStartDate: weekStart,
-        approvalStatus: 'APPROVED',
-        payrollRunId: null,
-      },
-      data: {
-        payrollRunId: runId,
-        payrollRevisionId: revisionId,
-      },
-    }),
-  ]
+      await tx.payrollRunEmployee.createMany({
+        data: employees.map((emp) => ({
+          payrollRunId: runId,
+          payrollRevisionId: revisionId,
+          employeeId: emp.employeeId,
+          weeklySalaryUsed: emp.weeklySalaryUsed,
+          hourlyRateUsed: emp.hourlyRateUsed,
+          regularHours: emp.regularHours,
+          overtimeHours: emp.overtimeHours,
+          regularPay: emp.regularPay,
+          overtimePay: emp.overtimePay,
+          additions: emp.additions,
+          deductions: emp.deductions,
+          netPayable: emp.netPayable,
+        })),
+      })
 
-  await prisma.$transaction(promises, { timeout: 30000 })
+      await tx.payrollAdjustmentApplication.updateMany({
+        where: {
+          payrollWeekStartDate: weekStart,
+          approvalStatus: 'APPROVED',
+          payrollRunId: null,
+        },
+        data: {
+          payrollRunId: runId,
+          payrollRevisionId: revisionId,
+        },
+      })
+    },
+    { timeout: 30000 },
+  )
 
   return {
     payrollRunId: runId,

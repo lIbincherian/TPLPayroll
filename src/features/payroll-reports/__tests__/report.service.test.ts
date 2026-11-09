@@ -43,6 +43,12 @@ vi.mock('@/lib/prisma', () => ({
     attendanceRecord: {
       findMany: vi.fn(),
     },
+    attendanceUpload: {
+      findFirst: vi.fn(),
+    },
+    attendancePunch: {
+      findMany: vi.fn(),
+    },
     invoiceSnapshot: {
       deleteMany: vi.fn(),
       createMany: vi.fn(),
@@ -464,6 +470,9 @@ describe('generatePayrollSlipsZip', () => {
     vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue(
       makeAttendanceRecords('emp-uuid-1') as never,
     )
+    // An Excel-era week: the zip keeps the six-column slot layout and loads no punches.
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue({ id: 'upload-uuid-1', source: 'EXCEL' } as never)
+    vi.mocked(prisma.attendancePunch.findMany).mockResolvedValue([])
     vi.mocked(prisma.$transaction).mockResolvedValue([{ count: 0 }, { count: 1 }])
   })
 

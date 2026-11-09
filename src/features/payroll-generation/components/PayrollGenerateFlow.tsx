@@ -129,6 +129,7 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
             </div>
           ) : (
             <AttendanceVerificationStep
+              weekId={weekStart.toISOString().slice(0, 10)}
               weekLabel={weekLabel}
               readiness={readiness}
               onContinue={handleAttendanceContinue}

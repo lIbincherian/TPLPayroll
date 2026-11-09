@@ -14,12 +14,36 @@ function StatBlock({ label, value }: { label: string; value: string | number }) 
 }
 
 interface Props {
+  weekId: string
   weekLabel: string
   readiness: AttendanceReadinessResult
   onContinue: () => void
 }
 
-export function AttendanceVerificationStep({ weekLabel, readiness, onContinue }: Props) {
+type NotReadyReason = Extract<AttendanceReadinessResult, { ready: false }>['reason']
+
+function notReadyCopy(reason: NotReadyReason, weekId: string): { message: string; linkText: string; href: string } {
+  switch (reason) {
+    case 'SYNC_FAILED':
+      return { message: 'The eTimeOffice sync failed for this week', linkText: 'Go to Attendance', href: '/attendance' }
+    case 'NOT_APPROVED':
+      return {
+        message: "Attendance for this week isn't approved yet",
+        linkText: 'Review punches',
+        href: `/attendance/${weekId}/review`,
+      }
+    case 'EXCEL_ERA':
+      return {
+        message: "This week was imported from Excel and can't start payroll",
+        linkText: 'Go to Attendance',
+        href: '/attendance',
+      }
+    default:
+      return { message: 'No attendance loaded for this week', linkText: 'Go to Attendance', href: '/attendance' }
+  }
+}
+
+export function AttendanceVerificationStep({ weekId, weekLabel, readiness, onContinue }: Props) {
   return (
     <div className="space-y-6">
       {/* ── Header ───────────────────────────────────────────────────── */}
@@ -33,19 +57,20 @@ export function AttendanceVerificationStep({ weekLabel, readiness, onContinue }:
         <div className="flex items-start gap-3 rounded-xl border border-amber-200/60 bg-amber-50 p-4">
           <WarningCircle size={20} weight="fill" className="mt-0.5 shrink-0 text-amber-500" />
           <div className="flex flex-col gap-1">
-            <p className="text-sm font-medium text-amber-800">
-              {readiness.reason === 'NO_UPLOAD'
-                ? 'No attendance uploaded for this week'
-                : 'Payroll cannot be generated — attendance has unresolved blocking errors'}
-            </p>
-            <Link
-              href={readiness.reason === 'NO_UPLOAD' ? '/attendance' : '/attendance'}
-              className="text-xs font-medium text-amber-700 underline underline-offset-2 hover:text-amber-900"
-            >
-              {readiness.reason === 'NO_UPLOAD'
-                ? 'Upload attendance for this week'
-                : 'Go to attendance review'}
-            </Link>
+            {(() => {
+              const copy = notReadyCopy(readiness.reason, weekId)
+              return (
+                <>
+                  <p className="text-sm font-medium text-amber-800">{copy.message}</p>
+                  <Link
+                    href={copy.href}
+                    className="text-xs font-medium text-amber-700 underline underline-offset-2 hover:text-amber-900"
+                  >
+                    {copy.linkText} →
+                  </Link>
+                </>
+              )
+            })()}
           </div>
         </div>
       ) : (
@@ -53,15 +78,15 @@ export function AttendanceVerificationStep({ weekLabel, readiness, onContinue }:
           <div className="flex items-start gap-3 rounded-xl border border-emerald-200/60 bg-emerald-50 p-4">
             <CheckCircle size={20} weight="fill" className="mt-0.5 shrink-0 text-emerald-500" />
             <p className="text-sm font-medium text-emerald-700">
-              Attendance verified — {readiness.matchedEmployeeCount} employees matched, 0 errors
+              Attendance approved: {readiness.matchedEmployeeCount} employees, {readiness.leftOutCount} left out
             </p>
           </div>
 
           {/* ── Quick stats ──────────────────────────────────────────── */}
           <div className="flex divide-x divide-zinc-200/60 border-b border-t border-zinc-200/60 py-4">
             <StatBlock label="Total Employees" value={readiness.matchedEmployeeCount} />
-            <StatBlock label="Total Regular Hrs" value={readiness.totalRegularHours.toFixed(1)} />
-            <StatBlock label="Total Overtime Hrs" value={readiness.totalOvertimeHours.toFixed(1)} />
+            <StatBlock label="Total Regular Hrs" value={readiness.totalRegularHours.toFixed(2)} />
+            <StatBlock label="Total Overtime Hrs" value={readiness.totalOvertimeHours.toFixed(2)} />
           </div>
 
           {/* ── Actions ──────────────────────────────────────────────── */}

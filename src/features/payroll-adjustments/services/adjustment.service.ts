@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import {
   CreateAdjustmentSchema,
@@ -408,8 +409,16 @@ export async function approveAdjustmentApplication(applicationId: string) {
 
 // ─── skipAdjustmentApplication ───────────────────────────────────────────────
 
-export async function skipAdjustmentApplication(applicationId: string) {
-  const app = await prisma.payrollAdjustmentApplication.findUnique({
+/**
+ * Skip an application and carry it to the next payroll week. Pass a transaction client
+ * as `db` to run the writes inside the caller's transaction (payroll approval does this
+ * so a left-out employee's carry-forward commits or rolls back with the approval).
+ */
+export async function skipAdjustmentApplication(
+  applicationId: string,
+  db: Pick<Prisma.TransactionClient, 'payrollAdjustmentApplication' | 'payrollAdjustment'> = prisma,
+) {
+  const app = await db.payrollAdjustmentApplication.findUnique({
     where: { id: applicationId },
     include: { payrollAdjustment: true },
   })
@@ -456,7 +465,7 @@ export async function skipAdjustmentApplication(applicationId: string) {
   const nextWeekStart = addDays(app.payrollWeekStartDate, 7)
   const nextWeekEnd = addDays(app.payrollWeekEndDate, 7)
 
-  const updated = await prisma.payrollAdjustmentApplication.update({
+  const updated = await db.payrollAdjustmentApplication.update({
     where: { id: applicationId },
     data: {
       approvalStatus: 'SKIPPED',
@@ -466,7 +475,7 @@ export async function skipAdjustmentApplication(applicationId: string) {
   })
 
   // Guard: only create carry-forward if no PENDING application already exists for next week
-  const existingNextPending = await prisma.payrollAdjustmentApplication.findFirst({
+  const existingNextPending = await db.payrollAdjustmentApplication.findFirst({
     where: {
       payrollAdjustmentId: adj.id,
       payrollWeekStartDate: nextWeekStart,
@@ -475,7 +484,7 @@ export async function skipAdjustmentApplication(applicationId: string) {
   })
 
   if (!existingNextPending) {
-    await prisma.payrollAdjustmentApplication.create({
+    await db.payrollAdjustmentApplication.create({
       data: {
         payrollAdjustmentId: adj.id,
         employeeId: app.employeeId,
@@ -487,7 +496,7 @@ export async function skipAdjustmentApplication(applicationId: string) {
     })
   }
 
-  await prisma.payrollAdjustment.update({
+  await db.payrollAdjustment.update({
     where: { id: adj.id },
     data: {
       skippedCarryForwardCount: adj.skippedCarryForwardCount + 1,

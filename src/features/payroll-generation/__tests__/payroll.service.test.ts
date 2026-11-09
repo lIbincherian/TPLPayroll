@@ -36,10 +36,22 @@ vi.mock('@/lib/prisma', () => ({
 // ─── Mock F05 adjustment service ──────────────────────────────────────────────
 vi.mock('@/features/payroll-adjustments/services/adjustment.service', () => ({
   getAdjustmentsForWeekReview: vi.fn(),
+  skipAdjustmentApplication: vi.fn(),
+}))
+
+// ─── Mock F12 attendance services (the payroll week list and readiness build on them) ─
+vi.mock('@/features/attendance-sync/services/week-list.service', () => ({
+  listAttendanceWeeks: vi.fn(),
+}))
+vi.mock('@/features/attendance-sync/services/week-approval.service', () => ({
+  getApprovalSummary: vi.fn(),
 }))
 
 import prisma from '@/lib/prisma'
 import { getAdjustmentsForWeekReview } from '@/features/payroll-adjustments/services/adjustment.service'
+import { listAttendanceWeeks } from '@/features/attendance-sync/services/week-list.service'
+import { getApprovalSummary } from '@/features/attendance-sync/services/week-approval.service'
+import type { AttendanceWeekListItem } from '@/features/attendance-sync/types/attendance-sync.types'
 import {
   calculateRegularPay,
   calculateOvertimePay,
@@ -60,16 +72,24 @@ const WEEK_END = new Date('2025-03-12T00:00:00.000Z')
 function makeUpload(overrides: Partial<AttendanceUpload> = {}): AttendanceUpload {
   return {
     id: 'upload-uuid-1',
-    fileName: 'attendance.xlsx',
-    fileType: 'xlsx',
+    fileName: null,
+    fileType: null,
     payrollWeekStartDate: WEEK_START,
     payrollWeekEndDate: WEEK_END,
-    payrollWeekSource: 'SHEET_CONTENT',
-    status: 'READY',
+    payrollWeekSource: 'ETIMEOFFICE',
+    source: 'ETIMEOFFICE',
+    status: 'APPROVED',
     isActiveForPayrollWeek: true,
     uploadedBy: null,
     uploadedAt: new Date('2025-03-14'),
-    sourceFilePath: '/tmp/attendance.xlsx',
+    sourceStorageKey: null,
+    lastSyncAttemptAt: null,
+    lastSyncedAt: null,
+    lastSyncError: null,
+    lastSyncTrigger: null,
+    staleNoticeAt: null,
+    syncLockedAt: null,
+    approvedAt: new Date('2025-03-14'),
     ...overrides,
   }
 }
@@ -232,42 +252,68 @@ describe('calculateNetPayable', () => {
 // ─── US-06.2: checkAttendanceReadiness ───────────────────────────────────────
 
 describe('checkAttendanceReadiness', () => {
-  it('returns ready:true with stats when attendance is clean', async () => {
-    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload({ status: 'READY' }))
+  it('returns ready:true with stats when attendance is approved', async () => {
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload({ status: 'APPROVED' }))
     vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([
       makeRecord({ employeeId: 'emp-1', regularHours: 8 as unknown as AttendanceRecord['regularHours'], overtimeHours: 0 as unknown as AttendanceRecord['overtimeHours'] }),
       makeRecord({ id: 'rec-2', employeeId: 'emp-2', regularHours: 6 as unknown as AttendanceRecord['regularHours'], overtimeHours: 2 as unknown as AttendanceRecord['overtimeHours'] }),
     ])
+    vi.mocked(getApprovalSummary).mockResolvedValue({ leftOut: [{ employeeId: 'emp-3' }] } as never)
 
     const result = await checkAttendanceReadiness(WEEK_START, WEEK_END)
 
     expect(result.ready).toBe(true)
     if (result.ready) {
       expect(result.matchedEmployeeCount).toBe(2)
+      expect(result.leftOutCount).toBe(1)
       expect(result.totalRegularHours).toBe(14)
       expect(result.totalOvertimeHours).toBe(2)
     }
   })
 
-  it('returns UNRESOLVED_ERRORS when attendance status is ERRORS', async () => {
-    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload({ status: 'ERRORS' }))
+  it('returns NOT_APPROVED when the week is still in review', async () => {
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload({ status: 'REVIEW' }))
 
     const result = await checkAttendanceReadiness(WEEK_START, WEEK_END)
 
     expect(result.ready).toBe(false)
     if (!result.ready) {
-      expect(result.reason).toBe('UNRESOLVED_ERRORS')
+      expect(result.reason).toBe('NOT_APPROVED')
     }
   })
 
-  it('returns NO_UPLOAD when no active upload exists', async () => {
+  it('returns SYNC_FAILED when the last sync failed', async () => {
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload({ status: 'SYNC_FAILED' }))
+
+    const result = await checkAttendanceReadiness(WEEK_START, WEEK_END)
+
+    expect(result.ready).toBe(false)
+    if (!result.ready) {
+      expect(result.reason).toBe('SYNC_FAILED')
+    }
+  })
+
+  it('returns EXCEL_ERA for a week imported from Excel', async () => {
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(
+      makeUpload({ source: 'EXCEL', status: 'READY', payrollWeekSource: 'SHEET_CONTENT' }),
+    )
+
+    const result = await checkAttendanceReadiness(WEEK_START, WEEK_END)
+
+    expect(result.ready).toBe(false)
+    if (!result.ready) {
+      expect(result.reason).toBe('EXCEL_ERA')
+    }
+  })
+
+  it('returns NO_DATA when no active attendance row exists', async () => {
     vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(null)
 
     const result = await checkAttendanceReadiness(WEEK_START, WEEK_END)
 
     expect(result.ready).toBe(false)
     if (!result.ready) {
-      expect(result.reason).toBe('NO_UPLOAD')
+      expect(result.reason).toBe('NO_DATA')
     }
   })
 })
@@ -275,13 +321,18 @@ describe('checkAttendanceReadiness', () => {
 // ─── US-06.3: getPendingAdjustmentsForWeek ────────────────────────────────────
 
 describe('getPendingAdjustmentsForWeek', () => {
-  it('returns 3 pending applications for the week', async () => {
+  it('returns the 3 pending applications of employees included in the week', async () => {
     const pendingItems = [
-      { applicationId: 'app-1', adjustmentType: 'DEDUCTION', appliedAmount: 500 },
-      { applicationId: 'app-2', adjustmentType: 'ADDITION', appliedAmount: 200 },
-      { applicationId: 'app-3', adjustmentType: 'DEDUCTION', appliedAmount: 300 },
+      { applicationId: 'app-1', employeeId: 'emp-1', adjustmentType: 'DEDUCTION', appliedAmount: 500 },
+      { applicationId: 'app-2', employeeId: 'emp-2', adjustmentType: 'ADDITION', appliedAmount: 200 },
+      { applicationId: 'app-3', employeeId: 'emp-1', adjustmentType: 'DEDUCTION', appliedAmount: 300 },
     ]
     vi.mocked(getAdjustmentsForWeekReview).mockResolvedValue(pendingItems as never)
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload())
+    vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([
+      { employeeId: 'emp-1' },
+      { employeeId: 'emp-2' },
+    ] as never)
 
     const result = await getPendingAdjustmentsForWeek(WEEK_START, WEEK_END)
 
@@ -289,8 +340,23 @@ describe('getPendingAdjustmentsForWeek', () => {
     expect(vi.mocked(getAdjustmentsForWeekReview)).toHaveBeenCalledWith(WEEK_START)
   })
 
+  it('leaves out the adjustments of an employee who has no hours in the week', async () => {
+    vi.mocked(getAdjustmentsForWeekReview).mockResolvedValue([
+      { applicationId: 'app-1', employeeId: 'emp-1', adjustmentType: 'DEDUCTION', appliedAmount: 500 },
+      { applicationId: 'app-2', employeeId: 'emp-left-out', adjustmentType: 'DEDUCTION', appliedAmount: 500 },
+    ] as never)
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload())
+    vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([{ employeeId: 'emp-1' }] as never)
+
+    const result = await getPendingAdjustmentsForWeek(WEEK_START, WEEK_END)
+
+    expect(result.map((r) => r.applicationId)).toEqual(['app-1'])
+  })
+
   it('returns empty array when no pending adjustments', async () => {
     vi.mocked(getAdjustmentsForWeekReview).mockResolvedValue([])
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload())
+    vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([{ employeeId: 'emp-1' }] as never)
 
     const result = await getPendingAdjustmentsForWeek(WEEK_START, WEEK_END)
 
@@ -300,71 +366,100 @@ describe('getPendingAdjustmentsForWeek', () => {
 
 // ─── US-06.1: getAvailablePayrollWeeks ───────────────────────────────────────
 
+function makeWeekItem(overrides: Partial<AttendanceWeekListItem> = {}): AttendanceWeekListItem {
+  return {
+    weekId: '2025-03-06',
+    week: { start: '2025-03-06', end: '2025-03-12' },
+    source: 'ETIMEOFFICE',
+    status: 'APPROVED',
+    isSyncing: false,
+    uploadId: 'upload-uuid-1',
+    employeeCount: 2,
+    totalRegularHours: 46,
+    totalOvertimeHours: 6,
+    unresolvedCodes: 0,
+    pendingDecisions: 0,
+    needsFixingDays: 0,
+    lastSyncError: null,
+    lastSyncAttemptAt: null,
+    lastSyncedAt: null,
+    staleNoticeAt: null,
+    fileName: null,
+    payrollStatus: 'NOT_GENERATED',
+    payrollRunId: null,
+    canPullNow: false,
+    canReopen: true,
+    hasEnded: true,
+    ...overrides,
+  }
+}
+
 describe('getAvailablePayrollWeeks', () => {
   it('returns weeks with their attendance statuses', async () => {
-    const week2Start = new Date('2025-02-27T00:00:00.000Z')
-    const week2End = new Date('2025-03-05T00:00:00.000Z')
-
-    vi.mocked(prisma.attendanceUpload.findMany).mockResolvedValue([
-      makeUpload({ payrollWeekStartDate: WEEK_START, payrollWeekEndDate: WEEK_END, status: 'READY' }),
-      makeUpload({
-        id: 'upload-uuid-2',
-        payrollWeekStartDate: week2Start,
-        payrollWeekEndDate: week2End,
-        status: 'READY',
-      }),
+    vi.mocked(listAttendanceWeeks).mockResolvedValue([
+      makeWeekItem(),
+      makeWeekItem({ weekId: '2025-02-27', week: { start: '2025-02-27', end: '2025-03-05' }, uploadId: 'upload-uuid-2' }),
     ])
-    vi.mocked(prisma.payrollRun.findMany).mockResolvedValue([])
-    vi.mocked(prisma.attendanceRecord.groupBy)
-      .mockResolvedValueOnce([
-        { attendanceUploadId: 'upload-uuid-1', employeeId: 'emp-1' },
-        { attendanceUploadId: 'upload-uuid-2', employeeId: 'emp-2' },
-      ] as never)
-      .mockResolvedValueOnce([
-        { attendanceUploadId: 'upload-uuid-1', _sum: { regularHours: 46, overtimeHours: 6 } },
-        { attendanceUploadId: 'upload-uuid-2', _sum: { regularHours: 40, overtimeHours: 0 } },
-      ] as never)
 
     const result = await getAvailablePayrollWeeks()
 
     expect(result).toHaveLength(2)
     expect(result[0].weekId).toBe('2025-03-06')
-    expect(result[0].attendanceStatus).toBe('READY')
+    expect(result[0].weekStart).toEqual(WEEK_START)
+    expect(result[0].weekEnd).toEqual(WEEK_END)
+    expect(result[0].attendanceStatus).toBe('APPROVED')
+    expect(result[0].source).toBe('ETIMEOFFICE')
     expect(result[0].payrollStatus).toBe('NOT_GENERATED')
+    expect(result[0].matchedEmployeeCount).toBe(2)
+    expect(result[0].canGenerate).toBe(true)
   })
 
-  it('marks weeks with blocking errors as ERRORS', async () => {
-    vi.mocked(prisma.attendanceUpload.findMany).mockResolvedValue([
-      makeUpload({ status: 'ERRORS' }),
+  it('does not allow generating a week whose attendance is not approved', async () => {
+    vi.mocked(listAttendanceWeeks).mockResolvedValue([
+      makeWeekItem({ status: 'REVIEW' }),
+      makeWeekItem({ weekId: '2025-02-27', status: 'SYNC_FAILED' }),
+      makeWeekItem({ weekId: '2025-02-20', status: 'NO_DATA', source: null, uploadId: null }),
     ])
-    vi.mocked(prisma.payrollRun.findMany).mockResolvedValue([])
-    vi.mocked(prisma.attendanceRecord.groupBy)
-      .mockResolvedValueOnce([] as never)
-      .mockResolvedValueOnce([] as never)
 
     const result = await getAvailablePayrollWeeks()
 
-    expect(result[0].attendanceStatus).toBe('ERRORS')
+    expect(result.map((w) => w.attendanceStatus)).toEqual(['REVIEW', 'SYNC_FAILED', 'NO_DATA'])
+    expect(result.every((w) => w.canGenerate === false)).toBe(true)
     expect(result[0].payrollStatus).toBe('NOT_GENERATED')
   })
 
+  it('does not allow generating an Excel-era week', async () => {
+    vi.mocked(listAttendanceWeeks).mockResolvedValue([makeWeekItem({ source: 'EXCEL', status: 'APPROVED' })])
+
+    const result = await getAvailablePayrollWeeks()
+
+    expect(result[0].source).toBe('EXCEL')
+    expect(result[0].canGenerate).toBe(false)
+  })
+
   it('marks weeks with approved payroll run as APPROVED', async () => {
-    vi.mocked(prisma.attendanceUpload.findMany).mockResolvedValue([makeUpload({ status: 'READY' })])
-    vi.mocked(prisma.payrollRun.findMany).mockResolvedValue([
-      makePayrollRun({ payrollWeekStartDate: WEEK_START }),
+    vi.mocked(listAttendanceWeeks).mockResolvedValue([
+      makeWeekItem({ payrollStatus: 'APPROVED', payrollRunId: 'run-uuid-1' }),
     ])
-    vi.mocked(prisma.attendanceRecord.groupBy)
-      .mockResolvedValueOnce([] as never)
-      .mockResolvedValueOnce([] as never)
 
     const result = await getAvailablePayrollWeeks()
 
     expect(result[0].payrollStatus).toBe('APPROVED')
     expect(result[0].payrollRunId).toBe('run-uuid-1')
+    expect(result[0].canGenerate).toBe(false)
   })
 })
 
 // ─── US-06.6: approvePayroll ──────────────────────────────────────────────────
+
+// approvePayroll runs in one interactive transaction, so the carry-forward of left-out
+// employees' adjustments commits or rolls back with the approval. In these tests the
+// transaction client is the same mock client.
+function mockInteractiveTransaction() {
+  vi.mocked(prisma.$transaction).mockImplementation((async (arg: unknown) =>
+    typeof arg === 'function' ? arg(prisma) : Promise.all(arg as Promise<unknown>[])) as never)
+  vi.mocked(prisma.payrollAdjustmentApplication.findMany).mockResolvedValue([])
+}
 
 describe('approvePayroll', () => {
   it('creates PayrollRun with status APPROVED, revision 1, and employee records', async () => {
@@ -378,12 +473,7 @@ describe('approvePayroll', () => {
     vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 1 } as any)
     vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 } as any)
 
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => {
-      if (Array.isArray(promises)) {
-        return Promise.all(promises)
-      }
-      return promises as any
-    })
+    mockInteractiveTransaction()
 
     const summary = makeSummary()
     const result = await approvePayroll(summary)
@@ -417,12 +507,7 @@ describe('approvePayroll', () => {
     vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 15 } as any)
     vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 } as any)
 
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => {
-      if (Array.isArray(promises)) {
-        return Promise.all(promises)
-      }
-      return promises as any
-    })
+    mockInteractiveTransaction()
 
     const summary = makeSummary({
       employees: Array(15).fill(null).map((_, i) => ({

@@ -11,7 +11,7 @@ import { AppShell } from '@/components/layout/AppShell'
 import {
   countActiveEmployees,
   getLatestPayrollTotal,
-  countPendingAttendanceErrors,
+  countAttendanceWeeksAwaitingReview,
   countPendingAdjustmentApprovals,
 } from '@/services/dashboard.service'
 import { Suspense } from 'react'
@@ -47,7 +47,7 @@ async function DashboardMetrics() {
       await Promise.all([
         countActiveEmployees(),
         getLatestPayrollTotal(),
-        countPendingAttendanceErrors(),
+        countAttendanceWeeksAwaitingReview(),
         countPendingAdjustmentApprovals(),
       ])
   } catch {
@@ -80,7 +80,7 @@ async function DashboardMetrics() {
       {/* Row 2: Equal 2-column */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
         <DashboardCard
-          label="Pending Attendance Flags"
+          label="Attendance Awaiting Review"
           value={String(attendanceErrors)}
           icon={<WarningIcon size={20} weight="regular" className="text-amber-500" />}
           href="/attendance"
