@@ -1,68 +1,39 @@
+import { Suspense } from 'react'
 import { AppShell } from '@/components/layout/AppShell'
-import { AttendanceUploadClient } from '@/features/attendance-upload/components/AttendanceUploadClient'
-import type { InitialDialogState } from '@/features/attendance-upload/components/AttendanceUploadClient'
-import { getAttendanceUploadsAction } from '@/features/attendance-upload/actions/attendance.actions'
-import { resumeAttendanceUploadSessionAction } from '@/features/attendance-upload/actions/session.actions'
+import { getAttendanceWeeksAction } from '@/features/attendance-sync/actions/attendance-sync.actions'
+import { AttendancePageHeader } from '@/features/attendance-sync/components/AttendancePageHeader'
+import { AttendanceWeekList } from '@/features/attendance-sync/components/AttendanceWeekList'
+import { LoadErrorBanner } from '@/features/attendance-sync/components/LoadErrorBanner'
+import { WeekListSkeleton } from '@/features/attendance-sync/components/WeekListSkeleton'
+import { todayInIST } from '@/features/attendance-sync/lib/week'
 
 export const dynamic = 'force-dynamic'
+// Pull now runs as a server action on this page and waits for eTimeOffice (up to 45 s).
+export const maxDuration = 60
 
 export const metadata = {
-  title: 'Attendance Upload — TPL Payroll',
+  title: 'Attendance — TPL Payroll',
 }
 
-interface Props {
-  searchParams: Promise<{ resumeSession?: string; newEmployeeId?: string }>
-}
-
-export default async function AttendancePage({ searchParams }: Props) {
-  const { resumeSession, newEmployeeId } = await searchParams
-
-  const result = await getAttendanceUploadsAction()
-  const uploads = result.ok ? result.data : []
-
-  // initialDialogState is intentionally LEAN — no records[] array.
-  // Records are fetched client-side by AttendanceUploadClient via
-  // getRecordsFromStorageAction, keeping this RSC prop well under 4.5 MB
-  // even for spreadsheets with hundreds of employees.
-  let initialDialogState: InitialDialogState | null = null
-  if (resumeSession) {
-    const resumeResult = await resumeAttendanceUploadSessionAction(
-      resumeSession,
-      newEmployeeId ?? ''
+async function AttendanceWeeks() {
+  const result = await getAttendanceWeeksAction()
+  if (!result.ok) {
+    return (
+      <>
+        <AttendancePageHeader />
+        <LoadErrorBanner message="Couldn't load attendance weeks." />
+      </>
     )
-    if (resumeResult.ok) {
-      const d = resumeResult.data
-      initialDialogState = {
-        storageKey: d.storageKey,
-        fileName: d.fileName,
-        fileType: d.fileType,
-        payrollWeekStartDate: d.payrollWeekStartDate,
-        payrollWeekEndDate: d.payrollWeekEndDate,
-        payrollWeekSource: d.payrollWeekSource,
-        dialogState: {
-          verificationDecisions: d.verificationDecisions,
-          manualMatchDecisions: d.manualMatchDecisions,
-          rejectedBlockKeys: d.rejectedBlockKeys,
-        },
-      }
-    }
   }
+  return <AttendanceWeekList weeks={result.data} todayISO={todayInIST()} />
+}
 
+export default function AttendancePage() {
   return (
     <AppShell>
-      <div className="mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-          Attendance Upload
-        </h1>
-        <p className="mt-1 text-sm text-zinc-400">
-          Upload weekly attendance files to prepare for payroll generation.
-        </p>
-      </div>
-
-      <AttendanceUploadClient
-        initialUploads={uploads}
-        initialDialogState={initialDialogState}
-      />
+      <Suspense fallback={<WeekListSkeleton />}>
+        <AttendanceWeeks />
+      </Suspense>
     </AppShell>
   )
 }

@@ -1,0 +1,74 @@
+import { Suspense } from 'react'
+import { notFound, redirect } from 'next/navigation'
+import { AppShell } from '@/components/layout/AppShell'
+import { getPunchReviewAction } from '@/features/attendance-sync/actions/attendance-sync.actions'
+import { ExcelWeekView } from '@/features/attendance-sync/components/ExcelWeekView'
+import { LoadErrorBanner } from '@/features/attendance-sync/components/LoadErrorBanner'
+import { PunchReviewGrid } from '@/features/attendance-sync/components/PunchReviewGrid'
+import { ReviewGridSkeleton } from '@/features/attendance-sync/components/ReviewGridSkeleton'
+import { getAttendanceWeekStatus } from '@/features/attendance-sync/lib/review'
+import { parseWeekId, toISODate, toUtcDate } from '@/features/attendance-sync/lib/week'
+import { getExcelWeekData } from '@/features/attendance-sync/services/excel-week.service'
+import { getWeekByStart } from '@/features/attendance-sync/services/week-list.service'
+
+export const dynamic = 'force-dynamic'
+
+export const metadata = {
+  title: 'Punch review — TPL Payroll',
+}
+
+interface Props {
+  params: Promise<{ weekId: string }>
+}
+
+/** Any real calendar date. Excel-era weeks could start on a day other than Thursday. */
+function isCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const date = toUtcDate(value)
+  return !Number.isNaN(date.getTime()) && toISODate(date) === value
+}
+
+async function ReviewContent({ weekId }: { weekId: string }) {
+  const row = await getWeekByStart(toUtcDate(weekId))
+  if (!row) {
+    // No week by that start: a real Thursday just has nothing loaded yet; anything else isn't a payroll week.
+    if (!parseWeekId(weekId)) notFound()
+    redirect('/attendance')
+  }
+
+  // Excel-era weeks open a read-only view: hours per day, no pull, reopen or edit.
+  if (row.source === 'EXCEL') {
+    const data = await getExcelWeekData(row)
+    if (!data) notFound()
+    return <ExcelWeekView data={data} />
+  }
+
+  if (!parseWeekId(weekId)) notFound()
+
+  // Nothing was loaded for this week, so there is nothing to review.
+  const status = getAttendanceWeekStatus(row)
+  if (status === 'NO_DATA' || status === 'SYNC_FAILED') redirect('/attendance')
+
+  const result = await getPunchReviewAction(weekId)
+  if (!result.ok) return <LoadErrorBanner message="Couldn't load this week's punches." />
+
+  // Codes that match no employee are fixed first; the grid can't be finished without them.
+  if (result.data.status === 'REVIEW' && result.data.counts.unresolvedCodes > 0) {
+    redirect(`/attendance/${weekId}/employee-check`)
+  }
+
+  return <PunchReviewGrid initialReview={result.data} backHref="/attendance" backLabel="Attendance" title="Punch review" />
+}
+
+export default async function ReviewPage({ params }: Props) {
+  const { weekId } = await params
+  if (!isCalendarDate(weekId)) notFound()
+
+  return (
+    <AppShell>
+      <Suspense fallback={<ReviewGridSkeleton />}>
+        <ReviewContent weekId={weekId} />
+      </Suspense>
+    </AppShell>
+  )
+}
