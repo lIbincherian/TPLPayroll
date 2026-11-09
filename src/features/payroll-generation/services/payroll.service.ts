@@ -16,6 +16,7 @@ import {
 } from '@/features/payroll-adjustments/services/adjustment.service'
 import { listAttendanceWeeks } from '@/features/attendance-sync/services/week-list.service'
 import { getApprovalSummary } from '@/features/attendance-sync/services/week-approval.service'
+import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
 import { toISODate } from '@/features/attendance-sync/lib/week'
 
 // ─── Pure calculation helpers (exported for unit testing) ────────────────────
@@ -167,9 +168,10 @@ export async function calculatePayroll(
   if (upload.source === 'EXCEL') {
     throw new PayrollServiceError('EXCEL_ERA_WEEK', "Excel-era weeks can't start payroll")
   }
-  if (upload.status !== 'APPROVED') {
+  if (upload.status !== 'APPROVED' || !upload.approvedAt) {
     throw new PayrollServiceError('ATTENDANCE_NOT_APPROVED', "Attendance for this week isn't approved yet")
   }
+  const attendanceApprovedAt = upload.approvedAt
 
   const attendanceRecords = await prisma.attendanceRecord.findMany({
     where: { attendanceUploadId: upload.id },
@@ -299,7 +301,7 @@ export async function calculatePayroll(
     totalNetPayable: employeeRows.reduce((s, r) => s + r.netPayable, 0),
   }
 
-  return { weekStart, weekEnd, employees: employeeRows, totals }
+  return { weekStart, weekEnd, attendanceApprovedAt, employees: employeeRows, totals }
 }
 
 // ─── approvePayroll ───────────────────────────────────────────────────────────
@@ -310,8 +312,10 @@ export async function calculatePayroll(
  * of this payroll. All of it is one transaction, so a carry-forward can never be applied
  * without the approval (or the approval without the carry-forward).
  *
- * The week's attendance is re-checked inside that transaction. The summary was calculated
- * earlier, so if the week was reopened in the meantime the approval must not go through.
+ * The week's attendance is re-checked inside that transaction, under the week's row lock. The
+ * summary was calculated earlier, so if the week was reopened (and approved again, possibly with
+ * different hours) in the meantime the approval must not go through: the summary carries the
+ * attendance's approval time, and it must still match.
  */
 export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePayrollResult> {
   const existing = await prisma.payrollRun.findFirst({
@@ -335,18 +339,18 @@ export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePa
 
   await prisma.$transaction(
     async (tx) => {
-      // The attendance must still be an approved eTimeOffice week. Reopening the week after
-      // the calculation step changes its status back to REVIEW and removes its records.
-      const upload = await tx.attendanceUpload.findFirst({
-        where: {
-          payrollWeekStartDate: weekStart,
-          payrollWeekEndDate: weekEnd,
-          isActiveForPayrollWeek: true,
-        },
-        select: { source: true, status: true },
-      })
+      // The attendance must still be the approved eTimeOffice week the summary was built from.
+      // Reopening the week changes its status back to REVIEW and removes its records; approving
+      // it again stamps a new approval time.
+      const upload = await lockWeekRow(tx, { weekStart })
       if (!upload || upload.source !== 'ETIMEOFFICE' || upload.status !== 'APPROVED') {
         throw new PayrollServiceError('ATTENDANCE_NOT_APPROVED', "Attendance for this week isn't approved yet")
+      }
+      if (!upload.approvedAt || upload.approvedAt.getTime() !== new Date(summary.attendanceApprovedAt).getTime()) {
+        throw new PayrollServiceError(
+          'ATTENDANCE_CHANGED',
+          'Attendance for this week changed after this summary was calculated. Go back and recalculate.',
+        )
       }
 
       // Carry forward first. Skipping moves a left-out employee's pending or approved

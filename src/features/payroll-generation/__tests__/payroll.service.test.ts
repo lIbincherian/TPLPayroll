@@ -30,6 +30,8 @@ vi.mock('@/lib/prisma', () => ({
       updateMany: vi.fn(),
     },
     $transaction: vi.fn(),
+    // The week row lock (lockWeekRow) is a raw SELECT ... FOR UPDATE.
+    $queryRaw: vi.fn(),
   },
 }))
 
@@ -94,7 +96,21 @@ function makeUpload(overrides: Partial<AttendanceUpload> = {}): AttendanceUpload
     staleNoticeAt: null,
     syncLockedAt: null,
     approvedAt: new Date('2025-03-14'),
+    activeWeekStart: WEEK_START,
     ...overrides,
+  }
+}
+
+/** The row `lockWeekRow` returns for an upload. */
+function lockRow(overrides: Partial<AttendanceUpload> = {}) {
+  const upload = makeUpload(overrides)
+  return {
+    id: upload.id,
+    source: upload.source,
+    status: upload.status,
+    syncLockedAt: upload.syncLockedAt,
+    approvedAt: upload.approvedAt,
+    payrollWeekStartDate: upload.payrollWeekStartDate,
   }
 }
 
@@ -160,6 +176,7 @@ function makeSummary(overrides: Partial<PayrollSummary> = {}): PayrollSummary {
   return {
     weekStart: WEEK_START,
     weekEnd: WEEK_END,
+    attendanceApprovedAt: makeUpload().approvedAt as Date,
     employees: [
       {
         employeeId: 'emp-uuid-1',
@@ -818,8 +835,9 @@ function mockInteractiveTransaction() {
   vi.mocked(prisma.$transaction).mockImplementation((async (arg: unknown) =>
     typeof arg === 'function' ? arg(prisma) : Promise.all(arg as Promise<unknown>[])) as never)
   vi.mocked(prisma.payrollAdjustmentApplication.findMany).mockResolvedValue([])
-  // approvePayroll re-checks, inside its transaction, that the week's attendance is still approved.
-  vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload({ status: 'APPROVED' }))
+  // approvePayroll re-checks, inside its transaction and under the week row lock, that the week's
+  // attendance is still the approved one the summary was calculated from.
+  vi.mocked(prisma.$queryRaw).mockResolvedValue([lockRow({ status: 'APPROVED' })] as never)
 }
 
 describe('approvePayroll', () => {
@@ -939,7 +957,7 @@ describe('approvePayroll', () => {
     })
 
     async function expectRefused(upload: Partial<AttendanceUpload> | null) {
-      vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(upload === null ? null : makeUpload(upload))
+      vi.mocked(prisma.$queryRaw).mockResolvedValue((upload === null ? [] : [lockRow(upload)]) as never)
 
       await expect(approvePayroll(makeSummary())).rejects.toMatchObject({
         name: 'PayrollServiceError',
@@ -971,7 +989,7 @@ describe('approvePayroll', () => {
       await expectRefused({ status: 'SYNC_FAILED' })
     })
 
-    it('checks the active attendance row for exactly the summary week', async () => {
+    it('locks the active attendance row for exactly the summary week', async () => {
       vi.mocked(prisma.payrollRun.create).mockResolvedValue(makePayrollRun())
       vi.mocked(prisma.payrollRevision.create).mockResolvedValue(makeRevision())
       vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 1 } as never)
@@ -979,14 +997,9 @@ describe('approvePayroll', () => {
 
       await approvePayroll(makeSummary())
 
-      expect(prisma.attendanceUpload.findFirst).toHaveBeenCalledWith({
-        where: {
-          payrollWeekStartDate: WEEK_START,
-          payrollWeekEndDate: WEEK_END,
-          isActiveForPayrollWeek: true,
-        },
-        select: { source: true, status: true },
-      })
+      // lockWeekRow is a tagged-template raw query: (strings, ...values), the value being the week start.
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1)
+      expect(vi.mocked(prisma.$queryRaw).mock.calls[0].slice(1)).toEqual([WEEK_START])
     })
   })
 

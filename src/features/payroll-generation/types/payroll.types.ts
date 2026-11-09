@@ -67,6 +67,8 @@ export interface PayrollSummaryTotals {
 export interface PayrollSummary {
   weekStart: Date
   weekEnd: Date
+  /** When the week's attendance was approved; approvePayroll refuses a summary whose attendance has since changed. */
+  attendanceApprovedAt: Date
   employees: EmployeePayrollRow[]
   totals: PayrollSummaryTotals
 }
@@ -91,7 +93,8 @@ export class PayrollServiceError extends Error {
       | 'ATTENDANCE_NOT_APPROVED'
       | 'EXCEL_ERA_WEEK'
       | 'NO_EMPLOYEES'
-      | 'PAYROLL_ALREADY_EXISTS',
+      | 'PAYROLL_ALREADY_EXISTS'
+      | 'ATTENDANCE_CHANGED',
     message: string,
   ) {
     super(message)

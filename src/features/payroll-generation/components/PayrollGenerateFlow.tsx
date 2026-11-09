@@ -85,6 +85,7 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
   const handleAdjustmentsContinue = () => {
     startTransition(async () => {
       setSummaryError(null)
+      setApprovalError(null)
       const result = await calculatePayrollAction(weekStart, weekEnd)
       if (result.ok) {
         setSummary(result.data)
@@ -106,6 +107,12 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
       setStep(3)
     } else {
       setApprovalError(result.error)
+      // The attendance changed (or was reopened) since this summary was calculated, so the
+      // summary can't be approved. Send the user back to calculate it again.
+      if (result.code === 'ATTENDANCE_CHANGED' || result.code === 'ATTENDANCE_NOT_APPROVED') {
+        setSummary(null)
+        setStep(1)
+      }
     }
   }
 
@@ -138,12 +145,22 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
         )}
 
         {step === 1 && (
-          <AdjustmentReviewStepWrapper
-            weekStart={weekStart}
-            weekEnd={weekEnd}
-            adjustments={adjustments}
-            onContinue={handleAdjustmentsContinue}
-          />
+          <>
+            {approvalError && (
+              <div
+                role="alert"
+                className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700"
+              >
+                {approvalError}
+              </div>
+            )}
+            <AdjustmentReviewStepWrapper
+              weekStart={weekStart}
+              weekEnd={weekEnd}
+              adjustments={adjustments}
+              onContinue={handleAdjustmentsContinue}
+            />
+          </>
         )}
 
         {step === 2 && (
