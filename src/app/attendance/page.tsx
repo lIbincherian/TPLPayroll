@@ -9,7 +9,9 @@ import { todayInIST } from '@/features/attendance-sync/lib/week'
 
 export const dynamic = 'force-dynamic'
 // Pull now runs as a server action on this page and waits for eTimeOffice (up to 45 s).
-export const maxDuration = 60
+// 45 s API timeout + 30 s save transaction + reads; must stay under SYNC_LOCK_TTL_MS (300 s) so a
+// running pull never loses its lock, and under the Vercel Hobby cap (300 s with Fluid compute).
+export const maxDuration = 120
 
 export const metadata = {
   title: 'Attendance — TPL Payroll',

@@ -4,7 +4,9 @@ import { runScheduledSync } from '@/features/attendance-sync/services/sync.servi
 import { AttendanceSyncError } from '@/features/attendance-sync/types/attendance-sync.types'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 60
+// 45 s API timeout + 30 s save transaction + reads; must stay under SYNC_LOCK_TTL_MS (300 s) so a
+// running pull never loses its lock, and under the Vercel Hobby cap (300 s with Fluid compute).
+export const maxDuration = 120
 
 // Vercel Cron calls this with `Authorization: Bearer <CRON_SECRET>` (see vercel.json).
 export async function GET(request: NextRequest) {

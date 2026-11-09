@@ -149,8 +149,8 @@ describe('sync route with a valid secret', () => {
 })
 
 describe('route configuration', () => {
-  it('is dynamic and allows 60 seconds', () => {
+  it('is dynamic and allows 120 seconds', () => {
     expect(dynamic).toBe('force-dynamic')
-    expect(maxDuration).toBe(60)
+    expect(maxDuration).toBe(120)
   })
 })
