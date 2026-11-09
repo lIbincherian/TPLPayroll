@@ -459,6 +459,8 @@ function mockInteractiveTransaction() {
   vi.mocked(prisma.$transaction).mockImplementation((async (arg: unknown) =>
     typeof arg === 'function' ? arg(prisma) : Promise.all(arg as Promise<unknown>[])) as never)
   vi.mocked(prisma.payrollAdjustmentApplication.findMany).mockResolvedValue([])
+  // approvePayroll re-checks, inside its transaction, that the week's attendance is still approved.
+  vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload({ status: 'APPROVED' }))
 }
 
 describe('approvePayroll', () => {
@@ -470,8 +472,8 @@ describe('approvePayroll', () => {
 
     vi.mocked(prisma.payrollRun.create).mockResolvedValue(createdRun)
     vi.mocked(prisma.payrollRevision.create).mockResolvedValue(createdRevision)
-    vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 1 } as any)
-    vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 } as any)
+    vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 1 } as never)
+    vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 } as never)
 
     mockInteractiveTransaction()
 
@@ -499,13 +501,13 @@ describe('approvePayroll', () => {
       totalNetPayable: 44000 as unknown as PayrollRevision['totalNetPayable'],
     })
 
-    vi.mocked(prisma.payrollRun.create).mockImplementation(async ({ data }: any) => {
+    vi.mocked(prisma.payrollRun.create).mockImplementation((async ({ data }: { data: Record<string, unknown> }) => {
       capturedRunData = data
       return createdRun
-    })
+    }) as never)
     vi.mocked(prisma.payrollRevision.create).mockResolvedValue(createdRevision)
-    vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 15 } as any)
-    vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 } as any)
+    vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 15 } as never)
+    vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 } as never)
 
     mockInteractiveTransaction()
 

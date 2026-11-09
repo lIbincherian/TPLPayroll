@@ -309,6 +309,9 @@ export async function calculatePayroll(
  * approved adjustments, and carry forward the adjustments of employees who were left out
  * of this payroll. All of it is one transaction, so a carry-forward can never be applied
  * without the approval (or the approval without the carry-forward).
+ *
+ * The week's attendance is re-checked inside that transaction. The summary was calculated
+ * earlier, so if the week was reopened in the meantime the approval must not go through.
  */
 export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePayrollResult> {
   const existing = await prisma.payrollRun.findFirst({
@@ -332,6 +335,20 @@ export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePa
 
   await prisma.$transaction(
     async (tx) => {
+      // The attendance must still be an approved eTimeOffice week. Reopening the week after
+      // the calculation step changes its status back to REVIEW and removes its records.
+      const upload = await tx.attendanceUpload.findFirst({
+        where: {
+          payrollWeekStartDate: weekStart,
+          payrollWeekEndDate: weekEnd,
+          isActiveForPayrollWeek: true,
+        },
+        select: { source: true, status: true },
+      })
+      if (!upload || upload.source !== 'ETIMEOFFICE' || upload.status !== 'APPROVED') {
+        throw new PayrollServiceError('ATTENDANCE_NOT_APPROVED', "Attendance for this week isn't approved yet")
+      }
+
       // Carry forward first. Skipping moves a left-out employee's pending or approved
       // application to the next week, so the link step below can never attach it to this run.
       const leftOutApplications = await tx.payrollAdjustmentApplication.findMany({
