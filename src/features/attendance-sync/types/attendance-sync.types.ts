@@ -23,6 +23,7 @@ export type SyncFailureCode =
   | 'TIMEOUT'
   | 'CONFIG_MISSING'
   | 'SYNC_FAILED'
+  | 'WEEK_CHANGED'
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────
 

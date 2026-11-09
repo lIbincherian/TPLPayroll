@@ -20,6 +20,7 @@ export const SYNC_FAILURE_COPY: Record<SyncFailureCode, string> = {
   TIMEOUT: "eTimeOffice didn't answer in time.",
   CONFIG_MISSING: "eTimeOffice login isn't configured.",
   SYNC_FAILED: "Couldn't save the pulled punches.",
+  WEEK_CHANGED: 'The week was approved while the pull was running. Nothing was replaced.',
 }
 
 const MAX_API_MESSAGE_LENGTH = 200

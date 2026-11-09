@@ -528,13 +528,13 @@ describe('pullNow', () => {
   })
 
   it('replaces a week that has edits and decisions, and the PULL audit keeps what was discarded (C5, E2E-30)', async () => {
-    db.attendancePunch.findMany.mockResolvedValue([
+    db.tx.attendancePunch.findMany.mockResolvedValue([
       makePunch({ id: 'e-1', position: 'OUT', originalTime: '17:47', currentTime: '18:00', note: 'Forgot to scan out' }),
       makePunch({ id: 'e-2', pairIndex: 1, position: 'IN', originalTime: null, currentTime: '19:00', source: 'MANUAL' }),
       makePunch({ id: 'e-3', punchDate: utc('2026-11-06'), originalTime: '08:00', currentTime: '08:10' }),
       makePunch({ id: 'ok-1', punchDate: utc('2026-11-07') }),
     ])
-    db.attendanceEmployeeDecision.count.mockResolvedValue(2)
+    db.tx.attendanceEmployeeDecision.count.mockResolvedValue(2)
 
     const outcome = await pullNow('2026-11-05')
 
@@ -564,7 +564,7 @@ describe('pullNow', () => {
     const edited = Array.from({ length: 520 }, (_, i) =>
       makePunch({ id: `e-${i}`, employeeId: `emp-${i}`, originalTime: '08:00', currentTime: '09:00' }),
     )
-    db.attendancePunch.findMany.mockResolvedValue(edited)
+    db.tx.attendancePunch.findMany.mockResolvedValue(edited)
 
     await pullNow('2026-11-05')
 
@@ -574,7 +574,7 @@ describe('pullNow', () => {
   })
 
   it('does not check for edits first: a manual pull goes ahead on an edited week', async () => {
-    db.attendancePunch.findMany.mockResolvedValue([makePunch({ originalTime: '08:00', currentTime: '09:00' })])
+    db.tx.attendancePunch.findMany.mockResolvedValue([makePunch({ originalTime: '08:00', currentTime: '09:00' })])
 
     const outcome = await pullNow('2026-11-05')
 

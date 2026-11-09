@@ -29,6 +29,7 @@ import {
 import { auditEntry } from './attendance-audit.service'
 import { fetchPunchData } from './etimeoffice.client'
 import { getOrCreateApiWeekRow, getWeekByStart } from './week-list.service'
+import { lockWeekRow } from './week-lock.service'
 
 const CREATE_MANY_CHUNK_SIZE = 1000
 const TRANSACTION_TIMEOUT_MS = 30000
@@ -36,28 +37,37 @@ const MAX_AUDITED_EDITS = 500
 
 // ─── Edits and decisions ──────────────────────────────────────────────────────
 
-/** Live punches that were edited or entered by hand, plus the week's employee decisions. */
+interface EditsAndDecisions {
+  hasEdits: boolean
+  editedDays: number
+  decisions: number
+  edits: DiscardedEdit[]
+}
+
+/**
+ * Live punches that were edited or entered by hand, plus the week's employee decisions.
+ * Pass the interactive transaction client as `db` to read inside the caller's transaction.
+ */
 export async function weekHasEditsOrDecisions(
   uploadId: string,
-): Promise<{ hasEdits: boolean; editedDays: number; decisions: number; edits: DiscardedEdit[] }> {
-  const [punches, decisions] = await Promise.all([
-    prisma.attendancePunch.findMany({
-      where: { attendanceUploadId: uploadId, correctionId: null },
-      select: {
-        id: true,
-        employeeId: true,
-        empCode: true,
-        punchDate: true,
-        position: true,
-        source: true,
-        originalTime: true,
-        currentTime: true,
-        note: true,
-        employee: { select: { employeeId: true } },
-      },
-    }),
-    prisma.attendanceEmployeeDecision.count({ where: { attendanceUploadId: uploadId } }),
-  ])
+  db: Prisma.TransactionClient = prisma,
+): Promise<EditsAndDecisions> {
+  const punches = await db.attendancePunch.findMany({
+    where: { attendanceUploadId: uploadId, correctionId: null },
+    select: {
+      id: true,
+      employeeId: true,
+      empCode: true,
+      punchDate: true,
+      position: true,
+      source: true,
+      originalTime: true,
+      currentTime: true,
+      note: true,
+      employee: { select: { employeeId: true } },
+    },
+  })
+  const decisions = await db.attendanceEmployeeDecision.count({ where: { attendanceUploadId: uploadId } })
 
   // originalTime IS DISTINCT FROM currentTime, or a hand-entered punch.
   const edited = punches.filter((p) => p.source === 'MANUAL' || p.originalTime !== p.currentTime)
@@ -189,6 +199,8 @@ export async function syncWeek(input: {
   }
 
   // Take the sync lock. A second caller (cron vs manual) is turned away; a stale lock expires.
+  // maxDuration (120 s) < SYNC_LOCK_TTL_MS (300 s), so a running pull can never lose its lock
+  // to a TTL takeover.
   const lock = await prisma.attendanceUpload.updateMany({
     where: {
       id: row.id,
@@ -244,21 +256,32 @@ export async function syncWeek(input: {
     const rows = buildPunchRowsFromParsed(result.punches, employees, exceptions, week)
     if (rows.length === 0) return await recordFailure('EMPTY', SYNC_FAILURE_COPY.EMPTY)
 
-    const discard = await weekHasEditsOrDecisions(row.id)
     const codeStatus = new Map(rows.map((r) => [r.empCode, r.matchStatus]))
     const codesWith = (status: string) => [...codeStatus.entries()].filter(([, s]) => s === status).map(([code]) => code)
-    const discarded: DiscardSummary | null =
-      discard.editedDays > 0 || discard.decisions > 0
-        ? {
-            editedDays: discard.editedDays,
-            decisions: discard.decisions,
-            edits: discard.edits.slice(0, MAX_AUDITED_EDITS),
-          }
-        : null
+    let discarded: DiscardSummary | null = null
 
     try {
       await prisma.$transaction(
         async (tx) => {
+          // Everything that changes the week takes this row lock first. The week may have been
+          // approved, or edited, while the API call was running; look again now that no other
+          // writer can interleave, and replace nothing if the week is no longer in review.
+          const locked = await lockWeekRow(tx, { id: row.id })
+          if (!locked || locked.status === 'APPROVED') {
+            throw new AttendanceSyncError('WEEK_APPROVED', SYNC_FAILURE_COPY.WEEK_CHANGED)
+          }
+
+          // What is about to be thrown away, read after the lock so it matches what is deleted.
+          const discard = await weekHasEditsOrDecisions(row.id, tx)
+          discarded =
+            discard.editedDays > 0 || discard.decisions > 0
+              ? {
+                  editedDays: discard.editedDays,
+                  decisions: discard.decisions,
+                  edits: discard.edits.slice(0, MAX_AUDITED_EDITS),
+                }
+              : null
+
           await tx.attendancePunch.deleteMany({ where: { attendanceUploadId: row.id, correctionId: null } })
           await tx.attendanceEmployeeDecision.deleteMany({ where: { attendanceUploadId: row.id } })
           // Defensive: a week in review has no attendance records.
@@ -313,6 +336,9 @@ export async function syncWeek(input: {
       )
       lockReleased = true
     } catch (error) {
+      if (error instanceof AttendanceSyncError && error.code === 'WEEK_APPROVED') {
+        return await recordFailure('WEEK_CHANGED', SYNC_FAILURE_COPY.WEEK_CHANGED)
+      }
       console.error('[AttendanceSync] Saving the pulled punches failed:', error instanceof Error ? error.message : error)
       return await recordFailure('SYNC_FAILED', SYNC_FAILURE_COPY.SYNC_FAILED)
     }
