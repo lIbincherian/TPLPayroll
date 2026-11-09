@@ -154,6 +154,28 @@ describe('countAttendanceWeeksAwaitingReview', () => {
 
     expect(result).toBe(0)
   })
+
+  it('never counts approved weeks, Excel-era weeks or superseded rows', async () => {
+    vi.mocked(prisma.attendanceUpload.count).mockResolvedValue(0)
+
+    await countAttendanceWeeksAwaitingReview()
+
+    const where = vi.mocked(prisma.attendanceUpload.count).mock.calls[0][0]?.where as {
+      isActiveForPayrollWeek: boolean
+      source: string
+      status: { in: string[] }
+    }
+    expect(where.source).toBe('ETIMEOFFICE') // Excel-era rows (READY / ERRORS) are read-only
+    expect(where.isActiveForPayrollWeek).toBe(true)
+    expect(where.status.in.sort()).toEqual(['REVIEW', 'SYNC_FAILED'])
+    expect(where.status.in).not.toContain('APPROVED')
+  })
+
+  it('propagates a database failure instead of showing a count of 0', async () => {
+    vi.mocked(prisma.attendanceUpload.count).mockRejectedValue(new Error('db down'))
+
+    await expect(countAttendanceWeeksAwaitingReview()).rejects.toThrow('db down')
+  })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
