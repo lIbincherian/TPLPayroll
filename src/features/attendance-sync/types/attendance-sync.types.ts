@@ -375,4 +375,7 @@ export class AttendanceSyncError extends Error {
   }
 }
 
-export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string; code?: string }
+export type ActionResult<T> =
+  | { ok: true; data: T }
+  // `validation` accompanies VALIDATION_ERROR from savePunchEditAction so the editor can mark the field.
+  | { ok: false; error: string; code?: string; validation?: DayValidation }
