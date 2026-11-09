@@ -343,14 +343,32 @@ export async function seedEmployeesForSync() {
 
 // ─── F12 verification helpers ─────────────────────────────────────────────────
 
-export async function getWeekRow(weekStartISO: string) {
+// Reads retry on the errors the local PGlite database throws when two clients (the app server and
+// this test process) talk to it at the same moment. Real Postgres never does this.
+const TRANSIENT_DB_ERROR = /bind message supplies|Connection terminated|ECONNRESET|prepared statement/
+
+async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let lastError: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn()
+    } catch (error) {
+      lastError = error
+      if (!TRANSIENT_DB_ERROR.test((error as Error)?.message ?? '')) throw error
+      await new Promise((resolve) => setTimeout(resolve, 400 * (i + 1)))
+    }
+  }
+  throw lastError
+}
+
+async function getWeekRowOnce(weekStartISO: string) {
   return prisma.attendanceUpload.findFirst({
     where: { payrollWeekStartDate: utcDate(weekStartISO), isActiveForPayrollWeek: true },
   })
 }
 
 /** Live punches of a week (or a correction clone), with the employee's code, ordered by day and slot. */
-export async function getPunchRows(
+async function getPunchRowsOnce(
   weekStartISO: string,
   opts: { correctionId?: string | null; employeeCode?: string; empCode?: string; date?: string } = {},
 ) {
@@ -383,14 +401,14 @@ export async function getPunchRows(
   }))
 }
 
-export async function getAuditRows(entityType?: string, actionType?: string) {
+async function getAuditRowsOnce(entityType?: string, actionType?: string) {
   return prisma.auditLog.findMany({
     where: { ...(entityType ? { entityType } : {}), ...(actionType ? { actionType } : {}) },
     orderBy: { createdAt: 'asc' },
   })
 }
 
-export async function getDecisionRows(weekStartISO: string) {
+async function getDecisionRowsOnce(weekStartISO: string) {
   const week = await getWeekRow(weekStartISO)
   if (!week) return []
   const rows = await prisma.attendanceEmployeeDecision.findMany({
@@ -400,13 +418,13 @@ export async function getDecisionRows(weekStartISO: string) {
   return rows.map((r) => ({ employeeCode: r.employee.employeeId, reason: r.reason, decision: r.decision }))
 }
 
-export async function getCodeExceptions() {
+async function getCodeExceptionsOnce() {
   const rows = await prisma.attendanceCodeException.findMany({ include: { employee: { select: { employeeId: true } } } })
   return rows.map((r) => ({ empCode: r.empCode, kind: r.kind, employeeCode: r.employee?.employeeId ?? null }))
 }
 
 /** AttendanceRecord hours of a week, optionally for one employee. */
-export async function getAttendanceRecordHours(weekStartISO: string, employeeCode?: string) {
+async function getAttendanceRecordHoursOnce(weekStartISO: string, employeeCode?: string) {
   const week = await getWeekRow(weekStartISO)
   if (!week) return []
   const rows = await prisma.attendanceRecord.findMany({
@@ -422,7 +440,7 @@ export async function getAttendanceRecordHours(weekStartISO: string, employeeCod
   }))
 }
 
-export async function getRevisions(payrollRunId: string) {
+async function getRevisionsOnce(payrollRunId: string) {
   const rows = await prisma.payrollRevision.findMany({ where: { payrollRunId }, orderBy: { revisionNumber: 'asc' } })
   return rows.map((r) => ({
     id: r.id,
@@ -434,7 +452,7 @@ export async function getRevisions(payrollRunId: string) {
   }))
 }
 
-export async function getRevisionEmployees(revisionId: string) {
+async function getRevisionEmployeesOnce(revisionId: string) {
   const rows = await prisma.payrollRunEmployee.findMany({
     where: { payrollRevisionId: revisionId },
     include: { employee: { select: { employeeId: true } } },
@@ -447,9 +465,19 @@ export async function getRevisionEmployees(revisionId: string) {
   }))
 }
 
-export async function getCorrectionSessions(payrollRunId: string) {
+async function getCorrectionSessionsOnce(payrollRunId: string) {
   return prisma.payrollCorrectionSession.findMany({ where: { payrollRunId }, orderBy: { createdAt: 'asc' } })
 }
+
+export const getWeekRow = (...args: Parameters<typeof getWeekRowOnce>) => withRetry(() => getWeekRowOnce(...args))
+export const getPunchRows = (...args: Parameters<typeof getPunchRowsOnce>) => withRetry(() => getPunchRowsOnce(...args))
+export const getAuditRows = (...args: Parameters<typeof getAuditRowsOnce>) => withRetry(() => getAuditRowsOnce(...args))
+export const getDecisionRows = (...args: Parameters<typeof getDecisionRowsOnce>) => withRetry(() => getDecisionRowsOnce(...args))
+export const getCodeExceptions = (...args: Parameters<typeof getCodeExceptionsOnce>) => withRetry(() => getCodeExceptionsOnce(...args))
+export const getAttendanceRecordHours = (...args: Parameters<typeof getAttendanceRecordHoursOnce>) => withRetry(() => getAttendanceRecordHoursOnce(...args))
+export const getRevisions = (...args: Parameters<typeof getRevisionsOnce>) => withRetry(() => getRevisionsOnce(...args))
+export const getRevisionEmployees = (...args: Parameters<typeof getRevisionEmployeesOnce>) => withRetry(() => getRevisionEmployeesOnce(...args))
+export const getCorrectionSessions = (...args: Parameters<typeof getCorrectionSessionsOnce>) => withRetry(() => getCorrectionSessionsOnce(...args))
 
 export async function seedAdjustmentTestData() {
   try {

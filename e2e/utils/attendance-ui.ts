@@ -26,6 +26,7 @@ export function weekRow(page: Page, weekStart: string): Locator {
 }
 
 export async function openAttendance(page: Page): Promise<void> {
+  await settled(page)
   await page.goto('/attendance')
   await expect(page.getByTestId('attendance-week-list')).toBeVisible({ timeout: 15000 })
 }
@@ -42,6 +43,7 @@ export async function pullWeekFromList(page: Page, weekStart: string, opts: { co
 // ─── Review grid ─────────────────────────────────────────────────────────────
 
 export async function openReview(page: Page, weekStart: string): Promise<void> {
+  await settled(page)
   await page.goto(`/attendance/${weekStart}/review`)
   await expect(page.getByTestId('punch-review')).toBeVisible({ timeout: 15000 })
 }
@@ -95,4 +97,13 @@ export async function approveWeekInUi(page: Page): Promise<void> {
 /** The seven hours texts of a day cell: "08:00–16:00" lines and the "8.00" totals line. */
 export async function cellText(page: Page, employeeCode: string, date: string): Promise<string> {
   return ((await dayCell(page, employeeCode, date).innerText()) ?? '').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Wait until the page has no request in flight. Several controls update optimistically and save in
+ * the background; read the database only after this, so the test never races the server (the local
+ * Postgres serves one busy client at a time).
+ */
+export async function settled(page: Page): Promise<void> {
+  await page.waitForLoadState('networkidle', { timeout: 15000 })
 }
