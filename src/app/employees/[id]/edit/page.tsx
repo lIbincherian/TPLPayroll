@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { AppShell } from '@/components/layout/AppShell'
 import { EmployeeForm } from '@/features/employee-management/components/EmployeeForm'
 import { getEmployeeById, getEmployeeWageHistory } from '@/features/employee-management/services/employee.service'
+import { buildEditReturnContext } from '@/features/employee-management/lib/return-context'
 import { EmployeeServiceError } from '@/features/employee-management/types/employee.types'
 
 export const dynamic = 'force-dynamic'
@@ -9,6 +10,8 @@ export const dynamic = 'force-dynamic'
 
 interface EditEmployeePageProps {
   params: Promise<{ id: string }>
+  // The attendance employee check sends returnTo so the form can send people back.
+  searchParams: Promise<{ returnTo?: string }>
 }
 
 export async function generateMetadata({ params }: EditEmployeePageProps) {
@@ -23,8 +26,9 @@ export async function generateMetadata({ params }: EditEmployeePageProps) {
   }
 }
 
-export default async function EditEmployeePage({ params }: EditEmployeePageProps) {
+export default async function EditEmployeePage({ params, searchParams }: EditEmployeePageProps) {
   const { id } = await params
+  const { returnTo } = await searchParams
 
   let employee
   let wageHistory
@@ -50,6 +54,7 @@ export default async function EditEmployeePage({ params }: EditEmployeePageProps
         employee={employee}
         currentSalary={currentWage?.weeklySalary}
         currentHourlyRate={currentWage?.hourlyRate}
+        returnContext={buildEditReturnContext({ returnTo })}
       />
     </AppShell>
   )
