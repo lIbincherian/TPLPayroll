@@ -45,6 +45,11 @@ export function getEtimeofficeConfig(): EtimeofficeConfig {
   return { mode: 'MISSING' }
 }
 
+/** True only when the in-app mock API may answer: the same rule that makes fetchPunchData call it. */
+export function isMockEtimeofficeEnabled(): boolean {
+  return getEtimeofficeConfig().mode === 'MOCK'
+}
+
 function failure(code: SyncFailureCode): SyncClassification {
   return { ok: false, code, message: SYNC_FAILURE_COPY[code] }
 }

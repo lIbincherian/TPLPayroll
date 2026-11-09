@@ -3,11 +3,12 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { addDaysISO, todayInIST } from '@/features/attendance-sync/lib/week'
+import { isMockEtimeofficeEnabled } from '@/features/attendance-sync/services/etimeoffice.client'
 
 export const dynamic = 'force-dynamic'
 
 // In-app stand-in for eTimeOffice's DownloadPunchDataMCID, used in local dev and e2e only.
-// Disabled whenever a real login is configured or the app runs on Vercel.
+// Disabled whenever the eTimeOffice client is not in MOCK mode (a login is configured, or Vercel).
 //
 // e2e tests steer it by writing `scenario.json` to the OS temp directory:
 //   { status: number, body: unknown, delayMs?: number }
@@ -61,7 +62,7 @@ function buildDefaultBody(from: string, to: string) {
 }
 
 export async function GET(request: NextRequest) {
-  if (process.env.ETIMEOFFICE_CORPORATE_ID || process.env.VERCEL) {
+  if (!isMockEtimeofficeEnabled()) {
     return new NextResponse('Mock eTimeOffice disabled', { status: 403 })
   }
 
