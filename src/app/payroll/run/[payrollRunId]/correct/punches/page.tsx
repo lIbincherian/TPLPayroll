@@ -1,13 +1,9 @@
 import { notFound, redirect } from 'next/navigation'
-import Link from 'next/link'
-import { ArrowLeft } from '@phosphor-icons/react/dist/ssr'
 import prisma from '@/lib/prisma'
 import { AppShell } from '@/components/layout/AppShell'
 import { getActiveCorrection } from '@/features/payroll-correction/services/correction.service'
-import { CorrectionPunchesActions } from '@/features/payroll-correction/components/CorrectionPunchesActions'
-import { CorrectionPunchesList } from '@/features/payroll-correction/components/CorrectionPunchesList'
+import { PunchReviewGrid } from '@/features/attendance-sync/components/PunchReviewGrid'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
-import { formatWeekLabel } from '@/features/attendance-sync/lib/week'
 import { AttendanceSyncError } from '@/features/attendance-sync/types/attendance-sync.types'
 
 export const dynamic = 'force-dynamic'
@@ -49,30 +45,13 @@ export default async function CorrectionPunchesPage({ params }: Props) {
 
   return (
     <AppShell>
-      <main className="mx-auto max-w-6xl px-4 py-12">
-        <Link
-          href={`/payroll/run/${payrollRunId}/correct`}
-          className="mb-6 flex items-center gap-1.5 text-sm text-zinc-500 transition-colors hover:text-zinc-700"
-        >
-          <ArrowLeft size={16} />
-          Reason
-        </Link>
-
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Correct punches</h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          {formatWeekLabel(review.week)} · Revision {run.currentRevisionNumber} current
-        </p>
-
-        <div className="mt-6 space-y-6">
-          <CorrectionPunchesActions
-            payrollRunId={payrollRunId}
-            currentRevisionNumber={run.currentRevisionNumber}
-            needsFixingDays={review.counts.needsFixingDays}
-            reason={session.correctionReason}
-          />
-          <CorrectionPunchesList review={review} />
-        </div>
-      </main>
+      <PunchReviewGrid
+        initialReview={review}
+        backHref={`/payroll/run/${payrollRunId}/correct`}
+        backLabel="Reason"
+        title="Correct punches"
+        correctionReason={session.correctionReason}
+      />
     </AppShell>
   )
 }
