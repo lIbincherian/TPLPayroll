@@ -1,154 +1,88 @@
 import { test, expect } from '@playwright/test'
+import prisma from '../utils/db'
 
-// ─── About Settings E2E ───────────────────────────────────────────────────────
-// The Settings table uses a singleton row (id = "singleton") that is auto-created
-// on first access via upsert. cleanupDatabase() intentionally does NOT truncate
-// the Settings table, so the row persists across test runs.
-//
-// Because tests can affect each other (each save mutates shared DB state), every
-// test that changes the day resets it back to THURSDAY at the end so the suite
-// remains order-independent.
+// ─── About Settings E2E (F12: the payroll week start is locked to Thursday) ──────
+// The Settings table uses a singleton row (id = "singleton") that is auto-created on first
+// access via upsert. cleanupDatabase() intentionally does NOT truncate it. The page is read-only
+// now: the week start shows Thursday with a lock, and there is nothing to save.
 
-// ─── E2E-01: View current settings ───────────────────────────────────────────
+async function setStoredDay(day: string) {
+  await prisma.settings.upsert({
+    where: { id: 'singleton' },
+    create: { id: 'singleton', payrollWeekStartDay: day as never },
+    update: { payrollWeekStartDay: day as never },
+  })
+}
 
-test.describe('E2E-01: View current settings', () => {
-  test.beforeEach(async ({ page }) => {
-    // Ensure we start from the known default (THURSDAY) before each test in this block.
-    // Navigate and set to THURSDAY if it isn't already.
+async function storedDay() {
+  return (await prisma.settings.findUnique({ where: { id: 'singleton' } }))?.payrollWeekStartDay
+}
+
+test.beforeEach(async () => {
+  await setStoredDay('THURSDAY')
+})
+
+test.afterAll(async () => {
+  await setStoredDay('THURSDAY')
+})
+
+// ─── E2E-29: Payroll week start is locked to Thursday ────────────────────────
+
+test.describe('E2E-29: Payroll week start is locked to Thursday', () => {
+  test('shows Thursday as a locked, read-only value with no control to change it', async ({ page }) => {
     await page.goto('/settings')
     await expect(page.locator('h1:has-text("Settings")')).toBeVisible({ timeout: 10000 })
 
-    const currentValue = await page.locator('select#payrollWeekStartDay').inputValue()
-    if (currentValue !== 'THURSDAY') {
-      await page.selectOption('select#payrollWeekStartDay', 'THURSDAY')
-      await page.click('button:has-text("Save Settings")')
-      await expect(
-        page.locator('[data-sonner-toast]').filter({ hasText: 'Settings saved successfully' }),
-      ).toBeVisible({ timeout: 5000 })
-    }
+    const day = page.getByTestId('payroll-week-start-day')
+    await expect(day).toBeVisible()
+    await expect(day).toContainText('Thursday')
+    await expect(day).toContainText('Locked')
+
+    // Nothing on the page can change it
+    await expect(page.locator('select')).toHaveCount(0)
+    await expect(page.locator('select#payrollWeekStartDay')).toHaveCount(0)
+    await expect(page.locator('main input, main textarea')).toHaveCount(0)
+    await expect(page.getByRole('combobox')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /Save Settings/ })).toHaveCount(0)
+    await expect(page.getByText('The payroll week runs Thursday to Wednesday')).toBeVisible()
   })
 
-  test('shows h1 heading, Thursday as default day, read-only currency, and expiry threshold', async ({
-    page,
-  }) => {
+  test('keeps the other read-only settings: currency and expiry threshold', async ({ page }) => {
     await page.goto('/settings')
-
-    // Page heading
-    await expect(page.locator('h1:has-text("Settings")')).toBeVisible()
-
-    // Payroll week start day defaults to Thursday
-    const select = page.locator('select#payrollWeekStartDay')
-    await expect(select).toBeVisible()
-    await expect(select).toHaveValue('THURSDAY')
-
-    // Currency is displayed as ₹ INR (read-only text)
+    await expect(page.locator('h1:has-text("Settings")')).toBeVisible({ timeout: 10000 })
     await expect(page.locator('text=₹ INR')).toBeVisible()
-
-    // Document expiry threshold is shown as 7 days (read-only)
     await expect(page.locator('text=7 days')).toBeVisible()
-
-    // Phase 2 badge is visible next to the threshold
     await expect(page.locator('text=Phase 2')).toBeVisible()
   })
-})
 
-// ─── E2E-02: Change payroll week start day ────────────────────────────────────
+  test('a stored value that is not Thursday is changed to Thursday when the page loads', async ({ page }) => {
+    await setStoredDay('MONDAY')
+    expect(await storedDay()).toBe('MONDAY')
 
-test.describe('E2E-02: Change payroll week start day', () => {
-  test('selects Monday, saves, and shows success toast with Monday selected', async ({ page }) => {
     await page.goto('/settings')
     await expect(page.locator('h1:has-text("Settings")')).toBeVisible({ timeout: 10000 })
-
-    // Select Monday from the dropdown
-    await page.selectOption('select#payrollWeekStartDay', 'MONDAY')
-
-    // Click Save Settings
-    await page.click('button:has-text("Save Settings")')
-
-    // Success toast should appear
-    const toast = page
-      .locator('[data-sonner-toast]')
-      .filter({ hasText: 'Settings saved successfully' })
-    await expect(toast).toBeVisible({ timeout: 5000 })
-
-    // The select should now reflect Monday
-    await expect(page.locator('select#payrollWeekStartDay')).toHaveValue('MONDAY')
-
-    // Reset back to THURSDAY for subsequent tests
-    await page.selectOption('select#payrollWeekStartDay', 'THURSDAY')
-    await page.click('button:has-text("Save Settings")')
-    await expect(
-      page.locator('[data-sonner-toast]').filter({ hasText: 'Settings saved successfully' }),
-    ).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('payroll-week-start-day')).toContainText('Thursday')
+    expect(await storedDay()).toBe('THURSDAY')
   })
-})
 
-// ─── E2E-03: Settings persist across page reload ──────────────────────────────
-
-test.describe('E2E-03: Settings persist across navigation', () => {
-  test('Monday selection survives navigation away and back', async ({ page }) => {
-    // Step 1: Navigate to settings and set day to Monday
+  test('no keyboard or form route changes it: pressing Enter on the page submits nothing', async ({ page }) => {
     await page.goto('/settings')
     await expect(page.locator('h1:has-text("Settings")')).toBeVisible({ timeout: 10000 })
-
-    await page.selectOption('select#payrollWeekStartDay', 'MONDAY')
-    await page.click('button:has-text("Save Settings")')
-    await expect(
-      page.locator('[data-sonner-toast]').filter({ hasText: 'Settings saved successfully' }),
-    ).toBeVisible({ timeout: 5000 })
-
-    // Step 2: Navigate to a different page
-    await page.goto('/')
-
-    // Step 3: Return to settings — selection must still be Monday (DB persisted)
-    await page.goto('/settings')
-    await expect(page.locator('h1:has-text("Settings")')).toBeVisible({ timeout: 10000 })
-
-    await expect(page.locator('select#payrollWeekStartDay')).toHaveValue('MONDAY')
-
-    // Cleanup: reset to THURSDAY for subsequent tests
-    await page.selectOption('select#payrollWeekStartDay', 'THURSDAY')
-    await page.click('button:has-text("Save Settings")')
-    await expect(
-      page.locator('[data-sonner-toast]').filter({ hasText: 'Settings saved successfully' }),
-    ).toBeVisible({ timeout: 5000 })
+    await expect(page.locator('form')).toHaveCount(0)
+    await page.keyboard.press('Enter')
+    await expect(page.getByTestId('payroll-week-start-day')).toContainText('Thursday')
+    expect(await storedDay()).toBe('THURSDAY')
   })
-})
 
-// ─── E2E-04: Save button disabled during submit ───────────────────────────────
-
-test.describe('E2E-04: Save button disabled during submit', () => {
-  test('button is disabled while save is in progress and re-enables after completion', async ({
-    page,
-  }) => {
-    await page.goto('/settings')
-    await expect(page.locator('h1:has-text("Settings")')).toBeVisible({ timeout: 10000 })
-
-    const saveBtn = page.locator('button:has-text("Save Settings")')
-
-    // Button must be enabled before submitting
-    await expect(saveBtn).toBeEnabled()
-
-    // Click the button and immediately capture the disabled state.
-    // useTransition sets isPending = true synchronously when the transition
-    // starts, making the button disabled until the server action resolves.
-    await saveBtn.click()
-
-    // While isPending the button text changes to "Saving…" and it becomes
-    // disabled. We assert both the in-flight state and the post-save state.
-    // The "Saving…" state may be brief, so we check whichever is still true:
-    // either the spinner text is visible OR the button is already re-enabled
-    // (which means it passed through the disabled state and completed).
-    // The authoritative assertion is that after the toast appears the button
-    // is re-enabled with the original label.
-
-    // Wait for save to complete (success toast is the completion signal)
-    await expect(
-      page.locator('[data-sonner-toast]').filter({ hasText: 'Settings saved successfully' }),
-    ).toBeVisible({ timeout: 5000 })
-
-    // After completion: button is re-enabled and label restored
-    await expect(saveBtn).toBeEnabled()
-    await expect(saveBtn).toHaveText('Save Settings')
+  test('the week list follows the locked Thursday: week rows start on a Thursday', async ({ page }) => {
+    await page.goto('/attendance')
+    await expect(page.getByTestId('attendance-week-list')).toBeVisible({ timeout: 15000 })
+    const ids = await page.locator('[data-testid^="week-row-"]').evaluateAll((rows) =>
+      rows.map((r) => (r.getAttribute('data-testid') ?? '').replace('week-row-', '')),
+    )
+    expect(ids.length).toBeGreaterThan(0)
+    for (const id of ids) {
+      expect(new Date(`${id}T00:00:00Z`).getUTCDay(), id).toBe(4)
+    }
   })
 })
