@@ -20,6 +20,7 @@ import {
   makeSession,
   makeUpload,
   resetDb,
+  serveUpload,
   utc,
   WEEK_DATES,
   type Db,
@@ -67,10 +68,12 @@ function save(pairs: SavePair[], over: Partial<Parameters<typeof savePunchEdit>[
 
 function expectNoWrites() {
   expect(db.$transaction).not.toHaveBeenCalled()
-  expect(db.attendancePunch.create).not.toHaveBeenCalled()
-  expect(db.attendancePunch.update).not.toHaveBeenCalled()
-  expect(db.attendancePunch.delete).not.toHaveBeenCalled()
-  expect(db.auditLog.create).not.toHaveBeenCalled()
+  for (const client of [db, db.tx]) {
+    expect(client.attendancePunch.create).not.toHaveBeenCalled()
+    expect(client.attendancePunch.update).not.toHaveBeenCalled()
+    expect(client.attendancePunch.delete).not.toHaveBeenCalled()
+    expect(client.auditLog.create).not.toHaveBeenCalled()
+  }
 }
 
 beforeEach(() => {
@@ -79,7 +82,7 @@ beforeEach(() => {
   fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('the real network must not be used'))
   // Friday 13 Nov 2026, IST: the 5-11 Nov week has ended.
   freezeClock('2026-11-13T03:00:00Z')
-  db.attendanceUpload.findFirst.mockResolvedValue(makeUpload({ id: 'upload-1', status: 'REVIEW' }))
+  serveUpload(db, makeUpload({ id: 'upload-1', status: 'REVIEW' }))
   seed([])
 })
 
@@ -410,7 +413,7 @@ describe('savePunchEdit: changing a time', () => {
     expect(stored).toMatchObject({ originalTime: '17:47', currentTime: '18:00', source: 'API' })
     expect(result.day.changes).toEqual([{ punchId: 'p-3', original: '17:47', current: '18:00', note: null, kind: 'EDITED' }])
     // The other punches were not touched.
-    expect(db.attendancePunch.update).toHaveBeenCalledTimes(1)
+    expect(db.tx.attendancePunch.update).toHaveBeenCalledTimes(1)
   })
 
   it('saves without a note (US-12.20)', async () => {
@@ -446,11 +449,12 @@ describe('savePunchEdit: changing a time', () => {
     await save(fullDayPairs('18:00'))
 
     expect(db.$transaction).toHaveBeenCalledTimes(1)
-    const [ops, options] = db.$transaction.mock.calls[0]
-    expect(ops).toHaveLength(2) // the punch update and its audit row
-    expect(options).toEqual({ timeout: 30000 })
+    expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 30000 })
+    // The punch update and its audit row are both written on the transaction client.
+    expect(db.tx.attendancePunch.update).toHaveBeenCalledTimes(1)
+    expect(db.auditLog.create).not.toHaveBeenCalled()
 
-    const audits = auditRows(db)
+    const audits = auditRows(db.tx)
     expect(audits).toHaveLength(1)
     expect(audits[0]).toMatchObject({ actionType: 'UPDATE', entityType: 'ATTENDANCE_PUNCH', entityId: 'p-3' })
     expect(audits[0].detailsJson).toMatchObject({
@@ -535,8 +539,8 @@ describe('savePunchEdit: changing a time', () => {
 
     await save(pairs)
 
-    expect(db.attendancePunch.create).not.toHaveBeenCalled()
-    expect(db.attendancePunch.update).toHaveBeenCalledTimes(1)
+    expect(db.tx.attendancePunch.create).not.toHaveBeenCalled()
+    expect(db.tx.attendancePunch.update).toHaveBeenCalledTimes(1)
     expect(store.rows.find((r) => r.id === 'p-0')).toMatchObject({ currentTime: '07:45', originalTime: '07:40' })
   })
 
@@ -545,7 +549,7 @@ describe('savePunchEdit: changing a time', () => {
 
     const result = await save([pair(5, { punchId: 'p-0', time: '08:30' }, { punchId: 'p-1', time: '12:00' })])
 
-    expect(db.attendancePunch.create).not.toHaveBeenCalled()
+    expect(db.tx.attendancePunch.create).not.toHaveBeenCalled()
     expect(result.day.pairs.map((p) => p.pairIndex)).toEqual([0])
     expect(result.day).toMatchObject({ regularHours: 3.5 })
   })
@@ -561,8 +565,8 @@ describe('savePunchEdit: adding and deleting', () => {
     ])
 
     expect(result.day.regularHours).toBe(5)
-    expect(db.attendancePunch.create).toHaveBeenCalledTimes(2)
-    expect(db.attendancePunch.create).toHaveBeenCalledWith({
+    expect(db.tx.attendancePunch.create).toHaveBeenCalledTimes(2)
+    expect(db.tx.attendancePunch.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         id: expect.any(String),
         attendanceUploadId: 'upload-1',
@@ -592,14 +596,14 @@ describe('savePunchEdit: adding and deleting', () => {
       pair(1, { time: '13:00', note: 'Worked late' }, { time: '14:00' }),
     ])
 
-    const audits = auditRows(db)
+    const audits = auditRows(db.tx)
     expect(audits.map((a) => a.actionType)).toEqual(['CREATE', 'CREATE'])
     expect(audits[0].detailsJson).toMatchObject({
       summary: 'Added IN 13:00 for Asha Rao (TPLGOAHLP036) on 2026-11-05',
       old: null,
       new: { time: '13:00', note: 'Worked late' },
     })
-    expect(audits[0].entityId).toBe(db.attendancePunch.create.mock.calls[0][0].data.id)
+    expect(audits[0].entityId).toBe(db.tx.attendancePunch.create.mock.calls[0][0].data.id)
   })
 
   it('deletes a pair: API punches keep their original with no current time, and hours drop (US-12.17)', async () => {
@@ -610,13 +614,13 @@ describe('savePunchEdit: adding and deleting', () => {
     expect(result.day.regularHours).toBe(4)
     expect(store.rows.find((r) => r.id === 'p-2')).toMatchObject({ originalTime: '13:00', currentTime: null })
     expect(store.rows.find((r) => r.id === 'p-3')).toMatchObject({ originalTime: '14:00', currentTime: null })
-    expect(db.attendancePunch.delete).not.toHaveBeenCalled()
+    expect(db.tx.attendancePunch.delete).not.toHaveBeenCalled()
     expect(result.day.changes.filter((c) => c.kind === 'DELETED').map((c) => c.punchId)).toEqual(['p-2', 'p-3'])
-    expect(auditRows(db).map((a) => [a.actionType, a.entityId])).toEqual([
+    expect(auditRows(db.tx).map((a) => [a.actionType, a.entityId])).toEqual([
       ['DELETE', 'p-2'],
       ['DELETE', 'p-3'],
     ])
-    expect(auditRows(db)[0].detailsJson).toMatchObject({ old: { time: '13:00', note: null }, new: null })
+    expect(auditRows(db.tx)[0].detailsJson).toMatchObject({ old: { time: '13:00', note: null }, new: null })
   })
 
   it('treats a cleared time like a delete', async () => {
@@ -641,10 +645,10 @@ describe('savePunchEdit: adding and deleting', () => {
 
     const result = await save([pair(0, { punchId: 'p-0', time: '08:00' }, { punchId: 'p-1', time: '12:00' })])
 
-    expect(db.attendancePunch.delete).toHaveBeenCalledTimes(2)
+    expect(db.tx.attendancePunch.delete).toHaveBeenCalledTimes(2)
     expect(store.rows.map((r) => r.id)).toEqual(['p-0', 'p-1'])
     expect(result.day).toMatchObject({ regularHours: 4, isEdited: false })
-    expect(auditRows(db).map((a) => a.actionType)).toEqual(['DELETE', 'DELETE'])
+    expect(auditRows(db.tx).map((a) => a.actionType)).toEqual(['DELETE', 'DELETE'])
   })
 
   it('deleting the only punch of a day leaves 0.00 hours and no incomplete pair (US-12.17)', async () => {
@@ -675,7 +679,7 @@ describe('savePunchEdit: adding and deleting', () => {
 
     const result = await save([pair(0, { punchId: 'p-0', time: '18:26' }, { time: '19:00' })])
 
-    expect(db.attendancePunch.create).toHaveBeenCalledWith({
+    expect(db.tx.attendancePunch.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ pairIndex: 0, position: 'OUT', source: 'MANUAL', currentTime: '19:00' }),
     })
     expect(result.day).toMatchObject({ incomplete: false, regularHours: 0.57 })
@@ -691,7 +695,7 @@ describe('savePunchEdit: adding and deleting', () => {
     expect(result.day).toMatchObject({ date: '2026-11-06', regularHours: 8 })
     expect(result.employeeTotals).toEqual({ regular: 8, overtime: 0, hasAnyPunch: true })
     expect(result.counts.noPunchEmployees).toBe(0)
-    expect(db.attendancePunch.create).toHaveBeenCalledWith({
+    expect(db.tx.attendancePunch.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ employeeId: 'emp-5', empCode: '005', punchDate: utc('2026-11-06') }),
     })
   })
@@ -886,10 +890,16 @@ describe('savePunchEdit in a correction', () => {
   ]
   const saveCorrection = (pairs: SavePair[]) => save(pairs, { mode: CORRECTION })
 
+  /** The session is looked up before the transaction (db) and again inside it (db.tx). */
+  const serveSession = (session: ReturnType<typeof makeSession> | null) => {
+    db.payrollCorrectionSession.findUnique.mockResolvedValue(session)
+    db.tx.payrollCorrectionSession.findUnique.mockResolvedValue(session)
+  }
+
   beforeEach(() => {
-    db.attendanceUpload.findFirst.mockResolvedValue(makeUpload({ id: 'upload-1', status: 'APPROVED' }))
+    serveUpload(db, makeUpload({ id: 'upload-1', status: 'APPROVED' }))
     db.payrollRun.findFirst.mockResolvedValue(makeRun())
-    db.payrollCorrectionSession.findUnique.mockResolvedValue(makeSession())
+    serveSession(makeSession())
     seed([...ashaDay('p'), ...cloneRows()])
   })
 
@@ -916,8 +926,8 @@ describe('savePunchEdit in a correction', () => {
   it('marks the audit row with the correction id', async () => {
     await saveCorrection(cloneFullDayPairs('18:00'))
 
-    expect(auditRows(db)[0]).toMatchObject({ actionType: 'UPDATE', entityId: 'c-3' })
-    expect(auditRows(db)[0].detailsJson).toMatchObject({ correctionId: 'session-1', old: { time: '17:47' }, new: { time: '18:00' } })
+    expect(auditRows(db.tx)[0]).toMatchObject({ actionType: 'UPDATE', entityId: 'c-3' })
+    expect(auditRows(db.tx)[0].detailsJson).toMatchObject({ correctionId: 'session-1', old: { time: '17:47' }, new: { time: '18:00' } })
   })
 
   it('adds a hand-entered punch to the clone set', async () => {
@@ -928,7 +938,7 @@ describe('savePunchEdit in a correction', () => {
       pair(1, { time: '13:00' }, { time: '14:00' }),
     ])
 
-    expect(db.attendancePunch.create).toHaveBeenCalledWith({
+    expect(db.tx.attendancePunch.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ correctionId: 'session-1', source: 'MANUAL' }),
     })
   })
@@ -961,7 +971,7 @@ describe('savePunchEdit in a correction', () => {
     ['an applied session', makeSession({ status: 'APPLIED' })],
     ['a session of another run', makeSession({ payrollRunId: 'run-9' })],
   ])('refuses %s (CORRECTION_NOT_ACTIVE)', async (_label, session) => {
-    db.payrollCorrectionSession.findUnique.mockResolvedValue(session)
+    serveSession(session)
 
     await expect(saveCorrection(cloneFullDayPairs('18:00'))).rejects.toMatchObject({ code: 'CORRECTION_NOT_ACTIVE' })
     expectNoWrites()

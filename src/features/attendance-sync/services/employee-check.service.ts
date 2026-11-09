@@ -15,6 +15,7 @@ import {
 } from '../types/attendance-sync.types'
 import { auditEntry } from './attendance-audit.service'
 import { requireApiWeek } from './week-list.service'
+import { isSyncing } from './week-lock.service'
 
 const EMPLOYEE_LITE_SELECT = {
   id: true,
@@ -66,11 +67,22 @@ async function loadExceptions(): Promise<CodeExceptionLite[]> {
   })) as CodeExceptionLite[]
 }
 
-/** The week's codes and decisions can change while it is in review, but not once approved. */
+function syncInProgress(): AttendanceSyncError {
+  return new AttendanceSyncError(
+    'SYNC_IN_PROGRESS',
+    'A pull is running for this week. Wait for it to finish, then try again.',
+  )
+}
+
+/**
+ * The week's codes and decisions can change while it is in review, but not once approved
+ * and not while a pull is replacing the punches (the pull would discard the change).
+ */
 function assertEditable(upload: AttendanceUpload): void {
   if (upload.status === 'APPROVED') {
     throw new AttendanceSyncError('WEEK_LOCKED', 'This week is approved. Reopen it to change codes or decisions.')
   }
+  if (isSyncing(upload)) throw syncInProgress()
 }
 
 // ─── getEmployeeCheck ─────────────────────────────────────────────────────────
@@ -414,6 +426,7 @@ export async function setEmployeeDecision(
   if (upload.status !== 'REVIEW') {
     throw new AttendanceSyncError('WEEK_LOCKED', 'This week is locked. Reopen it to change decisions.')
   }
+  if (isSyncing(upload)) throw syncInProgress()
 
   const employee = await prisma.employee.findUnique({ where: { id: employeeId }, select: EMPLOYEE_LITE_SELECT })
   if (!employee) throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', 'That employee no longer exists.')

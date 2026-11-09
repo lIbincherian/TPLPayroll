@@ -205,52 +205,52 @@ describe('needsEmployeeDecision (US-12.9)', () => {
 describe('getReviewGridEmployees (US-12.13)', () => {
   it('includes an active employee with no punches', () => {
     const e = employee({ employeeId: 'TPLGOAHLP001' })
-    const grid = getReviewGridEmployees([e], [], week, new Set())
+    const grid = getReviewGridEmployees([e], [], week)
     expect(grid).toHaveLength(1)
     expect(grid[0]).toMatchObject({ id: e.id, tag: 'ACTIVE' })
   })
 
   it('includes an employee resigning during the week', () => {
     const e = employee({ employeeId: 'TPLGOAHLP003', dateOfResignation: new Date('2026-11-07T00:00:00Z') })
-    const grid = getReviewGridEmployees([e], [], week, new Set())
+    const grid = getReviewGridEmployees([e], [], week)
     expect(grid.map((g) => g.id)).toEqual([e.id])
     expect(grid[0].tag).toBe('ACTIVE')
   })
 
   it('includes an approved inactive employee', () => {
     const e = employee({ employeeId: 'TPLGOAHLP002', isActive: false })
-    const grid = getReviewGridEmployees([e], [{ employeeId: e.id, decision: 'APPROVED' }], week, new Set([e.id]))
+    const grid = getReviewGridEmployees([e], [{ employeeId: e.id, decision: 'APPROVED' }], week)
     expect(grid).toHaveLength(1)
     expect(grid[0].tag).toBe('INACTIVE_APPROVED')
   })
 
   it('includes an approved employee who resigned before the week, tagged RESIGNED_APPROVED', () => {
     const e = employee({ employeeId: 'TPLGOAHLP003', dateOfResignation: new Date('2025-03-01T00:00:00Z') })
-    const grid = getReviewGridEmployees([e], [{ employeeId: e.id, decision: 'APPROVED' }], week, new Set([e.id]))
+    const grid = getReviewGridEmployees([e], [{ employeeId: e.id, decision: 'APPROVED' }], week)
     expect(grid[0].tag).toBe('RESIGNED_APPROVED')
   })
 
   it('excludes a rejected employee', () => {
     const e = employee({ employeeId: 'TPLGOAHLP003', dateOfResignation: new Date('2025-03-01T00:00:00Z') })
-    const grid = getReviewGridEmployees([e], [{ employeeId: e.id, decision: 'REJECTED' }], week, new Set([e.id]))
+    const grid = getReviewGridEmployees([e], [{ employeeId: e.id, decision: 'REJECTED' }], week)
     expect(grid).toEqual([])
   })
 
   it('excludes an inactive employee with no punches and no decision', () => {
     const e = employee({ employeeId: 'TPLGOAHLP002', isActive: false })
-    expect(getReviewGridEmployees([e], [], week, new Set())).toEqual([])
+    expect(getReviewGridEmployees([e], [], week)).toEqual([])
   })
 
-  it('excludes an inactive employee whose decision is still pending even when they have punches', () => {
+  it('excludes an inactive employee whose decision is still pending', () => {
     const e = employee({ employeeId: 'TPLGOAHLP002', isActive: false })
-    expect(getReviewGridEmployees([e], [], week, new Set([e.id]))).toEqual([])
+    expect(getReviewGridEmployees([e], [], week)).toEqual([])
   })
 
   it('sorts by employee name', () => {
     const b = employee({ employeeId: 'TPLGOAHLP002', employeeName: 'Bala' })
     const a = employee({ employeeId: 'TPLGOAHLP001', employeeName: 'Anand' })
     const c = employee({ employeeId: 'TPLGOAHLP003', employeeName: 'Chitra' })
-    expect(getReviewGridEmployees([c, b, a], [], week, new Set()).map((e) => e.employeeName)).toEqual([
+    expect(getReviewGridEmployees([c, b, a], [], week).map((e) => e.employeeName)).toEqual([
       'Anand',
       'Bala',
       'Chitra',
@@ -262,7 +262,7 @@ describe('getReviewGridEmployees (US-12.13)', () => {
       employee({ employeeId: 'TPLGOAHLP002', employeeName: 'Bala' }),
       employee({ employeeId: 'TPLGOAHLP001', employeeName: 'Anand' }),
     ]
-    getReviewGridEmployees(employees, [], week, new Set())
+    getReviewGridEmployees(employees, [], week)
     expect(employees.map((e) => e.employeeName)).toEqual(['Bala', 'Anand'])
   })
 })

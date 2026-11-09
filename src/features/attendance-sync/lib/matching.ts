@@ -67,24 +67,27 @@ export function needsEmployeeDecision(
  * Employees listed in the review grid: every active employee who did not resign before
  * the week, plus inactive/resigned employees whose decision is APPROVED. A rejected
  * employee, or one with no decision, is left out.
+ *
+ * `alwaysInclude` lists employees who are in the grid regardless of their decision or current
+ * status. A correction passes everyone with approved attendance records: they were approved
+ * when the week was, and may have been deactivated or had a resignation date set since. It
+ * wins even over a REJECTED decision, because a rejected employee never gets records.
  */
 export function getReviewGridEmployees(
   employees: EmployeeLite[],
   decisions: Array<{ employeeId: string; decision: EmployeeDecisionValue }>,
   week: WeekRange,
-  // Decisions are only recorded for employees who have punches, so this set is not
-  // needed to decide membership; it is accepted so callers can pass what they have.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _employeesWithPunches?: Set<string>,
+  alwaysInclude?: ReadonlySet<string>,
 ): Array<EmployeeLite & { tag: GridEmployeeTag }> {
   const approved = new Set(decisions.filter((d) => d.decision === 'APPROVED').map((d) => d.employeeId))
+  const listable = (employee: EmployeeLite) => approved.has(employee.id) || !!alwaysInclude?.has(employee.id)
 
   const listed: Array<EmployeeLite & { tag: GridEmployeeTag }> = []
   for (const employee of employees) {
     if (!employee.isActive) {
-      if (approved.has(employee.id)) listed.push({ ...employee, tag: 'INACTIVE_APPROVED' })
+      if (listable(employee)) listed.push({ ...employee, tag: 'INACTIVE_APPROVED' })
     } else if (resignedBeforeWeek(employee, week)) {
-      if (approved.has(employee.id)) listed.push({ ...employee, tag: 'RESIGNED_APPROVED' })
+      if (listable(employee)) listed.push({ ...employee, tag: 'RESIGNED_APPROVED' })
     } else {
       listed.push({ ...employee, tag: 'ACTIVE' })
     }

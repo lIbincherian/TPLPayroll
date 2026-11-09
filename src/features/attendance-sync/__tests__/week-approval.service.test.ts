@@ -14,12 +14,14 @@ import {
   dayPunches,
   freezeClock,
   installPunchStore,
+  lockedRow,
   makeEmployee,
   makeExcelUpload,
   makeRun,
   makeSession,
   makeUpload,
   resetDb,
+  serveUpload,
   utc,
   WEEK_DATES,
   type Db,
@@ -48,6 +50,17 @@ let fetchSpy: ReturnType<typeof vi.spyOn>
 const decisionRows = (...rows: Array<{ id: string; code: string; name: string; decision: 'APPROVED' | 'REJECTED' }>) =>
   rows.map((r) => ({ employeeId: r.id, decision: r.decision, employee: { employeeId: r.code, employeeName: r.name } }))
 
+/** approveWeek reads the employees inside its transaction (db.tx) as well as before it (db). */
+function serveEmployees(employees: ReturnType<typeof makeEmployee>[]) {
+  db.employee.findMany.mockResolvedValue(employees)
+  db.tx.employee.findMany.mockResolvedValue(employees)
+}
+
+function serveDecisions(rows: ReturnType<typeof decisionRows>) {
+  db.attendanceEmployeeDecision.findMany.mockResolvedValue(rows)
+  db.tx.attendanceEmployeeDecision.findMany.mockResolvedValue(rows)
+}
+
 /** Asha works a full day; one approved inactive employee and one rejected resigned employee have punches; Ravi has none. */
 function seedWeek(extra: PunchRow[] = []) {
   store = installPunchStore(db, [
@@ -56,8 +69,8 @@ function seedWeek(extra: PunchRow[] = []) {
     ...dayPunches({ idPrefix: 'r3', employeeId: 'emp-3', empCode: '0003', date: '2026-11-05', times: ['08:00', '12:00', '13:00', '17:00'] }),
     ...extra,
   ])
-  db.employee.findMany.mockResolvedValue([asha, ravi, approvedInactive, rejectedResigned])
-  db.attendanceEmployeeDecision.findMany.mockResolvedValue(
+  serveEmployees([asha, ravi, approvedInactive, rejectedResigned])
+  serveDecisions(
     decisionRows(
       { id: 'emp-8', code: 'TPLGOAHLP008', name: 'Approved Inactive', decision: 'APPROVED' },
       { id: 'emp-3', code: 'TPLGOAHLP003', name: 'Gone Before', decision: 'REJECTED' },
@@ -70,7 +83,7 @@ beforeEach(() => {
   vi.mocked(fetchPunchData).mockReset()
   fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('the real network must not be used'))
   freezeClock('2026-11-13T03:00:00Z') // the 5-11 Nov week has ended
-  db.attendanceUpload.findFirst.mockResolvedValue(makeUpload({ id: 'upload-1', status: 'REVIEW' }))
+  serveUpload(db, makeUpload({ id: 'upload-1', status: 'REVIEW' }))
   db.tx.attendanceUpload.updateMany.mockResolvedValue({ count: 1 })
   seedWeek()
 })
@@ -186,8 +199,8 @@ describe('approveWeek', () => {
 
   it('approves a week where nobody has hours, writing no records', async () => {
     store = installPunchStore(db, [])
-    db.attendanceEmployeeDecision.findMany.mockResolvedValue([])
-    db.employee.findMany.mockResolvedValue([asha, ravi])
+    serveDecisions([])
+    serveEmployees([asha, ravi])
 
     const { summary } = await approveWeek(WEEK_ID)
 
@@ -205,8 +218,8 @@ describe('approveWeek', () => {
         (e: { code: string; details?: { blockers?: string[] }; message: string }) => e,
       )
       expect(error.code).toBe(code)
-      // Nothing is written: no transaction, so no records and no status change.
-      expect(db.$transaction).not.toHaveBeenCalled()
+      // The checks run inside the transaction, which writes nothing: no records, no status change.
+      expect(db.tx.attendanceRecord.deleteMany).not.toHaveBeenCalled()
       expect(db.tx.attendanceRecord.createMany).not.toHaveBeenCalled()
       expect(db.tx.attendanceUpload.updateMany).not.toHaveBeenCalled()
       expect(auditRows(db.tx)).toHaveLength(0)
@@ -233,7 +246,7 @@ describe('approveWeek', () => {
 
     it('with an inactive employee waiting on a decision', async () => {
       seedWeek(dayPunches({ idPrefix: 'i2', employeeId: 'emp-2', empCode: '0002', date: '2026-11-05', times: ['08:00', '16:00'] }))
-      db.employee.findMany.mockResolvedValue([
+      serveEmployees([
         asha,
         ravi,
         approvedInactive,
@@ -264,7 +277,7 @@ describe('approveWeek', () => {
     })
 
     it.each(['APPROVED', 'SYNC_FAILED'])('when the week is %s: WEEK_NOT_IN_REVIEW, ahead of every other check', async (status) => {
-      db.attendanceUpload.findFirst.mockResolvedValue(makeUpload({ status }))
+      serveUpload(db, makeUpload({ status }))
       seedWeek(dayPunches({ idPrefix: 'lone', employeeId: 'emp-36', date: '2026-11-06', times: ['18:26'] }))
 
       await expectRefused('WEEK_NOT_IN_REVIEW')
@@ -292,10 +305,10 @@ describe('approveWeek', () => {
   it('rejects a weekId that is not a Thursday, a week with no data, and an Excel-era week', async () => {
     await expect(approveWeek('2026-11-06')).rejects.toMatchObject({ code: 'INVALID_WEEK' })
 
-    db.attendanceUpload.findFirst.mockResolvedValue(null)
+    serveUpload(db, null)
     await expect(approveWeek(WEEK_ID)).rejects.toMatchObject({ code: 'WEEK_NOT_READY' })
 
-    db.attendanceUpload.findFirst.mockResolvedValue(makeExcelUpload())
+    serveUpload(db, makeExcelUpload())
     await expect(approveWeek(WEEK_ID)).rejects.toMatchObject({ code: 'EXCEL_ERA_WEEK' })
   })
 })
@@ -304,7 +317,7 @@ describe('approveWeek', () => {
 
 describe('reopenWeek', () => {
   beforeEach(() => {
-    db.attendanceUpload.findFirst.mockResolvedValue(makeUpload({ id: 'upload-1', status: 'APPROVED', approvedAt: new Date('2026-11-12T05:00:00Z') }))
+    serveUpload(db, makeUpload({ id: 'upload-1', status: 'APPROVED', approvedAt: new Date('2026-11-12T05:00:00Z') }))
   })
 
   it('moves an approved week back to review, clears the approval time and deletes its attendance records', async () => {
@@ -346,7 +359,7 @@ describe('reopenWeek', () => {
   })
 
   it.each(['REVIEW', 'SYNC_FAILED'])('has nothing to reopen on a %s week (WEEK_NOT_IN_REVIEW)', async (status) => {
-    db.attendanceUpload.findFirst.mockResolvedValue(makeUpload({ status }))
+    serveUpload(db, makeUpload({ status }))
 
     await expect(reopenWeek(WEEK_ID)).rejects.toMatchObject({ code: 'WEEK_NOT_IN_REVIEW' })
     expect(db.$transaction).not.toHaveBeenCalled()
@@ -362,7 +375,7 @@ describe('reopenWeek', () => {
   })
 
   it('rejects an Excel-era week (EXCEL_ERA_WEEK)', async () => {
-    db.attendanceUpload.findFirst.mockResolvedValue(makeExcelUpload())
+    serveUpload(db, makeExcelUpload())
 
     await expect(reopenWeek(WEEK_ID)).rejects.toMatchObject({ code: 'EXCEL_ERA_WEEK' })
   })
@@ -376,6 +389,8 @@ describe('approve, then reopen, edit and approve again', () => {
     const upload = makeUpload({ id: 'upload-1', status: 'REVIEW' })
     let records: Array<{ employeeId: string; attendanceDate: Date; regularHours: number; overtimeHours: number }> = []
     db.attendanceUpload.findFirst.mockImplementation(async () => ({ ...upload }))
+    db.tx.attendanceUpload.findFirst.mockImplementation(async () => ({ ...upload }))
+    db.tx.$queryRaw.mockImplementation(async () => [lockedRow({ status: upload.status, approvedAt: upload.approvedAt })])
     db.tx.attendanceUpload.updateMany.mockImplementation(async ({ where, data }: { where: { status: string }; data: object }) => {
       if (where.status !== upload.status) return { count: 0 }
       Object.assign(upload, data)
@@ -417,8 +432,9 @@ describe('approve, then reopen, edit and approve again', () => {
 
     expect(upload.status).toBe('APPROVED')
     expect(ashaOvertimeOn5Nov()).toBe(1.47)
-    // Both approvals and the reopen were audited; no payroll revision model was used.
-    expect(auditRows(db.tx).map((a) => a.actionType)).toEqual(['APPROVE', 'REOPEN', 'APPROVE'])
+    // Both approvals, the reopen and the edit (written in the edit's own transaction) were audited;
+    // no payroll revision model was used.
+    expect(auditRows(db.tx).map((a) => a.actionType)).toEqual(['APPROVE', 'REOPEN', 'UPDATE', 'APPROVE'])
     expect(db.payrollRun.findMany).not.toHaveBeenCalled()
   })
 })
@@ -460,7 +476,7 @@ describe('getApprovalSummary', () => {
   })
 
   it('also works on an approved week (read-only summary)', async () => {
-    db.attendanceUpload.findFirst.mockResolvedValue(makeUpload({ status: 'APPROVED' }))
+    serveUpload(db, makeUpload({ status: 'APPROVED' }))
 
     await expect(getApprovalSummary(WEEK_ID)).resolves.toMatchObject({ employeeCount: 2 })
   })
@@ -475,7 +491,7 @@ describe('getApprovalSummary', () => {
     }
 
     beforeEach(() => {
-      db.attendanceUpload.findFirst.mockResolvedValue(makeUpload({ id: 'upload-1', status: 'APPROVED' }))
+      serveUpload(db, makeUpload({ id: 'upload-1', status: 'APPROVED' }))
       db.payrollRun.findFirst.mockResolvedValue(makeRun())
       db.payrollCorrectionSession.findUnique.mockResolvedValue(makeSession())
     })
@@ -521,7 +537,7 @@ describe('getApprovalSummary', () => {
   })
 
   it('rejects a week with no data (WEEK_NOT_READY)', async () => {
-    db.attendanceUpload.findFirst.mockResolvedValue(null)
+    serveUpload(db, null)
 
     await expect(getApprovalSummary(WEEK_ID)).rejects.toMatchObject({ code: 'WEEK_NOT_READY' })
   })

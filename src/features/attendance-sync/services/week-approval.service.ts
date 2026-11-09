@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { buildApprovalSummary, buildAttendanceRecords, canReopenWeek, getAttendanceWeekStatus } from '../lib/review'
 import { toISODate, toUtcDate } from '../lib/week'
@@ -12,11 +13,15 @@ import {
 import { auditEntry } from './attendance-audit.service'
 import { getPunchReview } from './punch-review.service'
 import { requireApiWeek } from './week-list.service'
+import { isSyncing, lockWeekRow } from './week-lock.service'
 
 const TRANSACTION_TIMEOUT_MS = 30000
 
-async function loadDecisionInputs(uploadId: string): Promise<ApprovalDecisionInput[]> {
-  const rows = await prisma.attendanceEmployeeDecision.findMany({
+async function loadDecisionInputs(
+  uploadId: string,
+  db: Prisma.TransactionClient = prisma,
+): Promise<ApprovalDecisionInput[]> {
+  const rows = await db.attendanceEmployeeDecision.findMany({
     where: { attendanceUploadId: uploadId },
     select: {
       employeeId: true,
@@ -81,32 +86,48 @@ function describeBlockers(review: PunchReview): string {
 
 /**
  * Approve the week: lock it and write one `AttendanceRecord` per payroll employee per day
- * from the review grid. Re-checks everything server-side. No API call, no PayrollRevision.
+ * from the review grid. No API call, no PayrollRevision.
+ *
+ * One transaction: it locks the week's row, then reads the grid and checks every blocker
+ * from that same snapshot, so a punch edit, a decision or a pull cannot slip in between the
+ * check and the write. Nothing is written if any check fails.
  */
 export async function approveWeek(weekId: string): Promise<{ approvedAt: Date; summary: ApprovalSummary }> {
   const { upload, week } = await requireApiWeek(weekId)
-  const review = await getPunchReview(weekId)
-
-  if (review.approval.blockers.includes('NOT_IN_REVIEW')) {
-    throw new AttendanceSyncError('WEEK_NOT_IN_REVIEW', "This week isn't in review.")
-  }
-  const contentBlockers = review.approval.blockers.filter((b) => b !== 'WEEK_NOT_ENDED')
-  if (contentBlockers.length > 0) {
-    throw new AttendanceSyncError('WEEK_NOT_READY', `This week can't be approved yet: ${describeBlockers(review)}.`, {
-      blockers: review.approval.blockers,
-    })
-  }
-  if (review.approval.blockers.includes('WEEK_NOT_ENDED')) {
-    throw new AttendanceSyncError('WEEK_NOT_ENDED', "This week hasn't ended yet.")
-  }
-
-  const decisions = await loadDecisionInputs(upload.id)
-  const summary = buildApprovalSummary(review, decisions)
-  const records = buildAttendanceRecords(upload.id, review, decisions)
   const approvedAt = new Date()
 
-  await prisma.$transaction(
+  return prisma.$transaction(
     async (tx) => {
+      const locked = await lockWeekRow(tx, { id: upload.id })
+      if (!locked || locked.status !== 'REVIEW') {
+        throw new AttendanceSyncError('WEEK_NOT_IN_REVIEW', "This week isn't in review.")
+      }
+      if (isSyncing(locked, approvedAt)) {
+        throw new AttendanceSyncError(
+          'SYNC_IN_PROGRESS',
+          'A pull is running for this week. Wait for it to finish, then try again.',
+        )
+      }
+
+      const review = await getPunchReview(weekId, { kind: 'LIVE' }, tx)
+
+      if (review.approval.blockers.includes('NOT_IN_REVIEW')) {
+        throw new AttendanceSyncError('WEEK_NOT_IN_REVIEW', "This week isn't in review.")
+      }
+      const contentBlockers = review.approval.blockers.filter((b) => b !== 'WEEK_NOT_ENDED')
+      if (contentBlockers.length > 0) {
+        throw new AttendanceSyncError('WEEK_NOT_READY', `This week can't be approved yet: ${describeBlockers(review)}.`, {
+          blockers: review.approval.blockers,
+        })
+      }
+      if (review.approval.blockers.includes('WEEK_NOT_ENDED')) {
+        throw new AttendanceSyncError('WEEK_NOT_ENDED', "This week hasn't ended yet.")
+      }
+
+      const decisions = await loadDecisionInputs(upload.id, tx)
+      const summary = buildApprovalSummary(review, decisions)
+      const records = buildAttendanceRecords(upload.id, review, decisions)
+
       // Only one caller can move the week out of review (guards a double approve).
       const moved = await tx.attendanceUpload.updateMany({
         where: { id: upload.id, status: 'REVIEW' },
@@ -135,11 +156,11 @@ export async function approveWeek(weekId: string): Promise<{ approvedAt: Date; s
         },
         tx,
       )
+
+      return { approvedAt, summary }
     },
     { timeout: TRANSACTION_TIMEOUT_MS },
   )
-
-  return { approvedAt, summary }
 }
 
 /**
@@ -167,6 +188,20 @@ export async function reopenWeek(weekId: string): Promise<{ reopenedAt: Date }> 
   const reopenedAt = new Date()
   await prisma.$transaction(
     async (tx) => {
+      // The payroll run was checked above without a lock. Payroll approval takes the same row
+      // lock, so once it is held this check sees any run that committed in the meantime.
+      await lockWeekRow(tx, { id: upload.id })
+      const racedRun = await tx.payrollRun.findFirst({
+        where: { payrollWeekStartDate: toUtcDate(week.start), status: { in: ['APPROVED', 'REVISED'] } },
+        select: { id: true },
+      })
+      if (racedRun) {
+        throw new AttendanceSyncError(
+          'PAYROLL_ALREADY_APPROVED',
+          'Payroll for this week is approved. Use Correct on the payroll run to change attendance.',
+        )
+      }
+
       const moved = await tx.attendanceUpload.updateMany({
         where: { id: upload.id, status: 'APPROVED' },
         data: { status: 'REVIEW', approvedAt: null },
