@@ -24,6 +24,7 @@ Each feature has its own folder under `features/` containing:
 | F09 | [Payroll History](./features/F09-payroll-history/) | `F09-payroll-history` | ✅ Done | Search & view historical payroll data by employee/week |
 | F10 | [Settings](./features/F10-settings/) | `F10-settings` | ✅ Done | Payroll week start day configuration |
 | F11 | [Audit Logging](./features/F11-audit-logging/) | `F11-audit-logging` | ✅ Done | Automatic logging of employee create/update and wage changes |
+| F12 | [eTimeOffice Attendance Sync & Punch Review](./F12-etimeoffice-attendance/) | `F12-etimeoffice-attendance` | 📝 Planned | Weekly API sync, punch review and approval; replaces F04 Excel upload |
 
 ---
 
@@ -59,7 +60,7 @@ F01 Dashboard (aggregation — needs all other features)
 
 | Metric | Count |
 |--------|-------|
-| Total Features | 11 |
+| Total Features | 12 |
 | Total User Stories | 44 |
-| Total E2E Tests | 56 |
+| Total E2E Tests | 96 |
 | Total Screens | 18 |
