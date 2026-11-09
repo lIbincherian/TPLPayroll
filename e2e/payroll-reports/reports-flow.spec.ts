@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test'
+import JSZip from 'jszip'
+import { extractPdfFlatText, extractPdfText } from '../utils/pdf'
 import {
   cleanupDatabase,
   seedApprovedPayrollData,
@@ -90,6 +92,63 @@ test.describe('E2E-02: Payroll slips ZIP API', () => {
   test('returns 404 for a non-existent payrollRunId', async ({ request }) => {
     const response = await request.get('/api/payroll/reports/non-existent-run-id/slips')
     expect(response.status()).toBe(404)
+  })
+})
+
+// ─── E2E-26: Payslip shows a Punches column ───────────────────────────────────
+// The seed is an approved eTimeOffice week (3-9 Apr 2025). Each worked day has one pair from 08:00
+// that gives its hours: Meera works 8+2, 8, 6, 0, 8+3, 8+1, 8 hours (46 regular, 6 overtime).
+
+test.describe('E2E-26: Payslip shows a Punches column', () => {
+  async function slipTexts(request: import('@playwright/test').APIRequestContext) {
+    const response = await request.get(`/api/payroll/reports/${payrollRunId}/slips`)
+    expect(response.status()).toBe(200)
+    const zip = await JSZip.loadAsync(await response.body())
+    const texts: Record<string, string> = {}
+    const flat: Record<string, string> = {}
+    for (const name of Object.keys(zip.files).filter((n) => n.toLowerCase().endsWith('.pdf'))) {
+      const buffer = await zip.files[name].async('nodebuffer')
+      texts[name] = extractPdfText(buffer)
+      flat[name] = extractPdfFlatText(buffer)
+    }
+    return { texts, flat }
+  }
+
+  test('each slip has one Punches column and none of the six In/Out columns', async ({ request }) => {
+    const { flat } = await slipTexts(request)
+    expect(Object.keys(flat)).toHaveLength(2)
+    for (const [name, text] of Object.entries(flat)) {
+      expect(text, name).toContain('Punches')
+      expect(text, name).toContain('Reg Hrs')
+      expect(text, name).toContain('OT Hrs')
+      for (const header of ['BN In', 'BN Out', 'AN In', 'AN Out', 'OT In', 'OT Out']) {
+        expect(text, `${name} must not have "${header}"`).not.toContain(header)
+      }
+    }
+  })
+
+  test('each day shows its punches, "-" for a day with none, and the hours match', async ({ request }) => {
+    const { texts } = await slipTexts(request)
+    const meera = Object.entries(texts).find(([name]) => name.includes('EMP-RPT-001'))![1]
+    // Thu 8+2 h, Fri/Mon 8 h, Sat 6 h, Sun none, Tue 8+3 h, Wed 8+1 h
+    expect(meera).toContain('08:00–18:00')
+    expect(meera).toContain('08:00–16:00')
+    expect(meera).toContain('08:00–14:00')
+    expect(meera).toContain('08:00–19:00')
+    expect(meera).toContain('08:00–17:00')
+    // The day with no punches shows a dash
+    expect(meera.split('\n')).toContain('-')
+    // Hours: 46.00 regular and 6.00 overtime in total, 2.00 / 3.00 / 1.00 on the overtime days
+    expect(meera).toContain('46.00')
+    expect(meera).toContain('6.00')
+    expect(meera).toContain('2.00')
+    expect(meera).toContain('3.00')
+
+    const vijay = Object.entries(texts).find(([name]) => name.includes('EMP-RPT-002'))![1]
+    expect(vijay).toContain('08:00–16:00')
+    expect(vijay).toContain('56.00')
+    // Seven worked days: no dash-only day for the second employee
+    expect(vijay.split('\n')).not.toContain('-')
   })
 })
 
