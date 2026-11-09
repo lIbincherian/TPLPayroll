@@ -7,6 +7,7 @@
  */
 import { vi } from 'vitest'
 import type { AttendanceUpload, PayrollCorrectionSession, PayrollRun } from '@prisma/client'
+import type { LockedWeekRow } from '../services/week-lock.service'
 import type { EmployeeLite, HHmm, ISODate } from '../types/attendance-sync.types'
 
 type Fn = ReturnType<typeof vi.fn>
@@ -17,10 +18,10 @@ const MODEL_METHODS = {
   attendancePunch: ['findMany', 'count', 'create', 'createMany', 'update', 'updateMany', 'delete', 'deleteMany'],
   attendanceEmployeeDecision: ['findMany', 'findUnique', 'create', 'update', 'count', 'deleteMany'],
   attendanceCodeException: ['findMany', 'findUnique', 'upsert'],
-  attendanceRecord: ['findMany', 'groupBy', 'deleteMany', 'createMany'],
+  attendanceRecord: ['findMany', 'groupBy', 'count', 'deleteMany', 'createMany'],
   employee: ['findMany', 'findUnique'],
   payrollRun: ['findFirst', 'findMany'],
-  payrollCorrectionSession: ['findFirst', 'findUnique'],
+  payrollCorrectionSession: ['findFirst', 'findUnique', 'update'],
   auditLog: ['create'],
 } as const
 
@@ -36,13 +37,15 @@ export interface Db {
   payrollRun: ModelMock
   payrollCorrectionSession: ModelMock
   auditLog: ModelMock
+  /** `SELECT ... FOR UPDATE` on the week row (lockWeekRow). Resolves to one row; see `lockedRow`. */
+  $queryRaw: Fn
   $transaction: Fn
   /** The client handed to interactive `$transaction(async (tx) => ...)` callbacks. */
   tx: Omit<Db, '$transaction' | 'tx'>
 }
 
 function buildModels(): Omit<Db, '$transaction' | 'tx'> {
-  const models = {} as Record<string, ModelMock>
+  const models = { $queryRaw: vi.fn() } as unknown as Record<string, ModelMock>
   for (const name of Object.keys(MODEL_METHODS) as ModelName[]) {
     models[name] = Object.fromEntries(MODEL_METHODS[name].map((method) => [method, vi.fn()]))
   }
@@ -53,6 +56,46 @@ export function buildDb(): Db {
   const db = { ...buildModels(), $transaction: vi.fn(), tx: buildModels() } as Db
   resetDb(db)
   return db
+}
+
+/** The row `lockWeekRow` returns for the default upload: an eTimeOffice week in REVIEW, not syncing. */
+export function lockedRow(overrides: Partial<LockedWeekRow> = {}): LockedWeekRow {
+  return {
+    id: 'upload-1',
+    source: 'ETIMEOFFICE',
+    status: 'REVIEW',
+    syncLockedAt: null,
+    approvedAt: null,
+    payrollWeekStartDate: new Date('2026-11-05T00:00:00Z'),
+    ...overrides,
+  }
+}
+
+/** Make the next `lockWeekRow` calls on a client return this row (or no row, with `null`). */
+export function mockLockedWeek(client: { $queryRaw: Fn }, row: Partial<LockedWeekRow> | null = {}): void {
+  client.$queryRaw.mockResolvedValue(row === null ? [] : [lockedRow(row)])
+}
+
+/**
+ * Serve one upload row to the week lookup on both clients (before the transaction and inside it) and
+ * make the locked row agree with it. `null` = no active row.
+ */
+export function serveUpload(db: Db, row: AttendanceUpload | null): void {
+  db.attendanceUpload.findFirst.mockResolvedValue(row)
+  db.tx.attendanceUpload.findFirst.mockResolvedValue(row)
+  mockLockedWeek(
+    db.tx,
+    row === null
+      ? null
+      : {
+          id: row.id,
+          source: row.source,
+          status: row.status,
+          syncLockedAt: row.syncLockedAt,
+          approvedAt: row.approvedAt,
+          payrollWeekStartDate: row.payrollWeekStartDate,
+        },
+  )
 }
 
 /** Clear every mock and restore harmless defaults (empty reads, a transaction that runs its argument). */
@@ -70,11 +113,14 @@ export function resetDb(db: Db): void {
     models.attendanceCodeException.findMany.mockResolvedValue([])
     models.attendanceRecord.findMany.mockResolvedValue([])
     models.attendanceRecord.groupBy.mockResolvedValue([])
+    models.attendanceRecord.count.mockResolvedValue(0)
     models.employee.findMany.mockResolvedValue([])
     models.payrollRun.findFirst.mockResolvedValue(null)
     models.payrollRun.findMany.mockResolvedValue([])
     models.payrollCorrectionSession.findFirst.mockResolvedValue(null)
     models.auditLog.create.mockResolvedValue({ id: 'audit-1' })
+    models.$queryRaw.mockReset()
+    models.$queryRaw.mockResolvedValue([lockedRow()])
   }
   reset(db)
   reset(db.tx)
@@ -129,6 +175,7 @@ export function makeUpload(overrides: Partial<AttendanceUpload> = {}): Attendanc
     staleNoticeAt: null,
     syncLockedAt: null,
     approvedAt: null,
+    activeWeekStart: utc(WEEK.start),
     ...overrides,
   } as AttendanceUpload
 }
@@ -285,9 +332,10 @@ export interface PunchStore {
 }
 
 /**
- * Back `attendancePunch` with an in-memory table. The mocked writes apply immediately (real
- * Prisma operations are lazy until the `$transaction`), so a call that must not happen is
- * asserted with `not.toHaveBeenCalled()` as well as by reading the store.
+ * Back `attendancePunch` with an in-memory table, on both the plain client (reads) and the
+ * transaction client (the writes, and the reads inside it). The mocked writes apply immediately,
+ * so a call that must not happen is asserted with `not.toHaveBeenCalled()` as well as by reading
+ * the store.
  */
 export function installPunchStore(db: Db, initial: PunchRow[]): PunchStore {
   const store: PunchStore = {
@@ -301,23 +349,27 @@ export function installPunchStore(db: Db, initial: PunchRow[]): PunchStore {
       ),
   }
 
-  db.attendancePunch.findMany.mockImplementation(async (args?: { where?: Where }) =>
-    store.rows.filter((r) => matches(r as unknown as Record<string, unknown>, args?.where ?? {})).map((r) => ({ ...r })),
-  )
-  db.attendancePunch.create.mockImplementation(async ({ data }: { data: Partial<PunchRow> }) => {
-    const row = makePunch({ ...data, updatedAt: new Date() } as Partial<PunchRow>)
-    store.rows.push(row)
-    return row
-  })
-  db.attendancePunch.update.mockImplementation(async ({ where, data }: { where: { id: string }; data: Partial<PunchRow> }) => {
-    const row = store.rows.find((r) => r.id === where.id)
-    if (!row) throw new Error(`No punch ${where.id}`)
-    Object.assign(row, data, { updatedAt: new Date() })
-    return row
-  })
-  db.attendancePunch.delete.mockImplementation(async ({ where }: { where: { id: string } }) => {
-    store.rows = store.rows.filter((r) => r.id !== where.id)
-    return { id: where.id }
-  })
+  for (const client of [db, db.tx]) {
+    client.attendancePunch.findMany.mockImplementation(async (args?: { where?: Where }) =>
+      store.rows.filter((r) => matches(r as unknown as Record<string, unknown>, args?.where ?? {})).map((r) => ({ ...r })),
+    )
+    client.attendancePunch.create.mockImplementation(async ({ data }: { data: Partial<PunchRow> }) => {
+      const row = makePunch({ ...data, updatedAt: new Date() } as Partial<PunchRow>)
+      store.rows.push(row)
+      return row
+    })
+    client.attendancePunch.update.mockImplementation(
+      async ({ where, data }: { where: { id: string }; data: Partial<PunchRow> }) => {
+        const row = store.rows.find((r) => r.id === where.id)
+        if (!row) throw new Error(`No punch ${where.id}`)
+        Object.assign(row, data, { updatedAt: new Date() })
+        return row
+      },
+    )
+    client.attendancePunch.delete.mockImplementation(async ({ where }: { where: { id: string } }) => {
+      store.rows = store.rows.filter((r) => r.id !== where.id)
+      return { id: where.id }
+    })
+  }
   return store
 }

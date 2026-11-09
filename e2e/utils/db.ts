@@ -127,6 +127,7 @@ export async function seedApiWeek(opts: {
       fileType: null,
       status,
       isActiveForPayrollWeek: true,
+      activeWeekStart: utcDate(weekStartISO),
       payrollWeekStartDate: utcDate(weekStartISO),
       payrollWeekEndDate: utcDate(dates[6]),
       lastSyncedAt: loadedAt,
@@ -175,6 +176,7 @@ export async function seedExcelWeek(opts: {
       fileType: 'xlsx',
       status: 'READY',
       isActiveForPayrollWeek: true,
+      activeWeekStart: utcDate(weekStartISO),
       payrollWeekStartDate: utcDate(weekStartISO),
       payrollWeekEndDate: utcDate(dates[6]),
     },
@@ -216,6 +218,7 @@ export async function seedSyncFailedWeek(weekStartISO: string, error = 'eTimeOff
       fileType: null,
       status: 'SYNC_FAILED',
       isActiveForPayrollWeek: true,
+      activeWeekStart: utcDate(weekStartISO),
       payrollWeekStartDate: utcDate(weekStartISO),
       payrollWeekEndDate: utcDate(dates[6]),
       lastSyncError: error,
@@ -258,6 +261,7 @@ export async function seedReviewWeek(opts: {
       fileType: null,
       status: 'REVIEW',
       isActiveForPayrollWeek: true,
+      activeWeekStart: utcDate(opts.weekStartISO),
       payrollWeekStartDate: utcDate(opts.weekStartISO),
       payrollWeekEndDate: utcDate(dates[6]),
       lastSyncedAt: new Date(`${addDaysISO(opts.weekStartISO, 7)}T01:00:00.000Z`),
@@ -995,8 +999,8 @@ export async function seedApprovedPayrollForCorrection(): Promise<{
 
   // Create the approved eTimeOffice week the payroll was generated from
   await client.query(
-    `INSERT INTO "AttendanceUpload" (id, "fileName", "fileType", "payrollWeekStartDate", "payrollWeekEndDate", "payrollWeekSource", source, status, "isActiveForPayrollWeek", "uploadedAt", "lastSyncedAt", "lastSyncTrigger", "approvedAt")
-     VALUES ($1, NULL, NULL, $2, $3, 'ETIMEOFFICE', 'ETIMEOFFICE', 'APPROVED', true, NOW(), $4, 'SCHEDULED', $4)`,
+    `INSERT INTO "AttendanceUpload" (id, "fileName", "fileType", "payrollWeekStartDate", "payrollWeekEndDate", "payrollWeekSource", source, status, "isActiveForPayrollWeek", "activeWeekStart", "uploadedAt", "lastSyncedAt", "lastSyncTrigger", "approvedAt")
+     VALUES ($1, NULL, NULL, $2, $3, 'ETIMEOFFICE', 'ETIMEOFFICE', 'APPROVED', true, $2, NOW(), $4, 'SCHEDULED', $4)`,
     [uploadId, weekStart, weekEnd, approvedAt]
   )
 

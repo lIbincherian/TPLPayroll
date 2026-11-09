@@ -72,6 +72,7 @@ describe('getOrCreateApiWeekRow', () => {
         payrollWeekStartDate: utc('2026-11-05'),
         payrollWeekEndDate: utc('2026-11-11'),
         isActiveForPayrollWeek: true,
+        activeWeekStart: utc('2026-11-05'),
       },
     })
   })

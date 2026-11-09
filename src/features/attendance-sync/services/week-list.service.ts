@@ -1,6 +1,6 @@
-import type { AttendanceUpload } from '@prisma/client'
+import { Prisma, type AttendanceUpload } from '@prisma/client'
 import prisma from '@/lib/prisma'
-import { SYNC_LOCK_TTL_MS, WEEK_LIST_LIMIT } from '../lib/constants'
+import { WEEK_LIST_LIMIT } from '../lib/constants'
 import { getReviewGridEmployees } from '../lib/matching'
 import {
   buildGridEmployees,
@@ -34,6 +34,7 @@ import {
   type WeekPayrollStatus,
   type WeekRange,
 } from '../types/attendance-sync.types'
+import { isSyncing } from './week-lock.service'
 
 const EMPLOYEE_LITE_SELECT = {
   id: true,
@@ -43,50 +44,71 @@ const EMPLOYEE_LITE_SELECT = {
   dateOfResignation: true,
 } as const
 
-export async function getWeekByStart(weekStart: Date): Promise<AttendanceUpload | null> {
-  return prisma.attendanceUpload.findFirst({
+export async function getWeekByStart(
+  weekStart: Date,
+  db: Prisma.TransactionClient = prisma,
+): Promise<AttendanceUpload | null> {
+  return db.attendanceUpload.findFirst({
     where: { payrollWeekStartDate: weekStart, isActiveForPayrollWeek: true },
     orderBy: { uploadedAt: 'desc' },
   })
+}
+
+function requireApiRow(row: AttendanceUpload): AttendanceUpload {
+  if (row.source === 'EXCEL') {
+    throw new AttendanceSyncError('EXCEL_ERA_WEEK', "This week was imported from Excel and can't be pulled.")
+  }
+  return row
 }
 
 /**
  * The active row for an API week, creating a placeholder when there is none. The
  * placeholder starts as SYNC_FAILED and shows as "Pulling…" while its sync lock is held.
  * Excel-era weeks are read-only and never become API weeks.
+ *
+ * `activeWeekStart` is unique, so two callers racing to create the week cannot both win: the
+ * loser gets P2002 and uses the row the winner created.
  */
 export async function getOrCreateApiWeekRow(week: WeekRange): Promise<AttendanceUpload> {
-  const existing = await getWeekByStart(toUtcDate(week.start))
-  if (existing) {
-    if (existing.source === 'EXCEL') {
-      throw new AttendanceSyncError('EXCEL_ERA_WEEK', "This week was imported from Excel and can't be pulled.")
-    }
-    return existing
-  }
+  const weekStart = toUtcDate(week.start)
+  const existing = await getWeekByStart(weekStart)
+  if (existing) return requireApiRow(existing)
 
-  return prisma.attendanceUpload.create({
-    data: {
-      source: 'ETIMEOFFICE',
-      payrollWeekSource: 'ETIMEOFFICE',
-      status: 'SYNC_FAILED',
-      fileName: null,
-      fileType: null,
-      payrollWeekStartDate: toUtcDate(week.start),
-      payrollWeekEndDate: toUtcDate(week.end),
-      isActiveForPayrollWeek: true,
-    },
-  })
+  try {
+    return await prisma.attendanceUpload.create({
+      data: {
+        source: 'ETIMEOFFICE',
+        payrollWeekSource: 'ETIMEOFFICE',
+        status: 'SYNC_FAILED',
+        fileName: null,
+        fileType: null,
+        payrollWeekStartDate: weekStart,
+        payrollWeekEndDate: toUtcDate(week.end),
+        isActiveForPayrollWeek: true,
+        activeWeekStart: weekStart,
+      },
+    })
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      const winner = await getWeekByStart(weekStart)
+      if (winner) return requireApiRow(winner)
+    }
+    throw error
+  }
 }
 
 /**
  * Resolve a `weekId` route param to its API-week row. Anything that isn't a Thursday is
  * INVALID_WEEK, a week with no row is WEEK_NOT_READY, and an Excel-era week is read-only.
  */
-export async function requireApiWeek(weekId: string): Promise<{ upload: AttendanceUpload; week: WeekRange }> {
+export async function requireApiWeek(
+  weekId: string,
+  db: Prisma.TransactionClient = prisma,
+): Promise<{ upload: AttendanceUpload; week: WeekRange }> {
   const week = parseWeekId(weekId)
   if (!week) throw new AttendanceSyncError('INVALID_WEEK', 'A payroll week starts on a Thursday.')
 
-  const upload = await getWeekByStart(toUtcDate(week.start))
+  const upload = await getWeekByStart(toUtcDate(week.start), db)
   if (!upload) throw new AttendanceSyncError('WEEK_NOT_READY', 'No attendance has been loaded for this week.')
   if (upload.source === 'EXCEL') {
     throw new AttendanceSyncError('EXCEL_ERA_WEEK', 'This week was imported from Excel and is read-only.')
@@ -249,14 +271,14 @@ export async function listAttendanceWeeks(todayISO: ISODate = todayInIST()): Pro
     const source: AttendanceSource | null = upload ? (upload.source === 'EXCEL' ? 'EXCEL' : 'ETIMEOFFICE') : null
     const status = getAttendanceWeekStatus(upload)
     const stats = (upload && (reviewStats.get(upload.id) ?? recordStats.get(upload.id))) || EMPTY_STATS
-    const isSyncing = upload?.syncLockedAt != null && now.getTime() - upload.syncLockedAt.getTime() < SYNC_LOCK_TTL_MS
+    const syncing = upload !== null && isSyncing(upload, now)
 
     return {
       weekId: week.start,
       week,
       source,
       status,
-      isSyncing,
+      isSyncing: syncing,
       uploadId: upload?.id ?? null,
       ...stats,
       lastSyncError: upload?.lastSyncError ?? null,
@@ -266,7 +288,7 @@ export async function listAttendanceWeeks(todayISO: ISODate = todayInIST()): Pro
       fileName: upload?.fileName ?? null,
       payrollStatus,
       payrollRunId: run?.id ?? null,
-      canPullNow: canPullNow({ source, status, payrollStatus, isSyncing, start: week.start }, todayISO),
+      canPullNow: canPullNow({ source, status, payrollStatus, isSyncing: syncing, start: week.start }, todayISO),
       canReopen: canReopenWeek({ source, status, payrollStatus }),
       hasEnded: hasWeekEnded(week, todayISO),
     }
