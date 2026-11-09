@@ -1,6 +1,10 @@
 import { notFound, redirect } from 'next/navigation'
 import prisma from '@/lib/prisma'
 import { AppShell } from '@/components/layout/AppShell'
+import {
+  abandonCorrectionAction,
+  approveCorrectionPunchesAction,
+} from '@/features/payroll-correction/actions/correction.actions'
 import { getActiveCorrection } from '@/features/payroll-correction/services/correction.service'
 import { PunchReviewGrid } from '@/features/attendance-sync/components/PunchReviewGrid'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
@@ -51,6 +55,8 @@ export default async function CorrectionPunchesPage({ params }: Props) {
         backLabel="Reason"
         title="Correct punches"
         correctionReason={session.correctionReason}
+        onApproveCorrection={approveCorrectionPunchesAction}
+        onAbandonCorrection={abandonCorrectionAction}
       />
     </AppShell>
   )

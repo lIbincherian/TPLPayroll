@@ -12,11 +12,13 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { abandonCorrectionAction } from '@/features/payroll-correction/actions/correction.actions'
 import { plural } from '../lib/format'
+import type { ActionResult } from '../types/attendance-sync.types'
 
 interface CorrectionBannerProps {
   payrollRunId: string
+  /** Discards the correction. Injected by the page so this feature does not import payroll-correction. */
+  onAbandon: (payrollRunId: string) => Promise<ActionResult<unknown>>
   /** The revision that stays in effect until the correction is approved. */
   revisionNumber: number
   reason: string | null
@@ -25,7 +27,7 @@ interface CorrectionBannerProps {
 }
 
 /** One line above the grid while a payroll correction is open, with Cancel correction. */
-export function CorrectionBanner({ payrollRunId, revisionNumber, reason, changedDays }: CorrectionBannerProps) {
+export function CorrectionBanner({ payrollRunId, onAbandon, revisionNumber, reason, changedDays }: CorrectionBannerProps) {
   const router = useRouter()
   const [confirming, setConfirming] = useState(false)
   const [pending, setPending] = useState(false)
@@ -35,7 +37,7 @@ export function CorrectionBanner({ payrollRunId, revisionNumber, reason, changed
     setPending(true)
     setError(null)
     try {
-      const res = await abandonCorrectionAction(payrollRunId)
+      const res = await onAbandon(payrollRunId)
       if (res.ok) {
         toast.success('Correction discarded')
         router.push(`/payroll/run/${payrollRunId}`)

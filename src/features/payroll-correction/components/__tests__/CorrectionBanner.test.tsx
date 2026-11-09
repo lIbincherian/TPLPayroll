@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { CorrectionBanner } from '@/features/attendance-sync/components/CorrectionBanner'
-import { abandonCorrectionAction } from '@/features/payroll-correction/actions/correction.actions'
 
 // The line above the punch grid while a correction is open (spec §2.8, E2E-25).
+// The attendance feature does not import payroll-correction: the page passes the abandon action in.
 
 const push = vi.fn()
 
@@ -11,16 +11,22 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push, back: vi.fn() }),
 }))
 
-vi.mock('@/features/payroll-correction/actions/correction.actions', () => ({
-  abandonCorrectionAction: vi.fn(),
-}))
-
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
 const abandoned = { ok: true as const, data: { sessionId: 's-1', discardedEdits: 3 } }
+const onAbandon = vi.fn()
 
 function renderBanner(overrides: Partial<React.ComponentProps<typeof CorrectionBanner>> = {}) {
-  return render(<CorrectionBanner payrollRunId="run-1" revisionNumber={1} reason={null} changedDays={3} {...overrides} />)
+  return render(
+    <CorrectionBanner
+      payrollRunId="run-1"
+      onAbandon={onAbandon}
+      revisionNumber={1}
+      reason={null}
+      changedDays={3}
+      {...overrides}
+    />,
+  )
 }
 
 beforeEach(() => {
@@ -53,12 +59,12 @@ describe('CorrectionBanner', () => {
   })
 
   it('abandons straight away when no day was changed', async () => {
-    vi.mocked(abandonCorrectionAction).mockResolvedValue(abandoned)
+    vi.mocked(onAbandon).mockResolvedValue(abandoned)
     renderBanner({ changedDays: 0 })
 
     fireEvent.click(screen.getByTestId('cancel-correction'))
 
-    await waitFor(() => expect(abandonCorrectionAction).toHaveBeenCalledWith('run-1'))
+    await waitFor(() => expect(onAbandon).toHaveBeenCalledWith('run-1'))
     await waitFor(() => expect(push).toHaveBeenCalledWith('/payroll/run/run-1'))
     expect(screen.queryByTestId('discard-correction-dialog')).not.toBeInTheDocument()
   })
@@ -71,28 +77,28 @@ describe('CorrectionBanner', () => {
     const dialog = await screen.findByTestId('discard-correction-dialog')
     expect(dialog).toHaveTextContent('Discard this correction?')
     expect(dialog).toHaveTextContent('Punch edits on 3 days will be discarded.')
-    expect(abandonCorrectionAction).not.toHaveBeenCalled()
+    expect(onAbandon).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByTestId('keep-editing'))
 
     await waitFor(() => expect(screen.queryByTestId('discard-correction-dialog')).not.toBeInTheDocument())
-    expect(abandonCorrectionAction).not.toHaveBeenCalled()
+    expect(onAbandon).not.toHaveBeenCalled()
     expect(push).not.toHaveBeenCalled()
   })
 
   it('discards after confirmation, then returns to the payroll run', async () => {
-    vi.mocked(abandonCorrectionAction).mockResolvedValue(abandoned)
+    vi.mocked(onAbandon).mockResolvedValue(abandoned)
     renderBanner({ changedDays: 3 })
 
     fireEvent.click(screen.getByTestId('cancel-correction'))
     fireEvent.click(await screen.findByTestId('discard-correction'))
 
-    await waitFor(() => expect(abandonCorrectionAction).toHaveBeenCalledWith('run-1'))
+    await waitFor(() => expect(onAbandon).toHaveBeenCalledWith('run-1'))
     await waitFor(() => expect(push).toHaveBeenCalledWith('/payroll/run/run-1'))
   })
 
   it('shows the error and stays when the discard fails', async () => {
-    vi.mocked(abandonCorrectionAction).mockResolvedValue({
+    vi.mocked(onAbandon).mockResolvedValue({
       ok: false,
       error: 'No correction is in progress for this payroll run',
       code: 'CORRECTION_NOT_ACTIVE',
@@ -112,6 +118,6 @@ describe('CorrectionBanner', () => {
     fireEvent.click(screen.getByTestId('cancel-correction'))
 
     expect(await screen.findByTestId('discard-correction-dialog')).toBeInTheDocument()
-    expect(abandonCorrectionAction).not.toHaveBeenCalled()
+    expect(onAbandon).not.toHaveBeenCalled()
   })
 })

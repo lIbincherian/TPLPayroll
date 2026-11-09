@@ -25,7 +25,6 @@ import {
   getPunchReviewAction,
   reopenWeekAction,
 } from '../actions/attendance-sync.actions'
-import { approveCorrectionPunchesAction } from '@/features/payroll-correction/actions/correction.actions'
 import { formatHoursTotal, formatIstDateTime, formatIstTime, plural } from '../lib/format'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 import {
@@ -38,7 +37,13 @@ import {
   type GridFilter,
 } from '../lib/review-view'
 import { formatWeekLabel } from '../lib/week'
-import type { ApprovalSummary, ISODate, PunchReview, SavePunchEditResult } from '../types/attendance-sync.types'
+import type {
+  ActionResult,
+  ApprovalSummary,
+  ISODate,
+  PunchReview,
+  SavePunchEditResult,
+} from '../types/attendance-sync.types'
 import { ApproveWeekDialog, type ApproveResult } from './ApproveWeekDialog'
 import { CorrectionBanner } from './CorrectionBanner'
 import { DayEditorSheet } from './DayEditorSheet'
@@ -48,6 +53,11 @@ import { ReopenWeekDialog } from './ReopenWeekDialog'
 import { WeekStatusBadge } from './WeekStatusBadge'
 
 const EDITOR_WIDTH = 460
+
+/** Stands in for a correction action the page did not inject, so the screen reports it instead of failing silently. */
+async function correctionActionMissing(): Promise<ActionResult<never>> {
+  return { ok: false, error: "Couldn't complete that. Reload the page and try again." }
+}
 
 // ─── Filter bar ───────────────────────────────────────────────────────────────
 
@@ -185,6 +195,13 @@ interface PunchReviewGridProps {
   title: string
   /** Correction mode: the reason entered on the first step. */
   correctionReason?: string | null
+  /**
+   * Correction mode: "Approve punches". Injected by the page so this feature does not import
+   * payroll-correction. On success it redirects to the revised preview, so nothing comes back.
+   */
+  onApproveCorrection?: (payrollRunId: string) => Promise<ActionResult<unknown> | undefined>
+  /** Correction mode: "Cancel correction", passed on to the banner. */
+  onAbandonCorrection?: (payrollRunId: string) => Promise<ActionResult<unknown>>
 }
 
 /**
@@ -198,6 +215,8 @@ export function PunchReviewGrid({
   backLabel,
   title,
   correctionReason = null,
+  onApproveCorrection,
+  onAbandonCorrection,
 }: PunchReviewGridProps) {
   const router = useRouter()
   const isDesktop = useMediaQuery('(min-width: 768px)')
@@ -328,7 +347,7 @@ export function PunchReviewGrid({
   async function confirmApprove(): Promise<ApproveResult | undefined> {
     if (mode.kind === 'CORRECTION') {
       // On success the action redirects to the revised preview, so nothing comes back.
-      const res = await approveCorrectionPunchesAction(mode.payrollRunId)
+      const res = await (onApproveCorrection ?? correctionActionMissing)(mode.payrollRunId)
       if (!res) return undefined
       return res.ok ? { ok: true } : { ok: false, error: res.error, code: res.code }
     }
@@ -511,6 +530,7 @@ export function PunchReviewGrid({
       {isCorrection && mode.kind === 'CORRECTION' && (
         <CorrectionBanner
           payrollRunId={mode.payrollRunId}
+          onAbandon={onAbandonCorrection ?? correctionActionMissing}
           revisionNumber={mode.revisionNumber}
           reason={correctionReason}
           changedDays={changedDays}
