@@ -1,64 +1,31 @@
 'use client'
 
-import { useState, useTransition, useCallback, useEffect, useRef } from 'react'
+import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, ArrowRight, CircleNotch } from '@phosphor-icons/react'
-import type { InitiateCorrectionResult, CorrectionType } from '@/features/payroll-correction/types/correction.types'
-import { recalculateAndCreateRevisionAction } from '@/features/payroll-correction/actions/correction.actions'
+import type {
+  InitiateCorrectionResult,
+  CorrectionType,
+  CorrectionSessionInfo,
+} from '@/features/payroll-correction/types/correction.types'
+import {
+  recalculateAndCreateRevisionAction,
+  startAttendanceCorrectionAction,
+  abandonCorrectionAction,
+} from '@/features/payroll-correction/actions/correction.actions'
 
 import {
   approveAdjustmentApplicationAction,
   skipAdjustmentApplicationAction,
 } from '@/features/payroll-adjustments/actions/adjustment.actions'
 
-import { AttendanceDropzone } from '@/features/attendance-upload/components/AttendanceDropzone'
-import { WeekSelectionDialog } from '@/features/attendance-upload/components/WeekSelectionDialog'
-import { EmployeeVerificationDialog } from '@/features/attendance-upload/components/EmployeeVerificationDialog'
-import type { VerificationDialogState } from '@/features/attendance-upload/components/EmployeeVerificationDialog'
-import type { InitialDialogState } from '@/features/attendance-upload/components/AttendanceUploadClient'
-import {
-  parseFromStorageWithDatesAction,
-  finalizeAttendanceUploadAction,
-  getEmployeesForMatchingAction,
-} from '@/features/attendance-upload/actions/attendance.actions'
-import type {
-  MatchedAttendanceRecord,
-  PayrollWeekSource,
-  ImportSummary,
-  VerificationDecision,
-} from '@/features/attendance-upload/types/attendance.types'
-import type { EmployeeOption } from '@/features/attendance-upload/actions/attendance.actions'
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type DialogState =
-  | { type: 'none' }
-  | {
-      type: 'week_required'
-      storageKey: string
-      fileName: string
-      fileType: string
-    }
-  | {
-      type: 'verify_required'
-      records: MatchedAttendanceRecord[]
-      summary: ImportSummary
-      payrollWeekStartDate: string
-      payrollWeekEndDate: string
-      payrollWeekSource: PayrollWeekSource
-      storageKey: string
-      fileName: string
-      fileType: string
-      initialState?: VerificationDialogState
-      pendingOnboardBlockKeys?: string[]
-    }
-
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface CorrectionFlowProps {
   data: InitiateCorrectionResult
   weekLabel: string
-  initialDialogState?: InitialDialogState | null
+  /** The correction in progress for this run. Prefills the reason and types when resuming. */
+  activeSession?: CorrectionSessionInfo | null
 }
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
@@ -72,238 +39,36 @@ function formatCurrency(amount: number) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function CorrectionFlow({ data, weekLabel, initialDialogState }: CorrectionFlowProps) {
+export function CorrectionFlow({ data, weekLabel, activeSession = null }: CorrectionFlowProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
-  const [correctionReason, setCorrectionReason] = useState('')
-  const [selectedTypes, setSelectedTypes] = useState<Set<CorrectionType>>(new Set())
+  const [correctionReason, setCorrectionReason] = useState(activeSession?.correctionReason ?? '')
+  const [selectedTypes, setSelectedTypes] = useState<Set<CorrectionType>>(
+    new Set(activeSession?.correctionTypes ?? []),
+  )
   const [error, setError] = useState<string | null>(null)
 
-  const [uploadedFileId, setUploadedFileId] = useState<string | null>(null)
-  const [dialog, setDialog] = useState<DialogState>({ type: 'none' })
-  const [employeeOptions, setEmployeeOptions] = useState<EmployeeOption[]>([])
+  const runUrl = `/payroll/run/${data.payrollRunId}`
+  const attendanceSelected = selectedTypes.has('ATTENDANCE')
+  // An Excel-era run has no punches to edit, so only adjustments and employee data can be corrected.
+  const attendanceDisabled = activeSession?.attendanceSource === 'EXCEL'
 
-  const expectedWeekStartISO = new Date(data.weekStart).toISOString().slice(0, 10)
-  const expectedWeekEndISO = new Date(data.weekEnd).toISOString().slice(0, 10)
-
-  const hydratedFromSession = useRef(false)
-
-  const loadEmployeeOptions = useCallback(async (records: MatchedAttendanceRecord[]) => {
-    if (!records.some((r) => r.matchStatus === 'UNMATCHED')) return
-    const result = await getEmployeesForMatchingAction()
-    if (result.ok) setEmployeeOptions(result.data)
-  }, [])
-
-  // ── Hydrate from server-provided session resume ────────────────────────────
-  useEffect(() => {
-    if (hydratedFromSession.current) return
-    if (!initialDialogState) return
-    hydratedFromSession.current = true
-    setSelectedTypes(new Set(['ATTENDANCE'])) // Auto-select Attendance option when resuming
-    // initialDialogState is lean (no records[]) — records are fetched client-side
-    // by the attendanceSession resume flow before CorrectionFlow mounts.
-    // If records happen to be provided (legacy path), still use storageKey.
-    setDialog({
-      type: 'week_required',
-      storageKey: initialDialogState.storageKey,
-      fileName: initialDialogState.fileName,
-      fileType: initialDialogState.fileType,
-    })
-    // Clear resume params from URL so a refresh doesn't re-trigger resume.
-    const params = new URLSearchParams(window.location.search)
-    if (params.has('resumeSession') || params.has('newEmployeeId')) {
-      params.delete('resumeSession')
-      params.delete('newEmployeeId')
-      const qs = params.toString()
-      router.replace(qs ? `/payroll/run/${data.payrollRunId}/correct?${qs}` : `/payroll/run/${data.payrollRunId}/correct`)
-    }
-  }, [initialDialogState, loadEmployeeOptions, router, data.payrollRunId])
-
-  const handleWeekRequired = useCallback(
-    (storageKey: string, fileName: string, fileType: string) => {
-      setDialog({ type: 'week_required', storageKey, fileName, fileType })
-    },
-    []
-  )
-
-  const handleVerificationRequired = useCallback(
-    (payload: {
-      records: MatchedAttendanceRecord[]
-      summary: ImportSummary
-      payrollWeekStartDate: string
-      payrollWeekEndDate: string
-      payrollWeekSource: PayrollWeekSource
-      storageKey: string
-      fileName: string
-      fileType: string
-    }) => {
-      loadEmployeeOptions(payload.records)
-      setDialog({ type: 'verify_required', ...payload })
-    },
-    [loadEmployeeOptions]
-  )
-
-  const handleWeekConfirm = useCallback(
-    async (startDate: string, endDate: string) => {
-      if (dialog.type !== 'week_required') return
-      const { storageKey, fileName, fileType } = dialog
-      setDialog({ type: 'none' })
-      setError(null)
-
-      if (startDate !== expectedWeekStartISO || endDate !== expectedWeekEndISO) {
-        setError('The uploaded attendance file is for a different week. Please upload the correct file for this payroll run.')
-        return
-      }
-
-      const result = await parseFromStorageWithDatesAction(
-        storageKey,
-        startDate,
-        endDate,
-        fileName,
-        fileType
-      )
-
-      if (!result.ok) {
-        setError(result.error)
-        return
-      }
-
-      const needsVerification = result.data.records.some(
-        (r) =>
-          r.matchStatus === 'UNMATCHED' ||
-          r.matchStatus === 'INACTIVE' ||
-          r.matchStatus === 'RESIGNED_BEFORE_WEEK'
-      )
-
-      if (needsVerification) {
-        loadEmployeeOptions(result.data.records)
-        setDialog({
-          type: 'verify_required',
-          records: result.data.records,
-          summary: result.data.summary,
-          payrollWeekStartDate: startDate,
-          payrollWeekEndDate: endDate,
-          payrollWeekSource: 'MANUAL',
-          storageKey,
-          fileName,
-          fileType,
-        })
-        return
-      }
-
-      const finalResult = await finalizeAttendanceUploadAction({
-        storageKey,
-        fileName,
-        fileType,
-        payrollWeekStartDate: startDate,
-        payrollWeekEndDate: endDate,
-        payrollWeekSource: 'MANUAL',
-      })
-
-      if (!finalResult.ok) {
-        setError(finalResult.error)
-        return
-      }
-
-      setUploadedFileId(finalResult.data.uploadId)
-    },
-    [dialog, loadEmployeeOptions, expectedWeekStartISO, expectedWeekEndISO]
-  )
-
-  const handleVerificationConfirm = useCallback(
-    async (
-      decisions: Record<string, VerificationDecision>,
-      manualMatchDecisions: Record<string, string>,
-      rejectedBlockKeys: string[]
-    ) => {
-      if (dialog.type !== 'verify_required') return
-      const { storageKey, fileName, fileType, payrollWeekStartDate, payrollWeekEndDate, payrollWeekSource } = dialog
-      setDialog({ type: 'none' })
-      setError(null)
-
-      const finalResult = await finalizeAttendanceUploadAction({
-        storageKey,
-        fileName,
-        fileType,
-        payrollWeekStartDate,
-        payrollWeekEndDate,
-        payrollWeekSource,
-        verificationDecisions: decisions,
-        manualMatchDecisions,
-        rejectedBlockKeys,
-      })
-
-      if (!finalResult.ok) {
-        setError(finalResult.error)
-        return
-      }
-
-      setUploadedFileId(finalResult.data.uploadId)
-    },
-    [dialog]
-  )
-
-  const handleOnboard = useCallback(
-    async (record: MatchedAttendanceRecord, currentState: VerificationDialogState) => {
-      if (dialog.type !== 'verify_required') return
-      const { getBlockKey } = await import('@/features/attendance-upload/types/attendance.types')
-      const { createAttendanceUploadSessionAction } = await import('@/features/attendance-upload/actions/attendance.actions')
-      const blockKey = getBlockKey(record)
-
-      const result = await createAttendanceUploadSessionAction({
-        storageKey: dialog.storageKey,
-        fileName: dialog.fileName,
-        fileType: dialog.fileType,
-        payrollWeekStartDate: dialog.payrollWeekStartDate,
-        payrollWeekEndDate: dialog.payrollWeekEndDate,
-        payrollWeekSource: dialog.payrollWeekSource,
-        verificationDecisions: currentState.verificationDecisions,
-        manualMatchDecisions: currentState.manualMatchDecisions,
-        rejectedBlockKeys: currentState.rejectedBlockKeys,
-        pendingBlockKey: blockKey,
-        pendingSheetEmployeeName: record.employeeName,
-      })
-
-      if (!result.ok) {
-        setError(result.error)
-        return
-      }
-
-      setDialog((prev) =>
-        prev.type === 'verify_required'
-          ? {
-              ...prev,
-              initialState: currentState,
-              pendingOnboardBlockKeys: Array.from(
-                new Set([...(prev.pendingOnboardBlockKeys ?? []), blockKey])
-              ),
-            }
-          : prev
-      )
-
-      startTransition(() => {
-        router.push(`/employees/new?attendanceSession=${result.data.sessionId}&returnTo=/payroll/run/${data.payrollRunId}/correct`)
-      })
-    },
-    [dialog, router, startTransition, data.payrollRunId]
-  )
-
-  const isRecalculateDisabled =
-    isPending ||
-    selectedTypes.size === 0 ||
-    (selectedTypes.has('ATTENDANCE') && !uploadedFileId)
+  const isContinueDisabled = isPending || selectedTypes.size === 0
 
   // Local override of application statuses based on live user actions
   const [appStatusOverrides, setAppStatusOverrides] = useState<Partial<Record<string, 'APPROVED' | 'SKIPPED'>>>({})
 
   const correctionOptions: { type: CorrectionType; label: string; description: string }[] = [
     { type: 'ADJUSTMENTS', label: 'Adjustments', description: 'Modify deductions or additions' },
-    { type: 'ATTENDANCE', label: 'Attendance', description: 'Upload a corrected attendance file' },
+    { type: 'ATTENDANCE', label: 'Attendance', description: attendanceDisabled
+        ? "Attendance can't be corrected for an Excel-era week"
+        : "Edit this week's punches" },
     { type: 'EMPLOYEE_DATA', label: 'Employee data updated', description: 'Recalculate with current employee directory data' },
   ]
 
   function toggleType(type: CorrectionType) {
+    if (type === 'ATTENDANCE' && attendanceDisabled) return
     setSelectedTypes((prev) => {
       const next = new Set(prev)
       if (next.has(type)) next.delete(type)
@@ -330,7 +95,7 @@ export function CorrectionFlow({ data, weekLabel, initialDialogState }: Correcti
     })
   }
 
-  function handleRecalculate() {
+  function handleContinue() {
     if (selectedTypes.size === 0) {
       setError('Select at least one correction type')
       return
@@ -338,10 +103,22 @@ export function CorrectionFlow({ data, weekLabel, initialDialogState }: Correcti
     setError(null)
 
     startTransition(async () => {
+      if (attendanceSelected) {
+        // Copies the approved punches and opens the punches page (the action redirects).
+        const res = await startAttendanceCorrectionAction(data.payrollRunId, {
+          reason: correctionReason.trim() || null,
+          types: [...selectedTypes],
+        })
+        if (res && !res.ok) setError(res.error)
+        else if (res?.ok) router.push(`${runUrl}/correct/punches`)
+        return
+      }
+
       const res = await recalculateAndCreateRevisionAction({
         payrollRunId: data.payrollRunId,
         correctionReason: correctionReason.trim() || null,
         correctionTypes: [...selectedTypes],
+        correctionSessionId: activeSession?.sessionId,
         // The backend handles applying logic automatically based on final approved statuses.
         // Passing empty array for backwards compatibility of shape, database is now the source of truth live.
         adjustmentChanges: {
@@ -351,8 +128,24 @@ export function CorrectionFlow({ data, weekLabel, initialDialogState }: Correcti
       })
 
       if (res.ok) {
-        // Hard navigate to bypass Next.js RSC cache
-        window.location.href = `/payroll/run/${data.payrollRunId}`
+        router.push(`${runUrl}/correct/preview`)
+      } else {
+        setError(res.error)
+      }
+    })
+  }
+
+  // Cancelling discards the correction: the adjustment statuses go back to how they were.
+  function handleCancel() {
+    if (!activeSession) {
+      router.push(runUrl)
+      return
+    }
+    setError(null)
+    startTransition(async () => {
+      const res = await abandonCorrectionAction(data.payrollRunId)
+      if (res.ok) {
+        router.push(runUrl)
       } else {
         setError(res.error)
       }
@@ -369,8 +162,9 @@ export function CorrectionFlow({ data, weekLabel, initialDialogState }: Correcti
     <main className="mx-auto max-w-4xl px-4 py-12">
       {/* Cancel */}
       <button
-        onClick={() => router.back()}
-        className="mb-6 flex items-center gap-1.5 text-sm text-zinc-500 transition-colors hover:text-zinc-700"
+        onClick={handleCancel}
+        disabled={isPending}
+        className="mb-6 flex items-center gap-1.5 text-sm text-zinc-500 transition-colors hover:text-zinc-700 disabled:opacity-50"
       >
         <ArrowLeft size={16} />
         Cancel Correction
@@ -380,7 +174,9 @@ export function CorrectionFlow({ data, weekLabel, initialDialogState }: Correcti
       <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
         Payroll Correction
       </h1>
-      <p className="mt-1 text-sm text-zinc-500">{weekLabel}</p>
+      <p className="mt-1 text-sm text-zinc-500">
+        {weekLabel} · Revision {data.revisionNumber} stays current until the new one is approved
+      </p>
 
       {/* Error banner */}
       {error && (
@@ -417,11 +213,12 @@ export function CorrectionFlow({ data, weekLabel, initialDialogState }: Correcti
           {correctionOptions.map((opt) => (
             <label
               key={opt.type}
-              className="flex cursor-pointer items-start gap-3 rounded-xl border border-zinc-200/60 px-4 py-3 transition-colors hover:bg-zinc-50/50 has-[:checked]:border-emerald-300 has-[:checked]:bg-emerald-50/30"
+              className="flex cursor-pointer items-start gap-3 rounded-xl border border-zinc-200/60 px-4 py-3 transition-colors hover:bg-zinc-50/50 has-[:checked]:border-emerald-300 has-[:checked]:bg-emerald-50/30 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60"
             >
               <input
                 type="checkbox"
                 checked={selectedTypes.has(opt.type)}
+                disabled={opt.type === 'ATTENDANCE' && attendanceDisabled}
                 onChange={() => toggleType(opt.type)}
                 className="mt-0.5 h-4 w-4 rounded border-zinc-300 text-emerald-600 accent-emerald-600 focus:ring-emerald-500"
               />
@@ -532,17 +329,6 @@ export function CorrectionFlow({ data, weekLabel, initialDialogState }: Correcti
         </section>
       )}
 
-      {/* Attendance re-upload */}
-      {selectedTypes.has('ATTENDANCE') && (
-        <AttendanceDropzone
-          onWeekRequired={handleWeekRequired}
-          onVerificationRequired={handleVerificationRequired}
-          expectedWeekStart={expectedWeekStartISO}
-          expectedWeekEnd={expectedWeekEndISO}
-          onUploadSuccess={setUploadedFileId}
-        />
-      )}
- 
       {/* Employee data notice */}
       {selectedTypes.has('EMPLOYEE_DATA') && (
         <section className="mt-8 border-t border-zinc-200/60 pt-8">
@@ -556,20 +342,26 @@ export function CorrectionFlow({ data, weekLabel, initialDialogState }: Correcti
       {/* Action bar */}
       <div className="mt-8 flex items-center justify-end gap-3 border-t border-zinc-200/60 pt-8">
         <button
-          onClick={() => router.back()}
-          className="rounded-xl border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-700 transition-all hover:bg-zinc-50 active:scale-[0.98]"
+          onClick={handleCancel}
+          disabled={isPending}
+          className="rounded-xl border border-zinc-200 px-4 py-2.5 text-sm font-medium text-zinc-700 transition-all hover:bg-zinc-50 active:scale-[0.98] disabled:opacity-50"
         >
           Cancel
         </button>
         <button
-          onClick={handleRecalculate}
-          disabled={isRecalculateDisabled}
+          onClick={handleContinue}
+          disabled={isContinueDisabled}
           className="flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:bg-emerald-700 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isPending ? (
             <>
               <CircleNotch size={16} className="animate-spin" />
-              Recalculating...
+              {attendanceSelected ? 'Opening punches...' : 'Recalculating...'}
+            </>
+          ) : attendanceSelected ? (
+            <>
+              Continue to punches
+              <ArrowRight size={16} />
             </>
           ) : (
             <>
@@ -579,30 +371,6 @@ export function CorrectionFlow({ data, weekLabel, initialDialogState }: Correcti
           )}
         </button>
       </div>
-
-      {/* Dialogs */}
-      {dialog.type === 'week_required' && (
-        <WeekSelectionDialog
-          onConfirm={handleWeekConfirm}
-          onCancel={() => setDialog({ type: 'none' })}
-        />
-      )}
-
-      {dialog.type === 'verify_required' && (
-        <EmployeeVerificationDialog
-          isOpen={dialog.type === 'verify_required'}
-          employees={dialog.records.filter(
-            (r) => r.matchStatus === 'INACTIVE' || r.matchStatus === 'RESIGNED_BEFORE_WEEK'
-          )}
-          unmatchedEmployees={dialog.records.filter((r) => r.matchStatus === 'UNMATCHED')}
-          employeeOptions={employeeOptions}
-          initialState={dialog.initialState}
-          pendingOnboardBlockKeys={dialog.pendingOnboardBlockKeys}
-          onConfirm={handleVerificationConfirm}
-          onOnboard={handleOnboard}
-          onCancel={() => setDialog({ type: 'none' })}
-        />
-      )}
     </main>
   )
 }

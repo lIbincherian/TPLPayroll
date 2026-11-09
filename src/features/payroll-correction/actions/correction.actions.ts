@@ -8,7 +8,10 @@ import {
   approveRevision,
   getRevisionHistory,
   getRevisionEmployees,
-  prepareAdjustmentsForCorrection,
+  beginCorrection,
+  startAttendanceCorrection,
+  approveCorrectionPunches,
+  abandonCorrection,
 } from '@/features/payroll-correction/services/correction.service'
 import { CorrectionServiceError } from '@/features/payroll-correction/types/correction.types'
 import type {
@@ -18,7 +21,10 @@ import type {
   RevisionHistoryItem,
   ApproveRevisionResult,
   RevisedEmployeeRow,
+  StartAttendanceCorrectionInput,
+  AbandonCorrectionResult,
 } from '@/features/payroll-correction/types/correction.types'
+import { AttendanceSyncError } from '@/features/attendance-sync/types/attendance-sync.types'
 import { redirect } from 'next/navigation'
 
 // ─── Action result wrapper ────────────────────────────────────────────────────
@@ -35,6 +41,7 @@ function err(error: string, code?: string): ActionResult<never> {
 
 function handleError(e: unknown): ActionResult<never> {
   if (e instanceof CorrectionServiceError) return err(e.message, e.code)
+  if (e instanceof AttendanceSyncError) return err(e.message, e.code)
   console.error('[CorrectionAction]', e)
   return err('An unexpected error occurred')
 }
@@ -42,11 +49,54 @@ function handleError(e: unknown): ActionResult<never> {
 // ─── beginPayrollCorrectionAction ─────────────────────────────────────────────
 
 export async function beginPayrollCorrectionAction(payrollRunId: string): Promise<void> {
-  // Performs the reset mutation
-  await prepareAdjustmentsForCorrection(payrollRunId)
-  
+  // Opens a correction session (or resumes the one in progress) and performs the reset mutation
+  await beginCorrection(payrollRunId)
+
   // Trigger redirect to the interactive correction flow
   redirect(`/payroll/run/${payrollRunId}/correct`)
+}
+
+// ─── startAttendanceCorrectionAction ──────────────────────────────────────────
+
+/** Saves the reason and types, copies the approved punches, then opens the punches page. */
+export async function startAttendanceCorrectionAction(
+  payrollRunId: string,
+  input: StartAttendanceCorrectionInput,
+): Promise<ActionResult<{ sessionId: string }>> {
+  try {
+    await startAttendanceCorrection(payrollRunId, input)
+  } catch (e) {
+    return handleError(e)
+  }
+  // Outside the try block: redirect() works by throwing.
+  redirect(`/payroll/run/${payrollRunId}/correct/punches`)
+}
+
+// ─── approveCorrectionPunchesAction ───────────────────────────────────────────
+
+/** "Approve punches": builds the draft revision from the corrected punches, then opens the preview. */
+export async function approveCorrectionPunchesAction(
+  payrollRunId: string,
+): Promise<ActionResult<CreateRevisionResult>> {
+  try {
+    await approveCorrectionPunches(payrollRunId)
+  } catch (e) {
+    return handleError(e)
+  }
+  redirect(`/payroll/run/${payrollRunId}/correct/preview`)
+}
+
+// ─── abandonCorrectionAction ──────────────────────────────────────────────────
+
+export async function abandonCorrectionAction(
+  payrollRunId: string,
+): Promise<ActionResult<AbandonCorrectionResult>> {
+  try {
+    const result = await abandonCorrection(payrollRunId)
+    return ok(result)
+  } catch (e) {
+    return handleError(e)
+  }
 }
 
 // ─── initiateCorrectionAction ─────────────────────────────────────────────────

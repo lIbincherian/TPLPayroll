@@ -36,12 +36,50 @@ export interface CorrectionAdjustmentItem {
   isReversed: boolean
 }
 
+// ─── Correction session ───────────────────────────────────────────────────────
+
+/** An in-progress correction of an approved payroll run. */
+export interface CorrectionSessionInfo {
+  sessionId: string
+  payrollRunId: string
+  attendanceUploadId: string
+  /** Thursday that starts the run's week (YYYY-MM-DD); the `weekId` of the attendance pages. */
+  weekId: string
+  /** Excel-era runs can only be corrected for adjustments and employee data, not attendance. */
+  attendanceSource: 'EXCEL' | 'ETIMEOFFICE'
+  correctionReason: string | null
+  correctionTypes: CorrectionType[]
+  /** True once the approved punches were copied for editing (an Attendance correction was started). */
+  hasPunchClone: boolean
+  draftRevisionId: string | null
+}
+
+export interface BeginCorrectionResult {
+  sessionId: string
+  /** True when an in-progress correction was found and reused. */
+  resumed: boolean
+  correctionTypes: CorrectionType[]
+}
+
+export interface StartAttendanceCorrectionInput {
+  reason: string | null
+  types: CorrectionType[]
+}
+
+export interface AbandonCorrectionResult {
+  sessionId: string
+  /** Punch edits that were thrown away (they stay in the audit log). */
+  discardedEdits: number
+}
+
 // ─── Create revision input ────────────────────────────────────────────────────
 
 export interface CreateRevisionInput {
   payrollRunId: string
   correctionReason: string | null
   correctionTypes: CorrectionType[]
+  /** When set and the session has copied punches, hours come from them instead of the approved records. */
+  correctionSessionId?: string
   adjustmentChanges?: {
     reversed: string[]   // applicationIds to reverse
     approved: string[]   // applicationIds to re-approve (previously skipped)
@@ -66,6 +104,10 @@ export interface RevisedEmployeeRow extends EmployeePayrollRow {
   previousOvertimePay: number | null
   previousAdditions: number | null
   previousDeductions: number | null
+  /** Paid in this revision but not in the current one. */
+  isNew: boolean
+  /** Paid in the current revision but not in this one. Values are zero; `previous*` hold what they were paid. */
+  isLeftOut: boolean
 }
 
 // ─── Revision history ─────────────────────────────────────────────────────────
@@ -73,7 +115,7 @@ export interface RevisedEmployeeRow extends EmployeePayrollRow {
 export interface RevisionHistoryItem {
   revisionId: string
   revisionNumber: number
-  status: 'APPROVED' | 'SUPERSEDED'
+  status: 'DRAFT' | 'APPROVED' | 'SUPERSEDED'
   correctionReason: string | null
   isCurrent: boolean
   totalNetPayable: number
@@ -104,6 +146,11 @@ export type CorrectionErrorCode =
   | 'APPLICATION_NOT_FOUND'
   | 'ALREADY_REVERSED'
   | 'CANNOT_APPROVE_NON_SKIPPED'
+  | 'NO_DRAFT_REVISION'
+  | 'CORRECTION_NOT_ACTIVE'
+  | 'CORRECTION_HAS_INCOMPLETE_PAIRS'
+  | 'EXCEL_ERA_ATTENDANCE_CORRECTION'
+  | 'REVISION_NOT_DRAFT'
 
 export class CorrectionServiceError extends Error {
   constructor(

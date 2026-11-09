@@ -1,17 +1,14 @@
-import { notFound } from 'next/navigation'
-import { initiateCorrection } from '@/features/payroll-correction/services/correction.service'
+import { notFound, redirect } from 'next/navigation'
+import { initiateCorrection, getActiveCorrection } from '@/features/payroll-correction/services/correction.service'
 import { CorrectionFlow } from '@/features/payroll-correction/components/CorrectionFlow'
 import { CorrectionServiceError } from '@/features/payroll-correction/types/correction.types'
 import { AppShell } from '@/components/layout/AppShell'
-import { resumeAttendanceUploadSessionAction } from '@/features/attendance-upload/actions/session.actions'
-import type { InitialDialogState } from '@/features/attendance-upload/components/AttendanceUploadClient'
 
 export const dynamic = 'force-dynamic'
 
 
 interface Props {
   params: Promise<{ payrollRunId: string }>
-  searchParams: Promise<{ resumeSession?: string; newEmployeeId?: string }>
 }
 
 export async function generateMetadata({ params }: Props) {
@@ -24,9 +21,8 @@ function formatWeekRange(start: Date, end: Date) {
   return `${start.toLocaleDateString('en-IN', opts)} – ${end.toLocaleDateString('en-IN', opts)}`
 }
 
-export default async function PayrollCorrectionPage({ params, searchParams }: Props) {
+export default async function PayrollCorrectionPage({ params }: Props) {
   const { payrollRunId } = await params
-  const { resumeSession, newEmployeeId } = await searchParams
 
   let data
   try {
@@ -52,37 +48,16 @@ export default async function PayrollCorrectionPage({ params, searchParams }: Pr
     throw e
   }
 
-  const weekLabel = `Week ${formatWeekRange(data.weekStart, data.weekEnd)}`
+  // A correction starts from the Correct button on the payroll run, which opens (or resumes)
+  // the session. Without one there is nothing to edit here.
+  const activeSession = await getActiveCorrection(payrollRunId)
+  if (!activeSession) redirect(`/payroll/run/${payrollRunId}`)
 
-  let initialDialogState: InitialDialogState | null = null
-  if (resumeSession) {
-    const resumeResult = await resumeAttendanceUploadSessionAction(
-      resumeSession,
-      newEmployeeId ?? ''
-    )
-    if (resumeResult.ok) {
-      const d = resumeResult.data
-      // Lean prop — no records[]. CorrectionFlow fetches records client-side
-      // via the week_required → parseFromStorageWithDatesAction path.
-      initialDialogState = {
-        storageKey: d.storageKey,
-        fileName: d.fileName,
-        fileType: d.fileType,
-        payrollWeekStartDate: d.payrollWeekStartDate,
-        payrollWeekEndDate: d.payrollWeekEndDate,
-        payrollWeekSource: d.payrollWeekSource,
-        dialogState: {
-          verificationDecisions: d.verificationDecisions,
-          manualMatchDecisions: d.manualMatchDecisions,
-          rejectedBlockKeys: d.rejectedBlockKeys,
-        },
-      }
-    }
-  }
+  const weekLabel = `Week ${formatWeekRange(data.weekStart, data.weekEnd)}`
 
   return (
     <AppShell>
-      <CorrectionFlow data={data} weekLabel={weekLabel} initialDialogState={initialDialogState} />
+      <CorrectionFlow data={data} weekLabel={weekLabel} activeSession={activeSession} />
     </AppShell>
   )
 }
