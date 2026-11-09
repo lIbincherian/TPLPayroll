@@ -1,7 +1,8 @@
 import type { Prisma } from '@prisma/client'
-import { formatPunchesCell } from './hours'
+import { buildDayView, formatPunchesCell } from './hours'
+import { needsEmployeeDecision } from './matching'
 import { round2 } from './time'
-import { toUtcDate } from './week'
+import { toISODate, toUtcDate } from './week'
 import type {
   ApprovalDecisionInput,
   ApprovalSummary,
@@ -10,14 +11,77 @@ import type {
   AttendanceWeekStatus,
   DayView,
   EmployeeDecisionValue,
+  EmployeeLite,
   GridEmployee,
+  GridEmployeeTag,
   ISODate,
   PairView,
   PunchReview,
+  StoredPunchRow,
   WeekPayrollStatus,
+  WeekRange,
 } from '../types/attendance-sync.types'
 
 // ─── Grid helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * One row per eligible employee with seven day views (Thursday first). Punches that are
+ * not linked to an employee (unknown, duplicate or ignored codes) never appear here.
+ */
+export function buildGridEmployees(
+  eligible: Array<EmployeeLite & { tag: GridEmployeeTag }>,
+  punches: Array<StoredPunchRow & { employeeId: string | null; punchDate: Date }>,
+  dates: ISODate[],
+): GridEmployee[] {
+  const byEmployeeDate = new Map<string, StoredPunchRow[]>()
+  for (const punch of punches) {
+    if (!punch.employeeId) continue
+    const key = `${punch.employeeId}|${toISODate(punch.punchDate)}`
+    const rows = byEmployeeDate.get(key)
+    if (rows) rows.push(punch)
+    else byEmployeeDate.set(key, [punch])
+  }
+
+  return eligible.map((employee) => {
+    const days = dates.map((date) => buildDayView(date, byEmployeeDate.get(`${employee.id}|${date}`) ?? []))
+    return {
+      employeeId: employee.id,
+      employeeCode: employee.employeeId,
+      employeeName: employee.employeeName,
+      tag: employee.tag,
+      days,
+      totalRegularHours: round2(days.reduce((sum, day) => sum + day.regularHours, 0)),
+      totalOvertimeHours: round2(days.reduce((sum, day) => sum + day.overtimeHours, 0)),
+      hasAnyPunch: days.some((day) => day.pairs.length > 0),
+    }
+  })
+}
+
+/** Unresolved codes (unknown or duplicate) and employees still waiting on a decision. */
+export function countEmployeeCheckIssues(input: {
+  week: WeekRange
+  employees: EmployeeLite[]
+  punches: Array<{ empCode: string; matchStatus: string; employeeId: string | null }>
+  decisions: Array<{ employeeId: string }>
+}): { unresolvedCodes: number; pendingDecisions: number } {
+  const unresolved = new Set<string>()
+  const punchCountByEmployee = new Map<string, number>()
+  for (const punch of input.punches) {
+    if (punch.matchStatus === 'UNKNOWN' || punch.matchStatus === 'DUPLICATE') unresolved.add(punch.empCode)
+    else if (punch.employeeId) {
+      punchCountByEmployee.set(punch.employeeId, (punchCountByEmployee.get(punch.employeeId) ?? 0) + 1)
+    }
+  }
+
+  const decided = new Set(input.decisions.map((d) => d.employeeId))
+  let pendingDecisions = 0
+  for (const employee of input.employees) {
+    const count = punchCountByEmployee.get(employee.id) ?? 0
+    if (needsEmployeeDecision(employee, count, input.week).needed && !decided.has(employee.id)) pendingDecisions++
+  }
+
+  return { unresolvedCodes: unresolved.size, pendingDecisions }
+}
 
 /** Days with an incomplete pair. These block approval. */
 export function getNeedsFixingDays(employees: GridEmployee[]): Array<{ employeeId: string; date: ISODate }> {
