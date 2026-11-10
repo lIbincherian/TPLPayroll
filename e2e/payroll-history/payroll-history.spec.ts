@@ -1,12 +1,17 @@
 import { test, expect } from '@playwright/test'
-import { cleanupDatabase, seedApprovedPayrollData } from '../utils/db'
+import { cleanupTestData, seedApprovedPayrollData } from '../utils/db'
+import { expectedCompletedWeek } from '../utils/etimeoffice-mock'
+
+// The history page opens on the most recent approved week. The real-data base ends before the reserved weeks, so
+// a run in the last completed week is that most recent week: the default view shows exactly this spec's rows.
+const WEEK = expectedCompletedWeek().start
 
 let payrollRunId: string
 
 test.beforeAll(async () => {
   try {
-    await cleanupDatabase()
-    const seed = await seedApprovedPayrollData()
+    await cleanupTestData()
+    const seed = await seedApprovedPayrollData({ weekStartISO: WEEK })
     payrollRunId = seed.payrollRunId
   } catch (err: any) {
     throw err
@@ -29,7 +34,7 @@ test.describe('F09: Payroll History E2E', () => {
     
     // Enter search query
     const searchInput = page.getByPlaceholder('Search by employee name or ID...')
-    await searchInput.fill('Meera')
+    await searchInput.fill('Meera Krishnan')
     
     // Wait for debounce and reload
     await page.waitForTimeout(500)
@@ -43,7 +48,7 @@ test.describe('F09: Payroll History E2E', () => {
     await page.goto('/history')
     
     const searchInput = page.getByPlaceholder('Search by employee name or ID...')
-    await searchInput.fill('EMP-RPT-002')
+    await searchInput.fill('E2E-RPT-9002')
     
     await page.waitForTimeout(500)
     

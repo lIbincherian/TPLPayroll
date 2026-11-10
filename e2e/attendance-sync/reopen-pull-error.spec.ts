@@ -1,13 +1,13 @@
 import { test, expect } from '@playwright/test'
-import prisma, { cleanupDatabase, createEmployee, getWeekRow, seedReviewWeek } from '../utils/db'
+import prisma, { cleanupTestData, createEmployee, getWeekRow, seedReviewWeek } from '../utils/db'
 import { approveButton, approveWeekInUi, openAttendance, openReview, settled, weekRow } from '../utils/attendance-ui'
-import { weekDates } from '../utils/etimeoffice-mock'
+import { expectedCompletedWeek, weekDates } from '../utils/etimeoffice-mock'
 
 // Fix round 3, item 7: a pull that loses the race to an approval records "The week was approved while the
 // pull was running" on the week. After a reopen (or an approval) that message is no longer actionable, but
 // the week list still showed "Last pull failed: ..." on the reopened week. Approve and reopen now clear it.
 
-const W = '2026-10-15' // an ended week
+const W = expectedCompletedWeek().start // an ended week, always at the top of the week list
 const dates = weekDates(W)
 const WEEK_CHANGED = 'The week was approved while the pull was running. Nothing was replaced.'
 const EIGHT_HOURS = [{ time: '08:00' }, { time: '12:00' }, { time: '13:00' }, { time: '17:00' }]
@@ -15,14 +15,14 @@ const EIGHT_HOURS = [{ time: '08:00' }, { time: '12:00' }, { time: '13:00' }, { 
 test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async () => {
-  await cleanupDatabase()
-  const worker = await createEmployee({ employeeId: 'TPLGOAHLP001', employeeName: 'Anita Rao' })
+  await cleanupTestData()
+  const worker = await createEmployee({ employeeId: 'E2E-HLP-9001', employeeName: 'Anita Rao' })
   await seedReviewWeek({
     weekStartISO: W,
     rows: [
       {
         employee: { id: worker.id, employeeId: worker.employeeId, employeeName: worker.employeeName },
-        empCode: '0001',
+        empCode: '9001',
         days: dates.slice(0, 3).map((date) => ({ date, punches: EIGHT_HOURS })),
       },
     ],

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import prisma, {
-  cleanupDatabase,
+  cleanupTestData,
   createEmployee,
   getAttendanceRecordHours,
   getWeekRow,
@@ -22,9 +22,9 @@ import { openPayrollSummary } from '../utils/payroll-ui'
 // If the week is reopened and approved again (here with one more overtime hour) while the summary is
 // open, approving it is refused, the user is sent back a step, and the recalculated summary then approves.
 
-const W = '2026-09-24' // an ended week, so it can be approved on any run date
+const W = '2025-09-25' // an ended week before the real data starts, so it can be approved on any run date
 const dates = weekDates(W)
-const WORKER = 'TPLGOAHLP001'
+const WORKER = 'E2E-HLP-9001'
 const CHANGED = 'Attendance for this week changed after this summary was calculated. Go back and recalculate.'
 
 /** Eight hours a day, two pairs: 08:00-12:00 and 13:00-17:00. */
@@ -33,14 +33,14 @@ const EIGHT_HOURS = [{ time: '08:00' }, { time: '12:00' }, { time: '13:00' }, { 
 test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async () => {
-  await cleanupDatabase()
+  await cleanupTestData()
   const worker = await createEmployee({ employeeId: WORKER, employeeName: 'Anita Rao' })
   await seedReviewWeek({
     weekStartISO: W,
     rows: [
       {
         employee: { id: worker.id, employeeId: worker.employeeId, employeeName: worker.employeeName },
-        empCode: '0001',
+        empCode: '9001',
         days: dates.slice(0, 5).map((date) => ({ date, punches: EIGHT_HOURS })),
       },
     ],

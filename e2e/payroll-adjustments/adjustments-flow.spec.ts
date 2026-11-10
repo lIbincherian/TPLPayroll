@@ -1,10 +1,10 @@
 import { test, expect, type Page } from '@playwright/test'
-import { cleanupDatabase, seedAdjustmentTestData } from '../utils/db'
+import { cleanupTestData, seedAdjustmentTestData } from '../utils/db'
 
 // ─── Seed data for adjustment tests ──────────────────────────────────────────
 
 test.beforeAll(async () => {
-  await cleanupDatabase()
+  await cleanupTestData()
   await seedAdjustmentTestData()
 })
 
@@ -40,7 +40,7 @@ test.describe('E2E-01: Create one-time deduction', () => {
     await expect(page).toHaveURL('/adjustments/new')
     await expect(page.locator('h1:has-text("New Payroll Adjustment")')).toBeVisible()
 
-    // Select employee (EMP-ADJ-001 — Adjustment Test Employee)
+    // Select employee (E2E-ADJ-9001 — Adjustment Test Employee)
     await page.fill('input[placeholder="Search employee…"]', 'Adjustment Test')
     await expect(page.locator('text=Adjustment Test Employee')).toBeVisible({ timeout: 5000 })
     await page.click('text=Adjustment Test Employee')

@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import prisma, {
-  cleanupDatabase,
+  baseGridEmployeeCount,
+  cleanupTestData,
   createEmployee,
   getAttendanceRecordHours,
   getAuditRows,
@@ -33,18 +34,18 @@ import {
 const week = expectedCompletedWeek()
 const dates = weekDates(week.start)
 
-const ANITA = 'TPLGOAHLP001' // a full day with overtime
-const DEV = 'TPLGOAHLP004' // merged scans
-const GITA = 'TPLGOAHLP036' // two scans eleven minutes apart
-const HARI = 'TPLGOAHLP1000' // a single punch: needs fixing
-const ISHAAN = 'TPLGOAHLP010' // a short day: unusual
-const JAYA = 'TPLGOAHLP011' // no punches at all
+const ANITA = 'E2E-HLP-9001' // a full day with overtime
+const DEV = 'E2E-HLP-9004' // merged scans
+const GITA = 'E2E-HLP-9036' // two scans eleven minutes apart
+const HARI = 'E2E-HLP-9100' // a single punch: needs fixing
+const ISHAAN = 'E2E-HLP-9010' // a short day: unusual
+const JAYA = 'E2E-HLP-9011' // no punches at all
 
 test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async ({ request }) => {
   clearMockScenario()
-  await cleanupDatabase()
+  await cleanupTestData()
   await createEmployee({ employeeId: ANITA, employeeName: 'Anita Rao' })
   await createEmployee({ employeeId: DEV, employeeName: 'Dev Kapoor' })
   await createEmployee({ employeeId: GITA, employeeName: 'Gita Pillai' })
@@ -53,11 +54,11 @@ test.beforeEach(async ({ request }) => {
   await createEmployee({ employeeId: JAYA, employeeName: 'Jaya Nair' })
 
   setMockPunches([
-    ...mockDay('0001', dates[0], FULL_DAY),
-    ...mockDay('0004', dates[0], ['07:40', '07:50', '13:00', '13:50', '17:45', '17:46']),
-    ...mockDay('0036', dates[0], ['07:40', '07:51']),
-    ...mockDay('1000', dates[1], ['18:26']),
-    ...mockDay('0010', dates[0], ['08:00', '11:10']),
+    ...mockDay('9001', dates[0], FULL_DAY),
+    ...mockDay('9004', dates[0], ['07:40', '07:50', '13:00', '13:50', '17:45', '17:46']),
+    ...mockDay('9036', dates[0], ['07:40', '07:51']),
+    ...mockDay('9100', dates[1], ['18:26']),
+    ...mockDay('9010', dates[0], ['08:00', '11:10']),
   ])
   const loaded = await runCron(request)
   expect(loaded.body).toMatchObject({ outcome: 'LOADED' })
@@ -216,12 +217,14 @@ test.describe('E2E-16: No-punch employees are shown and can be entered by hand',
       data: { currentTime: null },
     })
     await openReview(page, week.start)
-    // Jaya, and Hari whose only punch was deleted above
-    expect(await filterCount(page, 'nopunch')).toBe(2)
+    // Jaya, and Hari whose only punch was deleted above, plus every real active employee in the base: the grid
+    // lists them all and none of them has punches in this test week
+    const realNoPunch = await baseGridEmployeeCount(week.start)
+    expect(await filterCount(page, 'nopunch')).toBe(realNoPunch + 2)
     await page.getByTestId('filter-nopunch').click()
     await expect(page.getByTestId(`employee-row-${JAYA}`)).toBeVisible()
     await expect(page.getByTestId(`employee-row-${HARI}`)).toBeVisible()
-    await expect(page.locator('[data-testid^="employee-row-"]')).toHaveCount(2)
+    await expect(page.locator('[data-testid^="employee-row-"]')).toHaveCount(realNoPunch + 2)
     await expect(approveButton(page)).toBeEnabled()
 
     await openDay(page, JAYA, dates[2])
@@ -230,7 +233,7 @@ test.describe('E2E-16: No-punch employees are shown and can be entered by hand',
     await expect(page.getByTestId('editor-day-regular')).toHaveText('8.00')
     await closeEditor(page)
     // She now has punches, so she leaves the "No punches" filter
-    expect(await filterCount(page, 'nopunch')).toBe(1)
+    expect(await filterCount(page, 'nopunch')).toBe(realNoPunch + 1)
     await page.getByTestId('filter-all').click()
     expect(await cellText(page, JAYA, dates[2])).toContain('8.00')
 

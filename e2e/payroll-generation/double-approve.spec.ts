@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import prisma, { cleanupDatabase, createEmployee, seedReviewWeek } from '../utils/db'
+import prisma, { cleanupTestData, createEmployee, seedReviewWeek } from '../utils/db'
 import { approveWeekInUi, openReview, settled } from '../utils/attendance-ui'
 import { weekDates } from '../utils/etimeoffice-mock'
 import { approvePayrollInUi, openPayrollSummary } from '../utils/payroll-ui'
@@ -8,9 +8,9 @@ import { approvePayrollInUi, openPayrollSummary } from '../utils/payroll-ui'
 // open the same summary; whichever approves second is told the payroll is already approved, the summary
 // stays on screen, and the database holds one run (PayrollRun.approvedWeekStart is unique too).
 
-const W = '2026-10-01' // an ended week, so it can be approved on any run date
+const W = '2025-10-02' // an ended week before the real data starts, so it can be approved on any run date
 const dates = weekDates(W)
-const WORKER = 'TPLGOAHLP001'
+const WORKER = 'E2E-HLP-9001'
 const ALREADY = 'Payroll for this week is already approved'
 
 const EIGHT_HOURS = [{ time: '08:00' }, { time: '12:00' }, { time: '13:00' }, { time: '17:00' }]
@@ -18,14 +18,14 @@ const EIGHT_HOURS = [{ time: '08:00' }, { time: '12:00' }, { time: '13:00' }, { 
 test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async () => {
-  await cleanupDatabase()
+  await cleanupTestData()
   const worker = await createEmployee({ employeeId: WORKER, employeeName: 'Anita Rao' })
   await seedReviewWeek({
     weekStartISO: W,
     rows: [
       {
         employee: { id: worker.id, employeeId: worker.employeeId, employeeName: worker.employeeName },
-        empCode: '0001',
+        empCode: '9001',
         days: dates.slice(0, 5).map((date) => ({ date, punches: EIGHT_HOURS })),
       },
     ],

@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
-import prisma, { cleanupDatabase, createEmployee, seedReviewWeek } from '../utils/db'
+import prisma, { cleanupTestData, createEmployee, seedReviewWeek } from '../utils/db'
 import { cellText, openDay, openReview, setPairField, settled } from '../utils/attendance-ui'
 import { weekDates } from '../utils/etimeoffice-mock'
 
@@ -10,16 +10,16 @@ import { weekDates } from '../utils/etimeoffice-mock'
 // refusal is a failed save and is never reloaded. The save request is held in the browser until the test
 // releases it, so the editor can be left while the save is genuinely in flight.
 
-const W = '2026-10-08' // an ended week
+const W = '2025-10-09' // an ended week before the real data starts
 const dates = weekDates(W)
-const ANITA = 'TPLGOAHLP001'
-const JAYA = 'TPLGOAHLP011' // stays in the review in every test
+const ANITA = 'E2E-HLP-9001'
+const JAYA = 'E2E-HLP-9011' // stays in the review in every test
 const DAY = dates[0] // Anita's punches are on this day; the next day (dates[1]) has none
 
 test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async () => {
-  await cleanupDatabase()
+  await cleanupTestData()
   const anita = await createEmployee({ employeeId: ANITA, employeeName: 'Anita Rao' })
   await createEmployee({ employeeId: JAYA, employeeName: 'Jaya Nair' })
   await seedReviewWeek({
@@ -27,7 +27,7 @@ test.beforeEach(async () => {
     rows: [
       {
         employee: { id: anita.id, employeeId: anita.employeeId, employeeName: anita.employeeName },
-        empCode: '0001',
+        empCode: '9001',
         days: [{ date: DAY, punches: [{ time: '08:00' }, { time: '12:00' }, { time: '13:00' }, { time: '17:00' }] }],
       },
     ],

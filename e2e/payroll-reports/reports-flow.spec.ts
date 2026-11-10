@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import JSZip from 'jszip'
 import { extractPdfFlatText, extractPdfText } from '../utils/pdf'
 import {
-  cleanupDatabase,
+  cleanupTestData,
   seedApprovedPayrollData,
   getInvoiceSnapshotCount,
   getCleanedSnapshotCount,
@@ -12,7 +12,7 @@ let payrollRunId: string
 
 test.beforeAll(async () => {
   try {
-    await cleanupDatabase()
+    await cleanupTestData()
     const seed = await seedApprovedPayrollData()
     payrollRunId = seed.payrollRunId
     console.log('Using payrollRunId:', payrollRunId);
@@ -129,7 +129,7 @@ test.describe('E2E-26: Payslip shows a Punches column', () => {
 
   test('each day shows its punches, "-" for a day with none, and the hours match', async ({ request }) => {
     const { texts } = await slipTexts(request)
-    const meera = Object.entries(texts).find(([name]) => name.includes('EMP-RPT-001'))![1]
+    const meera = Object.entries(texts).find(([name]) => name.includes('E2E-RPT-9001'))![1]
     // Thu 8+2 h, Fri/Mon 8 h, Sat 6 h, Sun none, Tue 8+3 h, Wed 8+1 h
     expect(meera).toContain('08:00–18:00')
     expect(meera).toContain('08:00–16:00')
@@ -144,7 +144,7 @@ test.describe('E2E-26: Payslip shows a Punches column', () => {
     expect(meera).toContain('2.00')
     expect(meera).toContain('3.00')
 
-    const vijay = Object.entries(texts).find(([name]) => name.includes('EMP-RPT-002'))![1]
+    const vijay = Object.entries(texts).find(([name]) => name.includes('E2E-RPT-9002'))![1]
     expect(vijay).toContain('08:00–16:00')
     expect(vijay).toContain('56.00')
     // Seven worked days: no dash-only day for the second employee
@@ -291,8 +291,8 @@ test.describe('UI: Payroll run detail page', () => {
 
     await expect(page.locator('text=Meera Krishnan')).toBeVisible()
     await expect(page.locator('text=Vijay Kumar')).toBeVisible()
-    await expect(page.locator('text=EMP-RPT-001')).toBeVisible()
-    await expect(page.locator('text=EMP-RPT-002')).toBeVisible()
+    await expect(page.locator('text=E2E-RPT-9001')).toBeVisible()
+    await expect(page.locator('text=E2E-RPT-9002')).toBeVisible()
   })
 
   test('returns 404 for a non-existent payroll run', async ({ page }) => {

@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test'
 import prisma, {
-  cleanupDatabase,
+  auditSince,
+  cleanupTestData,
+  countTestPunches,
+  countTestUploads,
   seedEmployeesForSync,
   seedReviewWeek,
   getWeekRow,
@@ -14,6 +17,7 @@ import {
   mockDays,
   mockDay,
   FULL_DAY,
+  payrollWeekLabel,
   setMockApiError,
   setMockEmpty,
   setMockHttpError,
@@ -34,7 +38,7 @@ test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async () => {
   clearMockScenario()
-  await cleanupDatabase()
+  await cleanupTestData()
   await seedEmployeesForSync()
 })
 
@@ -64,7 +68,8 @@ test.describe('E2E-01: Scheduled sync loads the completed week', () => {
     const punches = await getPunchRows(week.start, {})
     const loadedDates = [...new Set(punches.map((p) => p.date))].sort()
     expect(loadedDates).toEqual(dates)
-    // Three codes, seven days, four punches each
+    // Three codes, seven days, four punches each. 0001-0003 are the mock's own default codes, not test data:
+    // in the real-data base they may link to real employees (their rows are in the reserved week and go with it).
     expect(punches).toHaveLength(3 * 7 * 4)
     expect(new Set(punches.map((p) => p.empCode))).toEqual(new Set(['0001', '0002', '0003']))
 
@@ -74,7 +79,7 @@ test.describe('E2E-01: Scheduled sync loads the completed week', () => {
     await expect(listRow.getByTestId('week-status-badge')).toHaveText(/Ready for review/)
     // Not available to payroll until approved
     await page.goto('/payroll')
-    const payrollRow = page.locator('tr', { hasText: 'Ready for review' }).first()
+    const payrollRow = page.locator('tr', { hasText: 'Ready for review' }).filter({ hasText: payrollWeekLabel(week) }).first()
     await expect(payrollRow).toBeVisible()
     await expect(payrollRow.locator('span[title="Approve this week\'s attendance first"]')).toBeVisible()
     await expect(payrollRow.locator('a:has-text("Generate")')).toHaveCount(0)
@@ -93,10 +98,10 @@ test.describe('E2E-01: Scheduled sync loads the completed week', () => {
 
   test('drops punches that fall outside the week', async ({ request }) => {
     setMockPunches([
-      ...mockDay('0001', dates[0], FULL_DAY),
+      ...mockDay('9001', dates[0], FULL_DAY),
       // one day before and one day after the window
-      ...mockDay('0001', addDays(week.start, -1), ['08:00', '16:00']),
-      ...mockDay('0001', addDays(week.end, 1), ['08:00', '16:00']),
+      ...mockDay('9001', addDays(week.start, -1), ['08:00', '16:00']),
+      ...mockDay('9001', addDays(week.end, 1), ['08:00', '16:00']),
     ])
     const result = await runCron(request)
     expect(result.body).toMatchObject({ ok: true, outcome: 'LOADED' })
@@ -108,26 +113,26 @@ test.describe('E2E-01: Scheduled sync loads the completed week', () => {
 
 test.describe('E2E-02: Sync route rejects a missing secret', () => {
   test('a request without the secret is rejected and nothing changes', async ({ request }) => {
-    setMockPunches(mockDays('0001', dates))
+    setMockPunches(mockDays('9001', dates))
     const response = await request.get('/api/cron/attendance-sync')
     expect(response.status()).toBe(401)
-    expect(await prisma.attendanceUpload.count()).toBe(0)
-    expect(await prisma.attendancePunch.count()).toBe(0)
-    expect(await prisma.auditLog.count({ where: { entityType: { startsWith: 'ATTENDANCE_' } } })).toBe(0)
+    expect(await countTestUploads()).toBe(0)
+    expect(await countTestPunches()).toBe(0)
+    expect(await prisma.auditLog.count({ where: { ...auditSince(), entityType: { startsWith: 'ATTENDANCE_' } } })).toBe(0)
   })
 
   test('a wrong secret, a wrong scheme and an empty bearer are all rejected', async ({ request }) => {
-    setMockPunches(mockDays('0001', dates))
+    setMockPunches(mockDays('9001', dates))
     for (const authorization of ['Bearer not-the-secret', `Basic ${process.env.CRON_SECRET}`, 'Bearer ', process.env.CRON_SECRET ?? '']) {
       const response = await request.get('/api/cron/attendance-sync', { headers: { authorization } })
       expect(response.status(), `authorization "${authorization.slice(0, 6)}…"`).toBe(401)
     }
-    expect(await prisma.attendanceUpload.count()).toBe(0)
-    expect(await prisma.attendancePunch.count()).toBe(0)
+    expect(await countTestUploads()).toBe(0)
+    expect(await countTestPunches()).toBe(0)
   })
 
   test('the correct secret is accepted', async ({ request }) => {
-    setMockPunches(mockDays('0001', dates))
+    setMockPunches(mockDays('9001', dates))
     const response = await request.get('/api/cron/attendance-sync', { headers: cronHeaders() })
     expect(response.status()).toBe(200)
   })
@@ -183,8 +188,8 @@ test.describe('E2E-03: Failed sync offers Pull now', () => {
         Error: false,
         Msg: 'Success',
         PunchData: [
-          { Name: 'A', Empcode: '0001', PunchDate: `${dates[0].split('-').reverse().join('/')} 07:40:00`, M_Flag: '', mcid: '1' },
-          { Name: 'A', Empcode: '0001', PunchDate: 'garbage', M_Flag: '', mcid: '1' },
+          { Name: 'A', Empcode: '9001', PunchDate: `${dates[0].split('-').reverse().join('/')} 07:40:00`, M_Flag: '', mcid: '1' },
+          { Name: 'A', Empcode: '9001', PunchDate: 'garbage', M_Flag: '', mcid: '1' },
         ],
       },
     })
@@ -202,7 +207,7 @@ test.describe('E2E-03: Failed sync offers Pull now', () => {
     await expect(weekRow(page, week.start)).toHaveAttribute('data-status', 'SYNC_FAILED')
 
     // eTimeOffice is back
-    setMockPunches([...mockDays('0001', dates), ...mockDays('0004', dates)])
+    setMockPunches([...mockDays('9001', dates), ...mockDays('9004', dates)])
     await page.getByTestId(`pull-now-${week.start}`).click()
 
     await expect(weekRow(page, week.start)).toHaveAttribute('data-status', 'REVIEW', { timeout: 20000 })
@@ -233,7 +238,7 @@ test.describe('E2E-04: Empty response does not freeze the week', () => {
   })
 
   test('a response whose punches are all outside the week is treated as empty', async ({ request }) => {
-    setMockPunches(mockDay('0001', '2020-01-02', FULL_DAY))
+    setMockPunches(mockDay('9001', '2020-01-02', FULL_DAY))
     const result = await runCron(request)
     expect(result.body).toMatchObject({ outcome: 'FAILED', code: 'EMPTY' })
     expect(await getPunchRows(week.start, {})).toHaveLength(0)
@@ -242,7 +247,7 @@ test.describe('E2E-04: Empty response does not freeze the week', () => {
 
 test.describe('E2E-05: Scheduled sync leaves an edited week alone', () => {
   test('keeps the edits, shows a newer-data notice and offers Pull now', async ({ request, page }) => {
-    const employees = await prisma.employee.findMany({ where: { employeeId: 'TPLGOAHLP001' } })
+    const employees = await prisma.employee.findMany({ where: { employeeId: 'E2E-HLP-9001' } })
     const anita = employees[0]
     // Pulled on Monday: one day of punches, the OUT edited from 17:47 to 18:00.
     const { id } = await seedReviewWeek({
@@ -250,7 +255,7 @@ test.describe('E2E-05: Scheduled sync leaves an edited week alone', () => {
       rows: [
         {
           employee: { id: anita.id, employeeId: anita.employeeId, employeeName: anita.employeeName },
-          empCode: '0001',
+          empCode: '9001',
           days: [{ date: dates[0], punches: FULL_DAY.map((time) => ({ time })) }],
         },
       ],
@@ -261,7 +266,7 @@ test.describe('E2E-05: Scheduled sync leaves an edited week alone', () => {
     await prisma.attendancePunch.update({ where: { id: edited.id }, data: { currentTime: '18:00', note: 'Forgot to scan out' } })
 
     // Thursday: eTimeOffice now has the full week, and different times
-    setMockPunches(mockDays('0001', dates, ['09:00', '17:00']))
+    setMockPunches(mockDays('9001', dates, ['09:00', '17:00']))
     const result = await runCron(request)
     expect(result.body).toMatchObject({ ok: true, outcome: 'SKIPPED_HAS_EDITS' })
 
@@ -285,13 +290,13 @@ test.describe('E2E-05: Scheduled sync leaves an edited week alone', () => {
   })
 
   test('employee decisions also protect the week from the scheduled sync', async ({ request }) => {
-    const inactive = await prisma.employee.findFirstOrThrow({ where: { employeeId: 'TPLGOAHLP002' } })
+    const inactive = await prisma.employee.findFirstOrThrow({ where: { employeeId: 'E2E-HLP-9002' } })
     const { id } = await seedReviewWeek({
       weekStartISO: week.start,
       rows: [
         {
           employee: { id: inactive.id, employeeId: inactive.employeeId, employeeName: inactive.employeeName },
-          empCode: '0002',
+          empCode: '9002',
           days: [{ date: dates[0], punches: [{ time: '08:00' }, { time: '16:00' }] }],
         },
       ],
@@ -299,7 +304,7 @@ test.describe('E2E-05: Scheduled sync leaves an edited week alone', () => {
     await prisma.attendanceEmployeeDecision.create({
       data: { attendanceUploadId: id, employeeId: inactive.id, reason: 'INACTIVE', decision: 'APPROVED' },
     })
-    setMockPunches(mockDays('0001', dates))
+    setMockPunches(mockDays('9001', dates))
     const result = await runCron(request)
     expect(result.body).toMatchObject({ outcome: 'SKIPPED_HAS_EDITS' })
     expect(await prisma.attendanceEmployeeDecision.count({ where: { attendanceUploadId: id } })).toBe(1)
@@ -308,21 +313,21 @@ test.describe('E2E-05: Scheduled sync leaves an edited week alone', () => {
 
 test.describe('E2E-32: Scheduled sync replaces an unedited earlier pull', () => {
   test('the partial Monday pull is replaced by the full week', async ({ request, page }) => {
-    const anita = await prisma.employee.findFirstOrThrow({ where: { employeeId: 'TPLGOAHLP001' } })
+    const anita = await prisma.employee.findFirstOrThrow({ where: { employeeId: 'E2E-HLP-9001' } })
     // Monday: only the first two days had happened
     await seedReviewWeek({
       weekStartISO: week.start,
       rows: [
         {
           employee: { id: anita.id, employeeId: anita.employeeId, employeeName: anita.employeeName },
-          empCode: '0001',
+          empCode: '9001',
           days: dates.slice(0, 2).map((date) => ({ date, punches: FULL_DAY.map((time) => ({ time })) })),
         },
       ],
     })
     expect(new Set((await getPunchRows(week.start, {})).map((p) => p.date)).size).toBe(2)
 
-    setMockPunches(mockDays('0001', dates))
+    setMockPunches(mockDays('9001', dates))
     const result = await runCron(request)
     expect(result.body).toMatchObject({ ok: true, outcome: 'LOADED' })
 
@@ -344,9 +349,9 @@ test.describe('E2E-32: Scheduled sync replaces an unedited earlier pull', () => 
 // The screens refuse edits while a pull runs (see pull-lock.spec.ts), so the change is written directly
 // to the database, which is what an edit that slipped in just before the pull took its lock looks like.
 test.describe('E2E-05 (round 3): an edit or decision that lands while the scheduled pull waits for the API', () => {
-  const ANITA = 'TPLGOAHLP001'
+  const ANITA = 'E2E-HLP-9001'
 
-  async function seedUntouchedWeek(employeeCode = ANITA, empCode = '0001') {
+  async function seedUntouchedWeek(employeeCode = ANITA, empCode = '9001') {
     const employee = await prisma.employee.findFirstOrThrow({ where: { employeeId: employeeCode } })
     return seedReviewWeek({
       weekStartISO: week.start,
@@ -364,7 +369,7 @@ test.describe('E2E-05 (round 3): an edit or decision that lands while the schedu
   async function startSlowScheduledPull(request: Parameters<typeof runCron>[0], delayMs = 6000) {
     setMockScenario({
       status: 200,
-      body: { Error: false, Msg: 'Success', IsAdmin: true, PunchData: mockDays('0001', dates, ['09:00', '17:00']) },
+      body: { Error: false, Msg: 'Success', IsAdmin: true, PunchData: mockDays('9001', dates, ['09:00', '17:00']) },
       delayMs,
     })
     const pending = runCron(request)
@@ -417,13 +422,13 @@ test.describe('E2E-05 (round 3): an edit or decision that lands while the schedu
 
   test('an employee decision recorded during the call also leaves the week alone', async ({ request }) => {
     test.setTimeout(90000)
-    const inactive = await prisma.employee.findFirstOrThrow({ where: { employeeId: 'TPLGOAHLP002' } })
+    const inactive = await prisma.employee.findFirstOrThrow({ where: { employeeId: 'E2E-HLP-9002' } })
     const { id } = await seedReviewWeek({
       weekStartISO: week.start,
       rows: [
         {
           employee: { id: inactive.id, employeeId: inactive.employeeId, employeeName: inactive.employeeName },
-          empCode: '0002',
+          empCode: '9002',
           days: [{ date: dates[0], punches: [{ time: '08:00' }, { time: '16:00' }] }],
         },
       ],

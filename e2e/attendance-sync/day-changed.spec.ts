@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import prisma, { cleanupDatabase, createEmployee, getAuditRows, seedReviewWeek } from '../utils/db'
+import prisma, { cleanupTestData, createEmployee, getAuditRows, seedReviewWeek } from '../utils/db'
 import { closeEditor, openDay, openReview, setPairField, settled } from '../utils/attendance-ui'
 import { weekDates } from '../utils/etimeoffice-mock'
 
@@ -10,10 +10,10 @@ import { weekDates } from '../utils/etimeoffice-mock'
 // Round 4, item 1: every save also carries the version of the day its editor was opened on, so a tab
 // opened before another tab's save is refused as well, and its editor reloads to the latest times.
 
-const W = '2026-10-08' // an ended week, so nothing else is going on in it
+const W = '2025-10-09' // an ended week before the real data starts: nothing else is going on in it
 const dates = weekDates(W)
-const ANITA = 'TPLGOAHLP001'
-const JAYA = 'TPLGOAHLP011' // no punches at all
+const ANITA = 'E2E-HLP-9001'
+const JAYA = 'E2E-HLP-9011' // no punches at all
 const DAY = dates[2]
 const DAY_CHANGED =
   'This day was changed in another tab or by a pull, so your change was not saved. It now shows the latest times. Enter your change again.'
@@ -21,7 +21,7 @@ const DAY_CHANGED =
 test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async () => {
-  await cleanupDatabase()
+  await cleanupTestData()
   const anita = await createEmployee({ employeeId: ANITA, employeeName: 'Anita Rao' })
   await createEmployee({ employeeId: JAYA, employeeName: 'Jaya Nair' })
   await seedReviewWeek({
@@ -29,7 +29,7 @@ test.beforeEach(async () => {
     rows: [
       {
         employee: { id: anita.id, employeeId: anita.employeeId, employeeName: anita.employeeName },
-        empCode: '0001',
+        empCode: '9001',
         days: [{ date: dates[0], punches: [{ time: '08:00' }, { time: '12:00' }, { time: '13:00' }, { time: '17:00' }] }],
       },
     ],

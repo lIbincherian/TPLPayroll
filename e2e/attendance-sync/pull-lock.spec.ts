@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import prisma, {
-  cleanupDatabase,
+  cleanupTestData,
   getAuditRows,
   getPunchRows,
   getWeekRow,
@@ -23,7 +23,7 @@ import { approveButton, approveWeekInUi, openAttendance, openDay, openReview, se
 
 const completed = expectedCompletedWeek()
 const completedDates = weekDates(completed.start)
-const ANITA = 'TPLGOAHLP001'
+const ANITA = 'E2E-HLP-9001'
 const PULL_RUNNING = 'A pull is running for this week. Wait for it to finish, then try again.'
 const WEEK_CHANGED = 'The week was approved while the pull was running. Nothing was replaced.'
 
@@ -31,7 +31,7 @@ test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async () => {
   clearMockScenario()
-  await cleanupDatabase()
+  await cleanupTestData()
 })
 
 test.afterAll(() => {
@@ -52,14 +52,14 @@ async function seedWeekAndSlowApi(delayMs: number) {
     rows: [
       {
         employee: { id: anita.id, employeeId: anita.employeeId, employeeName: anita.employeeName },
-        empCode: '0001',
+        empCode: '9001',
         days: completedDates.slice(0, 3).map((date) => ({ date, punches: FULL_DAY.map((time) => ({ time })) })),
       },
     ],
   })
   setMockScenario({
     status: 200,
-    body: { Error: false, Msg: 'Success', IsAdmin: true, PunchData: mockDays('0001', completedDates) },
+    body: { Error: false, Msg: 'Success', IsAdmin: true, PunchData: mockDays('9001', completedDates) },
     delayMs,
   })
   return id

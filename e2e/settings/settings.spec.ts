@@ -3,8 +3,10 @@ import prisma from '../utils/db'
 
 // ─── About Settings E2E (F12: the payroll week start is locked to Thursday) ──────
 // The Settings table uses a singleton row (id = "singleton") that is auto-created on first
-// access via upsert. cleanupDatabase() intentionally does NOT truncate it. The page is read-only
-// now: the week start shows Thursday with a lock, and there is nothing to save.
+// access via upsert. It is part of the real-data base, so cleanupTestData() never touches it; this spec changes
+// the stored day on purpose (to prove the page puts Thursday back), so it saves the whole row first and writes
+// it back, updatedAt included, when it is done. The page is read-only now: the week start shows Thursday with a
+// lock, and there is nothing to save.
 
 async function setStoredDay(day: string) {
   await prisma.settings.upsert({
@@ -18,12 +20,32 @@ async function storedDay() {
   return (await prisma.settings.findUnique({ where: { id: 'singleton' } }))?.payrollWeekStartDay
 }
 
+let original: { payrollWeekStartDay: string; updatedAt: Date } | null = null
+
+test.beforeAll(async () => {
+  original = await prisma.settings.findUnique({
+    where: { id: 'singleton' },
+    select: { payrollWeekStartDay: true, updatedAt: true },
+  })
+})
+
 test.beforeEach(async () => {
   await setStoredDay('THURSDAY')
 })
 
 test.afterAll(async () => {
-  await setStoredDay('THURSDAY')
+  if (original) {
+    // Back to exactly the base row (a plain upsert would move updatedAt)
+    await prisma.$executeRawUnsafe(
+      'UPDATE "Settings" SET "payrollWeekStartDay" = $1::"DayOfWeek", "updatedAt" = $2::timestamp WHERE id = $3',
+      original.payrollWeekStartDay,
+      original.updatedAt.toISOString(),
+      'singleton',
+    )
+  } else {
+    // An empty base had no row; the page created it
+    await prisma.settings.deleteMany({ where: { id: 'singleton' } })
+  }
 })
 
 // ─── E2E-29: Payroll week start is locked to Thursday ────────────────────────

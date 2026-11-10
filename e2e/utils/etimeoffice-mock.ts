@@ -1,6 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { isTestCode } from './test-namespace'
 
 // Steers the in-app mock eTimeOffice API (src/app/api/mock-etimeoffice/DownloadPunchDataMCID).
 // The app server and the Playwright process run on the same machine, so a scenario file in
@@ -65,8 +66,14 @@ export function toApiPunchDate(isoDate: string, time: string): string {
   return `${day}/${month}/${year} ${time}:00`
 }
 
-/** One employee-day of scans, as the API sends them. */
+/**
+ * One employee-day of scans, as the API sends them. The code must be in the test range (9xxx, see
+ * test-namespace.ts), so a mocked scan can never match a real employee in the real-data base.
+ */
 export function mockDay(code: string, isoDate: string, times: string[], name = `Empname${code}`): MockPunchRow[] {
+  if (!isTestCode(code)) {
+    throw new Error(`mock code "${code}" is outside the test range 9000-9999; a real employee could match it`)
+  }
   return times.map((time) => ({
     Name: name,
     Empcode: code,
@@ -140,4 +147,16 @@ export function weekLabel(week: { start: string; end: string }): string {
     })
   const sameYear = week.start.slice(0, 4) === week.end.slice(0, 4)
   return `${fmt(week.start, !sameYear)} – ${fmt(week.end, true)}`
+}
+
+/** The label the payroll week list shows: "6 Mar 2025 – 12 Mar 2025" (both dates carry the year). */
+export function payrollWeekLabel(week: { start: string; end: string }): string {
+  const fmt = (iso: string) =>
+    new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      timeZone: 'UTC',
+    })
+  return `${fmt(week.start)} – ${fmt(week.end)}`
 }

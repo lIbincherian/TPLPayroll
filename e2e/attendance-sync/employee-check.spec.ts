@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import prisma, {
-  cleanupDatabase,
+  cleanupTestData,
   seedEmployeesForSync,
   getAttendanceRecordHours,
   getCodeExceptions,
@@ -29,20 +29,20 @@ test.describe.configure({ mode: 'serial' })
 
 /**
  * The punches eTimeOffice returns for the week:
- *  0036 -> TPLGOAHLP036 (matched on the number; the name is not used)
- *  0999 -> nobody, but it carries the NAME of an existing employee (a name must never match)
- *  0007 -> TPLGOAHLP007 and TPLGOASUP007 (duplicate)
- *  1000 -> TPLGOAHLP1000 (four digits)
- *  0002 -> TPLGOAHLP002, inactive; 0003 -> TPLGOAHLP003, resigned before the week
+ *  9036 -> E2E-HLP-9036 (matched on the number; the name is not used)
+ *  9999 -> nobody, but it carries the NAME of an existing employee (a name must never match)
+ *  9007 -> E2E-HLP-9007 and E2E-SUP-9007 (duplicate)
+ *  9100 -> E2E-HLP-9100 (four digits)
+ *  9002 -> E2E-HLP-9002, inactive; 9003 -> E2E-HLP-9003, resigned before the week
  */
 function weekScans(extra: MockPunchRow[] = []): MockPunchRow[] {
   return [
-    ...mockDay('0036', dates[0], FULL_DAY, 'Empname0036'),
-    ...mockDays('0999', [dates[0], dates[1]], ['08:00', '12:00'], 'Gita Pillai'),
-    ...mockDay('0007', dates[0], FULL_DAY, 'Empname0007'),
-    ...mockDay('1000', dates[0], ['08:00', '16:00'], 'Empname1000'),
-    ...mockDay('0002', dates[0], ['08:00', '16:00'], 'Empname0002'),
-    ...mockDay('0003', dates[1], ['08:00', '16:00'], 'Empname0003'),
+    ...mockDay('9036', dates[0], FULL_DAY, 'Empname9036'),
+    ...mockDays('9999', [dates[0], dates[1]], ['08:00', '12:00'], 'Gita Pillai'),
+    ...mockDay('9007', dates[0], FULL_DAY, 'Empname9007'),
+    ...mockDay('9100', dates[0], ['08:00', '16:00'], 'Empname9100'),
+    ...mockDay('9002', dates[0], ['08:00', '16:00'], 'Empname9002'),
+    ...mockDay('9003', dates[1], ['08:00', '16:00'], 'Empname9003'),
     ...extra,
   ]
 }
@@ -55,7 +55,7 @@ async function loadWeek(request: Parameters<typeof runCron>[0], extra: MockPunch
 
 test.beforeEach(async () => {
   clearMockScenario()
-  await cleanupDatabase()
+  await cleanupTestData()
   await seedEmployeesForSync()
 })
 
@@ -69,23 +69,24 @@ async function openEmployeeCheck(page: Page, weekStart = week.start) {
   await expect(page.getByTestId('employee-check')).toBeVisible({ timeout: 15000 })
 }
 
-async function chooseExistingEmployee(page: Page, code: string, employeeId: string, search: string) {
+/** Search by Employee ID: the picker lists at most 30 matches, and a name like "Dev" also matches real employees. */
+async function chooseExistingEmployee(page: Page, code: string, employeeId: string) {
   const input = page.getByTestId(`match-existing-${code}`)
   await input.click()
-  await input.fill(search)
+  await input.fill(employeeId)
   await page.getByTestId(`match-existing-${code}-option-${employeeId}`).click()
 }
 
 test.describe('E2E-07: Employee code matches on number', () => {
-  test('0036 is linked to TPLGOAHLP036 and the name plays no part', async ({ request }) => {
+  test('9036 is linked to E2E-HLP-9036 and the name plays no part', async ({ request }) => {
     await loadWeek(request)
-    const punches = await getPunchRows(week.start, { empCode: '0036' })
+    const punches = await getPunchRows(week.start, { empCode: '9036' })
     expect(punches).toHaveLength(4)
-    expect(new Set(punches.map((p) => p.employeeCode))).toEqual(new Set(['TPLGOAHLP036']))
+    expect(new Set(punches.map((p) => p.employeeCode))).toEqual(new Set(['E2E-HLP-9036']))
     expect(new Set(punches.map((p) => p.matchStatus))).toEqual(new Set(['MATCHED']))
 
-    // 0999 arrives with the name of an existing employee ("Gita Pillai" is TPLGOAHLP036) and is NOT linked to them
-    const unknown = await getPunchRows(week.start, { empCode: '0999' })
+    // 9999 arrives with the name of an existing employee ("Gita Pillai" is E2E-HLP-9036) and is NOT linked to them
+    const unknown = await getPunchRows(week.start, { empCode: '9999' })
     expect(unknown.length).toBeGreaterThan(0)
     expect(new Set(unknown.map((p) => p.employeeCode))).toEqual(new Set([null]))
     expect(new Set(unknown.map((p) => p.matchStatus))).toEqual(new Set(['UNKNOWN']))
@@ -93,11 +94,11 @@ test.describe('E2E-07: Employee code matches on number', () => {
 })
 
 test.describe('E2E-09: Four-digit codes match in full', () => {
-  test('1000 is linked to the employee whose ID ends in 1000, not to 000 or 100', async ({ request }) => {
+  test('9100 is linked to the employee whose ID ends in 9100, not to one ending in 100 or 910', async ({ request }) => {
     await loadWeek(request)
-    const punches = await getPunchRows(week.start, { empCode: '1000' })
+    const punches = await getPunchRows(week.start, { empCode: '9100' })
     expect(punches).toHaveLength(2)
-    expect(new Set(punches.map((p) => p.employeeCode))).toEqual(new Set(['TPLGOAHLP1000']))
+    expect(new Set(punches.map((p) => p.employeeCode))).toEqual(new Set(['E2E-HLP-9100']))
     expect(new Set(punches.map((p) => p.matchStatus))).toEqual(new Set(['MATCHED']))
   })
 })
@@ -113,25 +114,25 @@ test.describe('E2E-08: Unknown or duplicate code stops at the employee check', (
     // A week with codes to fix opens the employee check, not the grid
     await expect(page).toHaveURL(new RegExp(`/attendance/${week.start}/employee-check$`))
 
-    const unknown = page.getByTestId('code-row-0999')
+    const unknown = page.getByTestId('code-row-9999')
     await expect(unknown).toHaveAttribute('data-status', 'UNKNOWN')
     await expect(unknown).toContainText('Gita Pillai')
     await expect(unknown).toContainText('Matches no employee')
-    await expect(unknown.getByTestId('add-new-employee-0999')).toBeVisible()
+    await expect(unknown.getByTestId('add-new-employee-9999')).toBeVisible()
 
-    const duplicate = page.getByTestId('code-row-0007')
+    const duplicate = page.getByTestId('code-row-9007')
     await expect(duplicate).toHaveAttribute('data-status', 'DUPLICATE')
-    await expect(duplicate).toContainText('Empname0007')
+    await expect(duplicate).toContainText('Empname9007')
     await expect(duplicate).toContainText('Matches 2 employees')
-    await expect(duplicate.getByTestId('edit-id-TPLGOAHLP007')).toBeVisible()
-    await expect(duplicate.getByTestId('edit-id-TPLGOASUP007')).toBeVisible()
+    await expect(duplicate.getByTestId('edit-id-E2E-HLP-9007')).toBeVisible()
+    await expect(duplicate.getByTestId('edit-id-E2E-SUP-9007')).toBeVisible()
 
     await expect(page.getByTestId('summary-unknown')).toHaveText('1')
     await expect(page.getByTestId('summary-duplicate')).toHaveText('1')
     // No guess: nothing was applied to either code
     await settled(page)
-    expect((await getPunchRows(week.start, { empCode: '0999' })).every((p) => p.employeeCode === null)).toBe(true)
-    expect((await getPunchRows(week.start, { empCode: '0007' })).every((p) => p.employeeCode === null)).toBe(true)
+    expect((await getPunchRows(week.start, { empCode: '9999' })).every((p) => p.employeeCode === null)).toBe(true)
+    expect((await getPunchRows(week.start, { empCode: '9007' })).every((p) => p.employeeCode === null)).toBe(true)
 
     // The review cannot be reached while a code is unresolved
     await expect(page.getByTestId('employee-check-continue')).toHaveAttribute('aria-disabled', 'true')
@@ -147,55 +148,55 @@ test.describe('E2E-10: Inactive and resigned employees need a decision', () => {
     await openEmployeeCheck(page)
 
     // Both appear with Approve and Reject
-    for (const code of ['TPLGOAHLP002', 'TPLGOAHLP003']) {
+    for (const code of ['E2E-HLP-9002', 'E2E-HLP-9003']) {
       const row = page.getByTestId(`decision-row-${code}`)
       await expect(row).toHaveAttribute('data-decision', 'NONE')
       await expect(row.getByRole('button', { name: 'Approve' })).toBeVisible()
       await expect(row.getByRole('button', { name: 'Reject' })).toBeVisible()
     }
-    await expect(page.getByTestId('decision-row-TPLGOAHLP002')).toContainText('Inactive')
-    await expect(page.getByTestId('decision-row-TPLGOAHLP003')).toContainText('Resigned')
+    await expect(page.getByTestId('decision-row-E2E-HLP-9002')).toContainText('Inactive')
+    await expect(page.getByTestId('decision-row-E2E-HLP-9003')).toContainText('Resigned')
     // An inactive employee WITHOUT punches never appears
     await expect(page.getByTestId('summary-decisions-left')).toHaveText('2')
 
-    await page.getByTestId('decision-reject-TPLGOAHLP002').click()
-    await expect(page.getByTestId('decision-row-TPLGOAHLP002')).toHaveAttribute('data-decision', 'REJECTED')
-    await page.getByTestId('decision-approve-TPLGOAHLP003').click()
-    await expect(page.getByTestId('decision-row-TPLGOAHLP003')).toHaveAttribute('data-decision', 'APPROVED')
+    await page.getByTestId('decision-reject-E2E-HLP-9002').click()
+    await expect(page.getByTestId('decision-row-E2E-HLP-9002')).toHaveAttribute('data-decision', 'REJECTED')
+    await page.getByTestId('decision-approve-E2E-HLP-9003').click()
+    await expect(page.getByTestId('decision-row-E2E-HLP-9003')).toHaveAttribute('data-decision', 'APPROVED')
     await expect(page.getByTestId('summary-decisions-left')).toHaveText('0')
     await settled(page)
     expect(await getDecisionRows(week.start)).toEqual(
       expect.arrayContaining([
-        { employeeCode: 'TPLGOAHLP002', reason: 'INACTIVE', decision: 'REJECTED' },
-        { employeeCode: 'TPLGOAHLP003', reason: 'RESIGNED_BEFORE_WEEK', decision: 'APPROVED' },
+        { employeeCode: 'E2E-HLP-9002', reason: 'INACTIVE', decision: 'REJECTED' },
+        { employeeCode: 'E2E-HLP-9003', reason: 'RESIGNED_BEFORE_WEEK', decision: 'APPROVED' },
       ]),
     )
 
     // Settle the two unresolved codes so the week can be approved
-    await page.getByTestId('ignore-code-0999').click()
-    await page.getByTestId('confirm-ignore-0999').click()
-    await expect(page.getByTestId('code-row-0999')).toHaveCount(0)
-    await chooseExistingEmployee(page, '0007', 'TPLGOAHLP007', 'Esha')
-    await expect(page.getByTestId('code-row-0007')).toHaveCount(0)
+    await page.getByTestId('ignore-code-9999').click()
+    await page.getByTestId('confirm-ignore-9999').click()
+    await expect(page.getByTestId('code-row-9999')).toHaveCount(0)
+    await chooseExistingEmployee(page, '9007', 'E2E-HLP-9007')
+    await expect(page.getByTestId('code-row-9007')).toHaveCount(0)
     await expect(page.getByTestId('employee-check-resolved')).toBeVisible()
 
     // Approved employee is in the grid (tagged), rejected one is not
     await page.getByTestId('employee-check-continue').click()
     await expect(page.getByTestId('punch-review')).toBeVisible()
-    await expect(page.getByTestId('employee-row-TPLGOAHLP003')).toBeVisible()
-    await expect(page.getByTestId('employee-tag-TPLGOAHLP003')).toHaveText('Resigned')
-    await expect(page.getByTestId('employee-row-TPLGOAHLP002')).toHaveCount(0)
+    await expect(page.getByTestId('employee-row-E2E-HLP-9003')).toBeVisible()
+    await expect(page.getByTestId('employee-tag-E2E-HLP-9003')).toHaveText('Resigned')
+    await expect(page.getByTestId('employee-row-E2E-HLP-9002')).toHaveCount(0)
 
     // The approval summary lists the rejected employee as left out; approving writes no hours for them
     await page.getByTestId('approve-week-button').click()
     await expect(page.getByTestId('approval-employees')).not.toHaveText('')
-    await expect(page.getByTestId('left-out-TPLGOAHLP002')).toContainText('Rejected in employee check')
+    await expect(page.getByTestId('left-out-E2E-HLP-9002')).toContainText('Rejected in employee check')
     await page.getByTestId('approve-cancel').click()
     await approveWeekInUi(page)
 
     await settled(page)
-    expect(await getAttendanceRecordHours(week.start, 'TPLGOAHLP002')).toHaveLength(0)
-    const resigned = await getAttendanceRecordHours(week.start, 'TPLGOAHLP003')
+    expect(await getAttendanceRecordHours(week.start, 'E2E-HLP-9002')).toHaveLength(0)
+    const resigned = await getAttendanceRecordHours(week.start, 'E2E-HLP-9003')
     expect(resigned.reduce((sum, r) => sum + r.regularHours, 0)).toBe(8)
   })
 })
@@ -205,18 +206,18 @@ test.describe('E2E-35: Unknown code can be added as a new employee', () => {
     await loadWeek(request)
     await openEmployeeCheck(page)
 
-    await page.getByTestId('add-new-employee-0999').click()
+    await page.getByTestId('add-new-employee-9999').click()
     await expect(page).toHaveURL(/\/employees\/new\?/)
     const url = new URL(page.url())
     expect(url.searchParams.get('returnTo')).toBe(`/attendance/${week.start}/employee-check`)
-    expect(url.searchParams.get('code')).toBe('0999')
+    expect(url.searchParams.get('code')).toBe('9999')
 
     // Form is prefilled with the name eTimeOffice has, a hint explains the ID, and there is a way back
     await expect(page.getByPlaceholder('Lakshmi Venkatesh')).toHaveValue('Gita Pillai')
-    await expect(page.getByTestId('employee-id-hint')).toContainText('999')
+    await expect(page.getByTestId('employee-id-hint')).toContainText('9999')
     await expect(page.getByRole('button', { name: /Return to employee check/ })).toBeVisible()
 
-    await page.getByPlaceholder('EMP-042').fill('TPLGOAHLP999')
+    await page.getByPlaceholder('EMP-042').fill('E2E-HLP-9999')
     await page.getByPlaceholder('Guard').first().fill('Security Guard')
     await page.getByPlaceholder('14375').fill('14375')
     await page.getByPlaceholder('68.75').fill('68.75')
@@ -224,21 +225,21 @@ test.describe('E2E-35: Unknown code can be added as a new employee', () => {
 
     // Back on the employee check, with the code matched again
     await expect(page).toHaveURL(new RegExp(`/attendance/${week.start}/employee-check$`), { timeout: 15000 })
-    await expect(page.getByTestId('code-row-0999')).toHaveCount(0, { timeout: 15000 })
+    await expect(page.getByTestId('code-row-9999')).toHaveCount(0, { timeout: 15000 })
     await expect(page.getByTestId('employee-check')).toBeVisible()
 
     await settled(page)
-    const punches = await getPunchRows(week.start, { empCode: '0999' })
+    const punches = await getPunchRows(week.start, { empCode: '9999' })
     expect(punches.length).toBeGreaterThan(0)
-    expect(new Set(punches.map((p) => p.employeeCode))).toEqual(new Set(['TPLGOAHLP999']))
+    expect(new Set(punches.map((p) => p.employeeCode))).toEqual(new Set(['E2E-HLP-9999']))
     expect(new Set(punches.map((p) => p.matchStatus))).toEqual(new Set(['MATCHED']))
   })
 
   test('a typo in the new ID leaves the code unresolved', async ({ request, page }) => {
     await loadWeek(request)
     await openEmployeeCheck(page)
-    await page.getByTestId('add-new-employee-0999').click()
-    await page.getByPlaceholder('EMP-042').fill('TPLGOAHLP099')
+    await page.getByTestId('add-new-employee-9999').click()
+    await page.getByPlaceholder('EMP-042').fill('E2E-HLP-9099')
     await page.getByPlaceholder('Guard').first().fill('Security Guard')
     await page.getByPlaceholder('14375').fill('14375')
     await page.getByPlaceholder('68.75').fill('68.75')
@@ -246,77 +247,77 @@ test.describe('E2E-35: Unknown code can be added as a new employee', () => {
 
     await expect(page).toHaveURL(new RegExp(`/attendance/${week.start}/employee-check$`), { timeout: 15000 })
     // Still unresolved: 099 is not 999
-    await expect(page.getByTestId('code-row-0999')).toBeVisible()
+    await expect(page.getByTestId('code-row-9999')).toBeVisible()
     await settled(page)
-    expect((await getPunchRows(week.start, { empCode: '0999' })).every((p) => p.employeeCode === null)).toBe(true)
+    expect((await getPunchRows(week.start, { empCode: '9999' })).every((p) => p.employeeCode === null)).toBe(true)
   })
 })
 
 test.describe('E2E-36: Unknown code can be matched and the link is saved', () => {
   test('the punches follow the chosen employee, and later pulls apply the saved link', async ({ request, page }) => {
-    await loadWeek(request, mockDay('0999', current.start, ['08:00', '16:00'], 'Empname0999'))
+    await loadWeek(request, mockDay('9999', current.start, ['08:00', '16:00'], 'Empname9999'))
     await openEmployeeCheck(page)
 
-    await chooseExistingEmployee(page, '0999', 'TPLGOAHLP004', 'Dev')
-    await expect(page.getByTestId('code-row-0999')).toHaveCount(0)
+    await chooseExistingEmployee(page, '9999', 'E2E-HLP-9004')
+    await expect(page.getByTestId('code-row-9999')).toHaveCount(0)
     await expect(page.getByText('Saved for future weeks too.')).toBeVisible()
 
     await settled(page)
-    const punches = await getPunchRows(week.start, { empCode: '0999' })
-    expect(new Set(punches.map((p) => p.employeeCode))).toEqual(new Set(['TPLGOAHLP004']))
-    expect(await getCodeExceptions()).toEqual([{ empCode: '0999', kind: 'MATCH', employeeCode: 'TPLGOAHLP004' }])
+    const punches = await getPunchRows(week.start, { empCode: '9999' })
+    expect(new Set(punches.map((p) => p.employeeCode))).toEqual(new Set(['E2E-HLP-9004']))
+    expect(await getCodeExceptions()).toEqual([{ empCode: '9999', kind: 'MATCH', employeeCode: 'E2E-HLP-9004' }])
 
     // The same week is pulled again (scheduled sync replaces an unedited pull): the link applies without asking
     const again = await runCron(request)
     expect(again.body).toMatchObject({ outcome: 'LOADED' })
     await settled(page)
-    const afterPull = await getPunchRows(week.start, { empCode: '0999' })
-    expect(new Set(afterPull.map((p) => p.employeeCode))).toEqual(new Set(['TPLGOAHLP004']))
+    const afterPull = await getPunchRows(week.start, { empCode: '9999' })
+    expect(new Set(afterPull.map((p) => p.employeeCode))).toEqual(new Set(['E2E-HLP-9004']))
     await openEmployeeCheck(page)
-    await expect(page.getByTestId('code-row-0999')).toHaveCount(0)
+    await expect(page.getByTestId('code-row-9999')).toHaveCount(0)
 
     // A later week is pulled from the list: still no question
     await openAttendance(page)
     await page.getByTestId(`pull-now-${current.start}`).click()
     await expect(weekRow(page, current.start)).toHaveAttribute('data-status', 'REVIEW', { timeout: 20000 })
     await settled(page)
-    const later = await getPunchRows(current.start, { empCode: '0999' })
+    const later = await getPunchRows(current.start, { empCode: '9999' })
     expect(later).toHaveLength(2)
-    expect(new Set(later.map((p) => p.employeeCode))).toEqual(new Set(['TPLGOAHLP004']))
+    expect(new Set(later.map((p) => p.employeeCode))).toEqual(new Set(['E2E-HLP-9004']))
     await openEmployeeCheck(page, current.start)
-    await expect(page.getByTestId('code-row-0999')).toHaveCount(0)
+    await expect(page.getByTestId('code-row-9999')).toHaveCount(0)
   })
 
   test('the audit log records the match', async ({ request, page }) => {
     await loadWeek(request)
     await openEmployeeCheck(page)
-    await chooseExistingEmployee(page, '0999', 'TPLGOAHLP004', 'Dev')
-    await expect(page.getByTestId('code-row-0999')).toHaveCount(0)
+    await chooseExistingEmployee(page, '9999', 'E2E-HLP-9004')
+    await expect(page.getByTestId('code-row-9999')).toHaveCount(0)
     await settled(page)
     const audit = await getAuditRows('ATTENDANCE_CODE')
     expect(audit.length).toBeGreaterThan(0)
-    expect(JSON.stringify(audit.at(-1)?.detailsJson)).toContain('0999')
+    expect(JSON.stringify(audit.at(-1)?.detailsJson)).toContain('9999')
   })
 })
 
 test.describe('E2E-37: Unknown code can be ignored and the choice is saved', () => {
   test('ignored punches are left out of review and payroll, and the code stays ignored', async ({ request, page }) => {
-    await loadWeek(request, mockDay('0999', current.start, ['08:00', '16:00'], 'Empname0999'))
+    await loadWeek(request, mockDay('9999', current.start, ['08:00', '16:00'], 'Empname9999'))
     await openEmployeeCheck(page)
 
-    await page.getByTestId('ignore-code-0999').click()
+    await page.getByTestId('ignore-code-9999').click()
     // A confirmation first: ignoring leaves the punches out of payroll
-    await expect(page.getByTestId('confirm-ignore-0999')).toBeVisible()
-    await page.getByTestId('cancel-ignore-0999').click()
-    await expect(page.getByTestId('code-row-0999')).toBeVisible()
-    await page.getByTestId('ignore-code-0999').click()
-    await page.getByTestId('confirm-ignore-0999').click()
+    await expect(page.getByTestId('confirm-ignore-9999')).toBeVisible()
+    await page.getByTestId('cancel-ignore-9999').click()
+    await expect(page.getByTestId('code-row-9999')).toBeVisible()
+    await page.getByTestId('ignore-code-9999').click()
+    await page.getByTestId('confirm-ignore-9999').click()
 
-    await expect(page.getByTestId('code-row-0999')).toHaveCount(0)
-    await expect(page.getByTestId('ignored-code-0999')).toBeVisible()
+    await expect(page.getByTestId('code-row-9999')).toHaveCount(0)
+    await expect(page.getByTestId('ignored-code-9999')).toBeVisible()
     await settled(page)
-    expect(await getCodeExceptions()).toEqual([{ empCode: '0999', kind: 'IGNORE', employeeCode: null }])
-    const punches = await getPunchRows(week.start, { empCode: '0999' })
+    expect(await getCodeExceptions()).toEqual([{ empCode: '9999', kind: 'IGNORE', employeeCode: null }])
+    const punches = await getPunchRows(week.start, { empCode: '9999' })
     expect(new Set(punches.map((p) => p.matchStatus))).toEqual(new Set(['IGNORED']))
     expect(new Set(punches.map((p) => p.employeeCode))).toEqual(new Set([null]))
 
@@ -325,19 +326,19 @@ test.describe('E2E-37: Unknown code can be ignored and the choice is saved', () 
     await openReview(page, week.start)
     await expect(page.getByTestId('punch-review')).toBeVisible()
     await expect(page.locator('[data-testid^="employee-row-"]')).not.toHaveCount(0)
-    await expect(page.getByText('Empname0999')).toHaveCount(0)
+    await expect(page.getByText('Empname9999')).toHaveCount(0)
 
     // A later pull ignores it without asking
     await openAttendance(page)
     await page.getByTestId(`pull-now-${current.start}`).click()
     await expect(weekRow(page, current.start)).toHaveAttribute('data-status', 'REVIEW', { timeout: 20000 })
     await settled(page)
-    const later = await getPunchRows(current.start, { empCode: '0999' })
+    const later = await getPunchRows(current.start, { empCode: '9999' })
     expect(later).toHaveLength(2)
     expect(new Set(later.map((p) => p.matchStatus))).toEqual(new Set(['IGNORED']))
     await openEmployeeCheck(page, current.start)
-    await expect(page.getByTestId('code-row-0999')).toHaveCount(0)
-    await expect(page.getByTestId('ignored-code-0999')).toBeVisible()
+    await expect(page.getByTestId('code-row-9999')).toHaveCount(0)
+    await expect(page.getByTestId('ignored-code-9999')).toBeVisible()
 
     // After approval nothing is paid for it
     await openEmployeeCheck(page)
@@ -355,11 +356,11 @@ test.describe('E2E-37: Unknown code can be ignored and the choice is saved', () 
 /** Resolve the other open items of the week (duplicate code, decisions) so the review opens. */
 async function settleOthers(page: Page) {
   await openEmployeeCheck(page)
-  if (await page.getByTestId('code-row-0007').isVisible()) {
-    await chooseExistingEmployee(page, '0007', 'TPLGOAHLP007', 'Esha')
-    await expect(page.getByTestId('code-row-0007')).toHaveCount(0)
+  if (await page.getByTestId('code-row-9007').isVisible()) {
+    await chooseExistingEmployee(page, '9007', 'E2E-HLP-9007')
+    await expect(page.getByTestId('code-row-9007')).toHaveCount(0)
   }
-  for (const code of ['TPLGOAHLP002', 'TPLGOAHLP003']) {
+  for (const code of ['E2E-HLP-9002', 'E2E-HLP-9003']) {
     const approve = page.getByTestId(`decision-approve-${code}`)
     if (await approve.isVisible()) {
       await approve.click()

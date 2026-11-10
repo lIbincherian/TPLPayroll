@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import prisma, {
-  cleanupDatabase,
+  cleanupTestData,
   createEmployee,
   seedApiWeek,
   seedEmployeesForSync,
@@ -29,12 +29,14 @@ import { openAttendance, openDay, openReview, setPairField, weekRow } from '../u
 const completed = expectedCompletedWeek()
 const current = expectedCurrentWeek()
 const completedDates = weekDates(completed.start)
+/** A Thursday before production started (2026-05-14): no row exists for it, in the base or the list. */
+const PAST_PICKER_WEEK = '2026-04-30'
 
 test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async () => {
   clearMockScenario()
-  await cleanupDatabase()
+  await cleanupTestData()
 })
 
 test.afterAll(() => {
@@ -50,7 +52,7 @@ function toast(page: Page, text: RegExp | string) {
 async function chooseWeekInPicker(page: Page, weekStart: string): Promise<void> {
   await page.getByTestId('load-past-week-button').click()
   const row = page.getByTestId(`week-picker-row-${weekStart}`)
-  for (let i = 0; i < 4 && !(await row.isVisible()); i++) {
+  for (let i = 0; i < 12 && !(await row.isVisible()); i++) {
     await page.getByRole('button', { name: 'Previous month' }).click()
   }
   await expect(row).toBeVisible()
@@ -72,18 +74,18 @@ async function seedWeekWithEditsAndDecision(page: Page) {
     weekStartISO: completed.start,
     rows: [
       {
-        employee: lite('TPLGOAHLP001'),
-        empCode: '0001',
+        employee: lite('E2E-HLP-9001'),
+        empCode: '9001',
         days: completedDates.slice(0, 6).map((date) => ({ date, punches: FULL_DAY.map((time) => ({ time })) })),
       },
       {
-        employee: lite('TPLGOAHLP004'),
-        empCode: '0004',
+        employee: lite('E2E-HLP-9004'),
+        empCode: '9004',
         days: completedDates.slice(0, 6).map((date) => ({ date, punches: FULL_DAY.map((time) => ({ time })) })),
       },
       {
-        employee: lite('TPLGOAHLP002'),
-        empCode: '0002',
+        employee: lite('E2E-HLP-9002'),
+        empCode: '9002',
         days: [{ date: completedDates[0], punches: [{ time: '08:00' }, { time: '16:00' }] }],
       },
     ],
@@ -100,14 +102,14 @@ async function seedWeekWithEditsAndDecision(page: Page) {
       data: { currentTime: '18:00' },
     })
   }
-  await edit('TPLGOAHLP001', 6)
-  await edit('TPLGOAHLP004', 5)
+  await edit('E2E-HLP-9001', 6)
+  await edit('E2E-HLP-9004', 5)
   await prisma.attendanceEmployeeDecision.create({
-    data: { attendanceUploadId: id, employeeId: emps['TPLGOAHLP002'].id, reason: 'INACTIVE', decision: 'APPROVED' },
+    data: { attendanceUploadId: id, employeeId: emps['E2E-HLP-9002'].id, reason: 'INACTIVE', decision: 'APPROVED' },
   })
   // The 12th edited day, through the grid, so the audit log has a real edit entry
   await openReview(page, completed.start)
-  await openDay(page, 'TPLGOAHLP004', completedDates[5])
+  await openDay(page, 'E2E-HLP-9004', completedDates[5])
   await setPairField(page, 2, 'out', '18:00')
   return id
 }
@@ -115,7 +117,7 @@ async function seedWeekWithEditsAndDecision(page: Page) {
 test.describe('E2E-06: Any unapproved week can be pulled manually', () => {
   test('a week still in progress can be pulled and is not locked', async ({ page }) => {
     await seedEmployeesForSync()
-    setMockPunches(mockDay('0001', current.start, FULL_DAY))
+    setMockPunches(mockDay('9001', current.start, FULL_DAY))
 
     await openAttendance(page)
     const row = weekRow(page, current.start)
@@ -135,14 +137,17 @@ test.describe('E2E-06: Any unapproved week can be pulled manually', () => {
     // Not locked: the grid is editable and a day opens an editor with input fields
     await openReview(page, current.start)
     await expect(page.getByTestId('punch-review')).not.toHaveAttribute('data-locked', /.*/)
-    await openDay(page, 'TPLGOAHLP001', current.start)
+    await openDay(page, 'E2E-HLP-9001', current.start)
     await expect(page.getByTestId('editor-pair-1-in')).toBeEditable()
   })
 
   test('a past week with no data is loaded from the "Load a past week" picker', async ({ page }) => {
     await seedEmployeesForSync()
-    const pastStart = addDays(completed.start, -14)
-    setMockPunches(mockDays('0001', weekDates(pastStart)))
+    // A week before the real data starts (the test namespace): it has no row, and no real week is in its place.
+    // The list shows only the newest weeks, so the row of this old week is not looked for there; the picker's
+    // own result (the "Loaded" toast) and the stored week prove the pull.
+    const pastStart = PAST_PICKER_WEEK
+    setMockPunches(mockDays('9001', weekDates(pastStart)))
 
     await openAttendance(page)
     await expect(weekRow(page, pastStart)).toHaveCount(0)
@@ -150,7 +155,7 @@ test.describe('E2E-06: Any unapproved week can be pulled manually', () => {
     await expect(page.getByTestId('week-picker-selected')).not.toHaveText('Choose a week')
     await page.getByTestId('week-picker-pull').click()
 
-    await expect(weekRow(page, pastStart)).toHaveAttribute('data-status', 'REVIEW', { timeout: 20000 })
+    await expect(toast(page, /Loaded/)).toBeVisible({ timeout: 20000 })
     const week = await getWeekRow(pastStart)
     expect(week?.status).toBe('REVIEW')
     expect(week?.approvedAt).toBeNull()
@@ -176,18 +181,18 @@ test.describe('E2E-06: Any unapproved week can be pulled manually', () => {
 
   test('a week that already has data can be pulled again without a warning when nothing was edited', async ({ page }) => {
     const emps = await seedEmployeesForSync()
-    const anita = emps['TPLGOAHLP001']
+    const anita = emps['E2E-HLP-9001']
     await seedReviewWeek({
       weekStartISO: completed.start,
       rows: [
         {
           employee: { id: anita.id, employeeId: anita.employeeId, employeeName: anita.employeeName },
-          empCode: '0001',
+          empCode: '9001',
           days: [{ date: completedDates[0], punches: FULL_DAY.map((time) => ({ time })) }],
         },
       ],
     })
-    setMockPunches(mockDays('0001', completedDates))
+    setMockPunches(mockDays('9001', completedDates))
 
     await openAttendance(page)
     await page.getByTestId(`pull-now-${completed.start}`).click()
@@ -209,9 +214,9 @@ test.describe('E2E-30: A new pull replaces the previous pull after a warning', (
 
     // The new pull has different punches
     setMockPunches([
-      ...mockDays('0001', completedDates, ['09:00', '17:00']),
-      ...mockDays('0004', completedDates.slice(0, 3), ['09:00', '17:00']),
-      ...mockDay('0002', completedDates[0], ['08:00', '16:00']),
+      ...mockDays('9001', completedDates, ['09:00', '17:00']),
+      ...mockDays('9004', completedDates.slice(0, 3), ['09:00', '17:00']),
+      ...mockDay('9002', completedDates[0], ['08:00', '16:00']),
     ])
 
     await openAttendance(page)
@@ -240,7 +245,7 @@ test.describe('E2E-30: A new pull replaces the previous pull after a warning', (
 
     // Employee decisions must be made again
     await page.goto(`/attendance/${completed.start}/employee-check`)
-    await expect(page.getByTestId('decision-row-TPLGOAHLP002')).toHaveAttribute('data-decision', 'NONE')
+    await expect(page.getByTestId('decision-row-E2E-HLP-9002')).toHaveAttribute('data-decision', 'NONE')
 
     // The audit log keeps the discarded edits: the earlier edit entry is still there, and the pull entry lists them
     const auditAfter = await getAuditRows('ATTENDANCE_PUNCH')
@@ -291,11 +296,13 @@ test.describe('E2E-31: A failed pull changes nothing', () => {
 })
 
 test.describe('E2E-33: Approved weeks cannot be pulled', () => {
-  const approvedWeek = '2026-10-01'
+  // The last completed week: ended (so it can be pulled once reopened) and always at the top of the week list,
+  // which shows only the newest weeks, however many weeks the real data holds.
+  const approvedWeek = completed.start
 
   test('an approved week has no Pull now; after Reopen it has', async ({ page }) => {
-    const anita = await createEmployee({ employeeId: 'TPLGOAHLP001', employeeName: 'Anita Rao' })
-    const dev = await createEmployee({ employeeId: 'TPLGOAHLP004', employeeName: 'Dev Kapoor' })
+    const anita = await createEmployee({ employeeId: 'E2E-HLP-9001', employeeName: 'Anita Rao' })
+    const dev = await createEmployee({ employeeId: 'E2E-HLP-9004', employeeName: 'Dev Kapoor' })
     const day = { reg: 8, ot: 0 }
     await seedApiWeek({
       weekStartISO: approvedWeek,
@@ -336,7 +343,7 @@ test.describe('E2E-34: Approve week waits until the week has ended', () => {
   test('the current week can be pulled and reviewed but not approved', async ({ page }) => {
     await seedEmployeesForSync()
     // A clean week: complete pairs only, every code matched
-    setMockPunches(mockDay('0001', current.start, FULL_DAY))
+    setMockPunches(mockDay('9001', current.start, FULL_DAY))
 
     await openAttendance(page)
     await page.getByTestId(`pull-now-${current.start}`).click()

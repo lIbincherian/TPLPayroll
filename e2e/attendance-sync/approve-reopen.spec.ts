@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test'
 import JSZip from 'jszip'
 import prisma, {
-  cleanupDatabase,
+  baseGridEmployeeCount,
+  cleanupTestData,
   createEmployee,
   getAttendanceRecordHours,
   getAuditRows,
@@ -21,16 +22,23 @@ import {
   settled,
   weekRow,
 } from '../utils/attendance-ui'
-import { addDays, weekDates } from '../utils/etimeoffice-mock'
+import { addDays, expectedCompletedWeek, payrollWeekLabel, weekDates } from '../utils/etimeoffice-mock'
 import { approvePayrollInUi, generateAndApprovePayroll, openPayrollSummary } from '../utils/payroll-ui'
 
-// Fixed past weeks: both have ended, so they can be approved on any run date.
-const W = '2026-09-24'
+// W is the last completed week: it has ended (so it can be approved on any run date) and it is always at the top
+// of the week lists, which show only the newest weeks however many the real data holds. W_NEXT, the week after
+// it, is the current week. Both are reserved for the specs: global setup removed the base's rows for them.
+const W = expectedCompletedWeek().start
 const W_NEXT = addDays(W, 7)
 const dates = weekDates(W)
 
-const WORKER = 'TPLGOAHLP001' // Anita Rao, works every day
-const IDLE = 'TPLGOAHLP004' // Dev Kapoor, active but no punches
+/** What the approval and payroll screens say about the left-out employees: the idle one plus every real active one. */
+async function leftOutCount() {
+  return 1 + (await baseGridEmployeeCount(W))
+}
+
+const WORKER = 'E2E-HLP-9001' // Anita Rao, works every day
+const IDLE = 'E2E-HLP-9004' // Dev Kapoor, active but no punches
 
 test.describe.configure({ mode: 'serial' })
 
@@ -38,7 +46,7 @@ test.describe.configure({ mode: 'serial' })
 const EIGHT_HOURS = [{ time: '08:00' }, { time: '12:00' }, { time: '13:00' }, { time: '17:00' }]
 
 async function seedWeek() {
-  await cleanupDatabase()
+  await cleanupTestData()
   const worker = await createEmployee({ employeeId: WORKER, employeeName: 'Anita Rao' })
   const idle = await createEmployee({ employeeId: IDLE, employeeName: 'Dev Kapoor' })
   await seedReviewWeek({
@@ -46,7 +54,7 @@ async function seedWeek() {
     rows: [
       {
         employee: { id: worker.id, employeeId: worker.employeeId, employeeName: worker.employeeName },
-        empCode: '0001',
+        empCode: '9001',
         days: dates.slice(0, 5).map((date) => ({ date, punches: EIGHT_HOURS })),
       },
     ],
@@ -63,10 +71,11 @@ test.describe('E2E-17: Zero-hour employees are left out', () => {
     await openReview(page, W)
     await approveButton(page).click()
     await expect(page.getByTestId('approval-employees')).toHaveText('1')
-    const leftOut = page.getByTestId(`left-out-${IDLE}`)
-    await expect(leftOut).toBeVisible()
-    await expect(leftOut).toContainText('Zero hours')
-    await expect(page.getByTestId('approval-left-out')).toContainText('1 employee left out, no payslip')
+    const idleRow = page.getByTestId(`left-out-${IDLE}`)
+    await expect(idleRow).toBeVisible()
+    await expect(idleRow).toContainText('Zero hours')
+    const leftOut = await leftOutCount()
+    await expect(page.getByTestId('approval-left-out')).toContainText(`${leftOut} employee${leftOut === 1 ? '' : 's'} left out, no payslip`)
     await page.getByTestId('approve-confirm').click()
     await expect(page.getByTestId('approve-week-dialog')).toBeHidden({ timeout: 15000 })
 
@@ -97,7 +106,7 @@ test.describe('E2E-21: Payroll requires an approved week', () => {
     await openAttendance(page)
     await expect(weekRow(page, W)).toHaveAttribute('data-status', 'REVIEW')
     await page.goto('/payroll')
-    const payrollRow = page.locator('tr', { hasText: 'Ready for review' }).filter({ hasText: '24 Sept' }).first()
+    const payrollRow = page.locator('tr', { hasText: 'Ready for review' }).filter({ hasText: payrollWeekLabel({ start: W, end: addDays(W, 6) }) }).first()
     await expect(payrollRow).toBeVisible()
     await expect(payrollRow.locator('span[title="Approve this week\'s attendance first"]')).toBeVisible()
     await expect(payrollRow.locator('a:has-text("Generate")')).toHaveCount(0)
@@ -116,7 +125,7 @@ test.describe('E2E-21: Payroll requires an approved week', () => {
     // Payroll now accepts the week, with the same hours
     await settled(page)
     await page.goto(`/payroll/generate/${W}`)
-    await expect(page.getByText('Attendance approved: 1 employees, 1 left out')).toBeVisible()
+    await expect(page.getByText(`Attendance approved: 1 employees, ${await leftOutCount()} left out`)).toBeVisible()
     await expect(page.locator('p:has-text("Total Regular Hrs") + p')).toHaveText('40.00')
     await expect(page.locator('p:has-text("Total Overtime Hrs") + p')).toHaveText('0.00')
     await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeVisible()
@@ -169,7 +178,7 @@ test.describe('E2E-22: Reopen before payroll is approved', () => {
       overtimeHours: 1,
     })
     // No revision was created by reopening or re-approving
-    expect(await prisma.payrollRevision.count()).toBe(0)
+    expect(await prisma.payrollRevision.count({ where: { payrollRun: { payrollWeekStartDate: new Date(`${W}T00:00:00Z`) } } })).toBe(0)
     const events = (await getAuditRows('ATTENDANCE_WEEK')).map((a) => a.actionType)
     expect(events).toEqual(expect.arrayContaining(['APPROVE', 'REOPEN']))
 

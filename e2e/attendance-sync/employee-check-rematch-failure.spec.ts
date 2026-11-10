@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
-import prisma, { cleanupDatabase, seedEmployeesForSync, getPunchRows } from '../utils/db'
+import prisma, { cleanupTestData, seedEmployeesForSync, getPunchRows } from '../utils/db'
 import {
   clearMockScenario,
   expectedCompletedWeek,
@@ -24,13 +24,13 @@ test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async ({ request }) => {
   clearMockScenario()
-  await cleanupDatabase()
+  await cleanupTestData()
   await seedEmployeesForSync()
-  // 0999 matches nobody and 0007 matches two employees: both stay on the employee check.
+  // 9999 matches nobody and 9007 matches two employees: both stay on the employee check.
   setMockPunches([
-    ...mockDay('0036', dates[0], FULL_DAY, 'Empname0036'),
-    ...mockDays('0999', [dates[0], dates[1]], ['08:00', '12:00'], 'Gita Pillai'),
-    ...mockDay('0007', dates[0], FULL_DAY, 'Empname0007'),
+    ...mockDay('9036', dates[0], FULL_DAY, 'Empname9036'),
+    ...mockDays('9999', [dates[0], dates[1]], ['08:00', '12:00'], 'Gita Pillai'),
+    ...mockDay('9007', dates[0], FULL_DAY, 'Empname9007'),
   ])
   expect((await runCron(request)).body).toMatchObject({ outcome: 'LOADED' })
 })
@@ -39,10 +39,10 @@ test.afterAll(() => {
   clearMockScenario()
 })
 
-/** What a run that linked code 0999 before it failed would have left behind. */
-async function linkCode0999() {
-  const employee = await prisma.employee.findFirstOrThrow({ where: { employeeId: 'TPLGOAHLP036' } })
-  await prisma.attendancePunch.updateMany({ where: { empCode: '0999' }, data: { employeeId: employee.id, matchStatus: 'MATCHED' } })
+/** What a run that linked code 9999 before it failed would have left behind. */
+async function linkCode9999() {
+  const employee = await prisma.employee.findFirstOrThrow({ where: { employeeId: 'E2E-HLP-9036' } })
+  await prisma.attendancePunch.updateMany({ where: { empCode: '9999' }, data: { employeeId: employee.id, matchStatus: 'MATCHED' } })
 }
 
 async function openCheckWith(page: Page, onFirstAction: (route: Route) => Promise<void>) {
@@ -63,35 +63,35 @@ async function openCheckWith(page: Page, onFirstAction: (route: Route) => Promis
 test.describe('E2E: the employee check after a re-match that failed part-way', () => {
   test('the request is lost: the page reloads anyway, so the code the run linked is no longer listed, and the error is shown', async ({ page }) => {
     const seen = await openCheckWith(page, async (route) => {
-      await linkCode0999()
+      await linkCode9999()
       await route.abort('failed')
     })
 
     await expect(page.getByTestId('employee-check-error')).toContainText("Couldn't reach the server. Try again.", { timeout: 15000 })
-    await expect(page.getByTestId('code-row-0999')).toHaveCount(0) // the reload shows it as linked
-    await expect(page.getByTestId('code-row-0007')).toBeVisible()
+    await expect(page.getByTestId('code-row-9999')).toHaveCount(0) // the reload shows it as linked
+    await expect(page.getByTestId('code-row-9007')).toBeVisible()
     expect(seen.actions()).toBeGreaterThanOrEqual(2) // the failed re-match, then the reload
     await settled(page)
-    expect((await getPunchRows(week.start, { empCode: '0999' })).every((p) => p.employeeCode === 'TPLGOAHLP036')).toBe(true)
+    expect((await getPunchRows(week.start, { empCode: '9999' })).every((p) => p.employeeCode === 'E2E-HLP-9036')).toBe(true)
   })
 
   test('the server refuses it (a pull holds the week): the same, with the server\'s own message', async ({ page }) => {
     const seen = await openCheckWith(page, async (route) => {
-      await linkCode0999()
+      await linkCode9999()
       await prisma.attendanceUpload.updateMany({ where: { payrollWeekStartDate: new Date(`${week.start}T00:00:00Z`) }, data: { syncLockedAt: new Date() } })
       await route.continue()
     })
 
     await expect(page.getByTestId('employee-check-error')).toContainText('A pull is running for this week.', { timeout: 15000 })
-    await expect(page.getByTestId('code-row-0999')).toHaveCount(0)
-    await expect(page.getByTestId('code-row-0007')).toBeVisible()
+    await expect(page.getByTestId('code-row-9999')).toHaveCount(0)
+    await expect(page.getByTestId('code-row-9007')).toBeVisible()
     expect(seen.actions()).toBeGreaterThanOrEqual(2)
   })
 
   test('with nothing wrong the page also reloads, and shows no error', async ({ page }) => {
     const seen = await openCheckWith(page, async (route) => route.continue())
 
-    await expect(page.getByTestId('code-row-0999')).toBeVisible({ timeout: 15000 })
+    await expect(page.getByTestId('code-row-9999')).toBeVisible({ timeout: 15000 })
     await expect.poll(() => seen.actions(), { timeout: 15000 }).toBeGreaterThanOrEqual(2) // the re-match, then the reload
     await expect(page.getByTestId('employee-check-error')).toHaveCount(0)
     await expect(page.getByText('Rechecking codes…')).toHaveCount(0)

@@ -2,6 +2,8 @@ import 'dotenv/config'
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
+import { deleteTestNamespace, reservedFromISO } from './test-data'
+import { PRE_HISTORY_END, TEST_EMPLOYEE_PREFIX } from './test-namespace'
 
 const connectionString = process.env.DIRECT_DATABASE_URL;
 
@@ -16,33 +18,86 @@ const adapter = new PrismaPg(pool)
 const prisma = new PrismaClient({ adapter })
 export default prisma;
 
+// ─── The test namespace ───────────────────────────────────────────────────────
+// The e2e database holds the real production data (the base) plus whatever the running spec added. Every
+// helper here writes only inside the test namespace (test-namespace.ts) and cleanupTestData() deletes only
+// that, so the base survives every spec. A helper refuses to write outside the namespace rather than risk a
+// real row.
 
-export async function cleanupDatabase() {
-  const tables = [
-    '"AuditLog"',
-    '"AttendancePunch"',
-    '"PayrollCorrectionSession"',
-    '"AttendanceEmployeeDecision"',
-    '"AttendanceCodeException"',
-    '"InvoiceSnapshot"',
-    '"PayrollRunEmployee"',
-    '"PayrollRevision"',
-    '"PayrollAdjustmentApplication"',
-    '"PayrollAdjustment"',
-    '"PayrollRun"',
-    '"AttendanceRecord"',
-    '"AttendanceUpload"',
-    '"EmployeeWageHistory"',
-    '"EmployeeDocument"',
-    '"Employee"',
-    '"EmployeeImportBatch"',
-  ];
+/**
+ * Delete the test namespace: the test employees ("E2E-" IDs) and everything in the test week zones (before the
+ * real data, the reserved current/last-completed weeks and after, far future), plus the audit rows written
+ * during this run. Nothing else; the real data is never touched.
+ */
+export async function cleanupTestData() {
   try {
-    await prisma.$executeRawUnsafe(`DELETE FROM ${tables.join('; DELETE FROM ')};`);
+    await deleteTestNamespace((sql, params) => prisma.$executeRawUnsafe(sql, ...params), {
+      reservedFrom: reservedFromISO(),
+      auditSince: process.env.E2E_RUN_STARTED_AT ?? null,
+    });
   } catch (err) {
     console.error(`Cleanup failed:`, (err as Error).message);
     throw err;
   }
+}
+
+/** True when a week start is in a test week zone: before the real data, reserved, or in the far future. */
+export function isTestWeek(weekStartISO: string): boolean {
+  return weekStartISO < PRE_HISTORY_END || weekStartISO >= reservedFromISO()
+}
+
+/** Throws unless the week is in a test zone, so a seed can never create or replace a real week. */
+export function assertTestWeek(weekStartISO: string, what = 'a seed'): void {
+  if (!isTestWeek(weekStartISO)) {
+    throw new Error(
+      `${what} used the week ${weekStartISO}, which is inside the real data (${PRE_HISTORY_END} to ${reservedFromISO()}). ` +
+        'Use a pre-history week (before 2026-05-01), the reserved current/last-completed week, or a far-future week.',
+    )
+  }
+}
+
+/** Throws unless the employee ID is in the test namespace. */
+export function assertTestEmployeeId(employeeId: string): void {
+  if (!employeeId.startsWith(TEST_EMPLOYEE_PREFIX)) {
+    throw new Error(`Employee ID "${employeeId}" is outside the test namespace (must start with "${TEST_EMPLOYEE_PREFIX}").`)
+  }
+}
+
+/** A Prisma `where` for AttendanceUpload / PayrollRun-like rows whose week is in a test zone. */
+export function inTestWeekZone(field = 'payrollWeekStartDate') {
+  return {
+    OR: [{ [field]: { lt: utcDate(PRE_HISTORY_END) } }, { [field]: { gte: utcDate(reservedFromISO()) } }],
+  }
+}
+
+/** Attendance weeks in the test zones: what a spec's own seeds and pulls created. */
+export function countTestUploads(): Promise<number> {
+  return prisma.attendanceUpload.count({ where: inTestWeekZone() })
+}
+
+/** Punches that belong to a test-zone week. */
+export function countTestPunches(): Promise<number> {
+  return prisma.attendancePunch.count({ where: { attendanceUpload: inTestWeekZone() } })
+}
+
+/** The audit rows written since this run started (the base's history is older). */
+export function auditSince(): { createdAt?: { gte: Date } } {
+  return process.env.E2E_RUN_STARTED_AT ? { createdAt: { gte: new Date(process.env.E2E_RUN_STARTED_AT) } } : {}
+}
+
+/**
+ * How many real (base) employees the punch grid lists for a week: active and not resigned before it. They have
+ * no punches in a test week, so they all show up as "No punches" and "left out, zero hours". A spec that counts
+ * those adds this to its own employees instead of assuming the grid holds only them. 0 on an empty base.
+ */
+export async function baseGridEmployeeCount(weekStartISO: string): Promise<number> {
+  return prisma.employee.count({
+    where: {
+      NOT: { employeeId: { startsWith: TEST_EMPLOYEE_PREFIX } },
+      isActive: true,
+      OR: [{ dateOfResignation: null }, { dateOfResignation: { gte: utcDate(weekStartISO) } }],
+    },
+  })
 }
 
 // ─── F12 helpers: API weeks, punches and employees ────────────────────────────
@@ -67,7 +122,7 @@ function toHHmm(totalMinutes: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
 }
 
-/** eTimeOffice code for an Employee ID: its trailing digits, padded to four ("EMP-PRY-001" -> "0001"). */
+/** eTimeOffice code for an Employee ID: its trailing digits, padded to four ("E2E-PRY-9001" -> "0001"). */
 export function codeForEmployeeId(employeeId: string): string {
   const digits = /(\d+)$/.exec(employeeId)?.[1] ?? '0'
   return digits.padStart(4, '0')
@@ -117,6 +172,7 @@ export async function seedApiWeek(opts: {
   status?: 'APPROVED' | 'REVIEW'
 }): Promise<{ id: string }> {
   const { weekStartISO, employees, days, status = 'APPROVED' } = opts
+  assertTestWeek(weekStartISO, 'seedApiWeek')
   const dates = weekDatesISO(weekStartISO)
   const loadedAt = new Date(`${addDaysISO(weekStartISO, 7)}T01:00:00.000Z`)
   const upload = await prisma.attendanceUpload.create({
@@ -167,6 +223,7 @@ export async function seedExcelWeek(opts: {
   fileName?: string
 }): Promise<{ id: string; weekStartISO: string }> {
   const weekStartISO = opts.weekStartISO ?? '2025-02-06'
+  assertTestWeek(weekStartISO, 'seedExcelWeek')
   const dates = weekDatesISO(weekStartISO)
   const upload = await prisma.attendanceUpload.create({
     data: {
@@ -209,6 +266,7 @@ export async function seedExcelWeek(opts: {
 
 /** A week whose last pull failed and that has no punches: shows "Sync failed". */
 export async function seedSyncFailedWeek(weekStartISO: string, error = 'eTimeOffice returned HTTP 500.') {
+  assertTestWeek(weekStartISO, 'seedSyncFailedWeek')
   const dates = weekDatesISO(weekStartISO)
   return prisma.attendanceUpload.create({
     data: {
@@ -252,6 +310,7 @@ export async function seedReviewWeek(opts: {
   weekStartISO: string
   rows: ReviewWeekRow[]
 }): Promise<{ id: string }> {
+  assertTestWeek(opts.weekStartISO, 'seedReviewWeek')
   const dates = weekDatesISO(opts.weekStartISO)
   const upload = await prisma.attendanceUpload.create({
     data: {
@@ -304,6 +363,7 @@ export async function createEmployee(opts: {
   weeklySalary?: number
   hourlyRate?: number
 }) {
+  assertTestEmployeeId(opts.employeeId)
   return prisma.employee.create({
     data: {
       employeeId: opts.employeeId,
@@ -326,19 +386,20 @@ export async function createEmployee(opts: {
 }
 
 /**
- * Employees for the sync and employee-check specs. Codes: 0001 / 0004 / 0036 active, 0002 inactive,
- * 0003 resigned before any 2026 week, 0007 matches two employees, 1000 needs four digits.
+ * Employees for the sync and employee-check specs. Codes: 9001 / 9004 / 9036 active, 9002 inactive, 9003
+ * resigned before any 2026 week, 9007 matches two employees, 9100 is the number 100 in the 9xxx range (four
+ * digits, so it must match in full). The IDs end in the same numbers as the codes (see test-namespace.ts).
  */
 export async function seedEmployeesForSync() {
   const defs = [
-    { employeeId: 'TPLGOAHLP001', employeeName: 'Anita Rao' },
-    { employeeId: 'TPLGOAHLP002', employeeName: 'Bala Singh', isActive: false },
-    { employeeId: 'TPLGOAHLP003', employeeName: 'Chitra Devi', dateOfResignation: '2025-03-01' },
-    { employeeId: 'TPLGOAHLP004', employeeName: 'Dev Kapoor' },
-    { employeeId: 'TPLGOAHLP007', employeeName: 'Esha Menon' },
-    { employeeId: 'TPLGOASUP007', employeeName: 'Farhan Ali' },
-    { employeeId: 'TPLGOAHLP036', employeeName: 'Gita Pillai' },
-    { employeeId: 'TPLGOAHLP1000', employeeName: 'Hari Prasad' },
+    { employeeId: 'E2E-HLP-9001', employeeName: 'Anita Rao' },
+    { employeeId: 'E2E-HLP-9002', employeeName: 'Bala Singh', isActive: false },
+    { employeeId: 'E2E-HLP-9003', employeeName: 'Chitra Devi', dateOfResignation: '2025-03-01' },
+    { employeeId: 'E2E-HLP-9004', employeeName: 'Dev Kapoor' },
+    { employeeId: 'E2E-HLP-9007', employeeName: 'Esha Menon' },
+    { employeeId: 'E2E-SUP-9007', employeeName: 'Farhan Ali' },
+    { employeeId: 'E2E-HLP-9036', employeeName: 'Gita Pillai' },
+    { employeeId: 'E2E-HLP-9100', employeeName: 'Hari Prasad' },
   ]
   const created: Record<string, Awaited<ReturnType<typeof createEmployee>>> = {}
   for (const def of defs) created[def.employeeId] = await createEmployee(def)
@@ -405,9 +466,10 @@ async function getPunchRowsOnce(
   }))
 }
 
+/** Audit rows written during this run (the base's history is older and never a spec's concern). */
 async function getAuditRowsOnce(entityType?: string, actionType?: string) {
   return prisma.auditLog.findMany({
-    where: { ...(entityType ? { entityType } : {}), ...(actionType ? { actionType } : {}) },
+    where: { ...auditSince(), ...(entityType ? { entityType } : {}), ...(actionType ? { actionType } : {}) },
     orderBy: { createdAt: 'asc' },
   })
 }
@@ -423,7 +485,11 @@ async function getDecisionRowsOnce(weekStartISO: string) {
 }
 
 async function getCodeExceptionsOnce() {
-  const rows = await prisma.attendanceCodeException.findMany({ include: { employee: { select: { employeeId: true } } } })
+  // Only the test codes: a real exception (a snapshot after F12 may hold some) is not a spec's data.
+  const rows = await prisma.attendanceCodeException.findMany({
+    where: { empCode: { startsWith: '9' } },
+    include: { employee: { select: { employeeId: true } } },
+  })
   return rows.map((r) => ({ empCode: r.empCode, kind: r.kind, employeeCode: r.employee?.employeeId ?? null }))
 }
 
@@ -490,7 +556,7 @@ export async function seedAdjustmentTestData() {
     // Create a test employee for adjustment flows
     const employee = await prisma.employee.create({
       data: {
-        employeeId: 'EMP-ADJ-001',
+        employeeId: 'E2E-ADJ-9001',
         employeeName: 'Adjustment Test Employee',
         designation: 'Worker',
         isActive: true,
@@ -601,24 +667,28 @@ export async function seedAdjustmentTestData() {
 // ─── seedPayrollTestData ──────────────────────────────────────────────────────
 // Seeds a minimal but complete scenario for F06 E2E tests:
 //   - 3 employees with wage history
-//   - 1 READY AttendanceUpload for March 6-12 with daily records
-//   - 1 ERRORS AttendanceUpload for March 13-19 (blocked)
-//   - 1 pending adjustment application for March 6-12
+//   - 1 approved eTimeOffice week (default 6-12 Mar 2025) with daily records
+//   - 1 week in review the week after (default 13-19 Mar 2025, blocks payroll)
+//   - 1 pending adjustment application for the approved week
 
-export async function seedPayrollTestData() {
+export async function seedPayrollTestData(
+  opts: { approvedWeekISO?: string; reviewWeekISO?: string } = {},
+) {
   try {
     await prisma.$connect();
 
-    const weekStart = new Date('2025-03-06T00:00:00.000Z');
-    const weekEnd   = new Date('2025-03-12T00:00:00.000Z');
-    const errWeekStart = new Date('2025-03-13T00:00:00.000Z');
-    const errWeekEnd   = new Date('2025-03-19T00:00:00.000Z');
+    // The approved week and the week in review (the day after it ends). Default: two weeks before the real
+    // data starts; the payroll-flow spec passes the reserved weeks so both rows show in the newest-weeks list.
+    const approvedWeekISO = opts.approvedWeekISO ?? '2025-03-06';
+    const reviewWeekISO = opts.reviewWeekISO ?? addDaysISO(approvedWeekISO, 7);
+    const weekStart = utcDate(approvedWeekISO);
+    const weekEnd   = utcDate(addDaysISO(approvedWeekISO, 6));
 
     // ── Employees ──────────────────────────────────────────────────────────
     const employees = await Promise.all([
       prisma.employee.create({
         data: {
-          employeeId: 'EMP-PRY-001',
+          employeeId: 'E2E-PRY-9001',
           employeeName: 'Kavitha Rajan',
           designation: 'Security Guard',
           designationShort: 'Guard',
@@ -638,7 +708,7 @@ export async function seedPayrollTestData() {
       }),
       prisma.employee.create({
         data: {
-          employeeId: 'EMP-PRY-002',
+          employeeId: 'E2E-PRY-9002',
           employeeName: 'Ramesh Nair',
           designation: 'Supervisor',
           designationShort: 'Supv.',
@@ -658,7 +728,7 @@ export async function seedPayrollTestData() {
       }),
       prisma.employee.create({
         data: {
-          employeeId: 'EMP-PRY-003',
+          employeeId: 'E2E-PRY-9003',
           employeeName: 'Sunita Pillai',
           designation: 'Security Guard',
           designationShort: 'Guard',
@@ -690,7 +760,7 @@ export async function seedPayrollTestData() {
       [{ reg: 8, ot: 0 }, { reg: 8, ot: 0 }, { reg: 8, ot: 0 }, { reg: 0, ot: 0 }, { reg: 8, ot: 0 }, { reg: 8, ot: 0 }, { reg: 8, ot: 0 }],
     ];
     const readyUpload = await seedApiWeek({
-      weekStartISO: '2025-03-06',
+      weekStartISO: approvedWeekISO,
       employees: employees,
       days: attendanceDays,
       status: 'APPROVED',
@@ -723,7 +793,7 @@ export async function seedPayrollTestData() {
 
     // ── Loaded but not approved week for March 13-19 (blocks payroll) ──────
     await seedApiWeek({
-      weekStartISO: '2025-03-13',
+      weekStartISO: reviewWeekISO,
       employees: employees,
       days: attendanceDays,
       status: 'REVIEW',
@@ -743,7 +813,7 @@ export async function seedPayrollTestData() {
 //   - Attendance records for 7 days (for daily slip breakdown)
 
 export async function seedApprovedPayrollData(
-  opts: { source?: 'ETIMEOFFICE' | 'EXCEL'; weekStartISO?: string } = {},
+  opts: { source?: 'ETIMEOFFICE' | 'EXCEL'; weekStartISO?: string; approvedAt?: Date } = {},
 ): Promise<{ payrollRunId: string; weekStartISO: string }> {
   await prisma.$connect();
 
@@ -751,11 +821,12 @@ export async function seedApprovedPayrollData(
   const weekStartISO = opts.weekStartISO ?? '2025-04-03';
   const weekStart = new Date(`${weekStartISO}T00:00:00.000Z`);
   const weekEnd   = new Date(`${addDaysISO(weekStartISO, 6)}T00:00:00.000Z`);
-  const approvedAt = new Date(`${addDaysISO(weekStartISO, 7)}T08:00:00.000Z`);
+  // Default: the morning after the week ends. A spec that needs this run to be the newest approved one gives "now".
+  const approvedAt = opts.approvedAt ?? new Date(`${addDaysISO(weekStartISO, 7)}T08:00:00.000Z`);
 
   const emp1 = await prisma.employee.create({
     data: {
-      employeeId: 'EMP-RPT-001',
+      employeeId: 'E2E-RPT-9001',
       employeeName: 'Meera Krishnan',
       designation: 'Security Guard',
       designationShort: 'Guard',
@@ -776,7 +847,7 @@ export async function seedApprovedPayrollData(
 
   const emp2 = await prisma.employee.create({
     data: {
-      employeeId: 'EMP-RPT-002',
+      employeeId: 'E2E-RPT-9002',
       employeeName: 'Vijay Kumar',
       designation: 'Supervisor',
       designationShort: 'Supv.',
@@ -883,66 +954,6 @@ export async function getCleanedSnapshotCount(payrollRunId: string): Promise<num
   });
 }
 
-export async function seedTestData() {
-  try {
-    // We use a transaction for seeding to ensure atomicity
-    await prisma.$transaction([
-      prisma.employee.create({
-        data: {
-          employeeId: 'EMP001',
-          employeeName: 'Matched Employee',
-          designation: 'Worker',
-          isActive: true,
-          wageHistory: {
-            create: {
-              weeklySalary: 5000,
-              hourlyRate: 100,
-              effectiveFrom: new Date('2025-01-01'),
-              changeSource: 'SEED',
-            },
-          },
-        },
-      }),
-      prisma.employee.create({
-        data: {
-          employeeId: 'EMP002',
-          employeeName: 'Inactive Employee',
-          designation: 'Worker',
-          isActive: false,
-          wageHistory: {
-            create: {
-              weeklySalary: 5000,
-              hourlyRate: 100,
-              effectiveFrom: new Date('2025-01-01'),
-              changeSource: 'SEED',
-            },
-          },
-        },
-      }),
-      prisma.employee.create({
-        data: {
-          employeeId: 'EMP003',
-          employeeName: 'Resigned Employee',
-          designation: 'Worker',
-          isActive: true,
-          dateOfResignation: new Date('2025-03-01'),
-          wageHistory: {
-            create: {
-              weeklySalary: 5000,
-              hourlyRate: 100,
-              effectiveFrom: new Date('2025-01-01'),
-              changeSource: 'SEED',
-            },
-          },
-        },
-      }),
-    ]);
-  } catch (err) {
-    console.error('Seed failed:', err);
-    throw err;
-  }
-}
-
 // ─── seedApprovedPayrollForCorrection ─────────────────────────────────────────
 // Seeds a complete approved payroll scenario for F08 correction E2E tests using raw SQL:
 //   - 2 employees with wage history + attendance records
@@ -985,8 +996,8 @@ export async function seedApprovedPayrollForCorrection(): Promise<{
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW(), NOW()),
             ($9, $10, $11, $12, $13, $14, $15, $16, true, NOW(), NOW())`,
     [
-      emp1Id, 'EMP-COR-001', 'Anita Sharma', 'Security Guard', 'Guard', 'North Gate', '9876543210', '112233445566',
-      emp2Id, 'EMP-COR-002', 'Rajesh Iyer', 'Supervisor', 'Supv.', 'South Gate', '9123456780', '665544332211',
+      emp1Id, 'E2E-COR-9001', 'Anita Sharma', 'Security Guard', 'Guard', 'North Gate', '9876543210', '112233445566',
+      emp2Id, 'E2E-COR-9002', 'Rajesh Iyer', 'Supervisor', 'Supv.', 'South Gate', '9123456780', '665544332211',
     ]
   )
 
@@ -1038,8 +1049,8 @@ export async function seedApprovedPayrollForCorrection(): Promise<{
 
   // Matching live punches: one pair per worked day that produces exactly those hours
   const correctionEmployees = [
-    { id: emp1Id, employeeId: 'EMP-COR-001', employeeName: 'Anita Sharma', days: emp1Days },
-    { id: emp2Id, employeeId: 'EMP-COR-002', employeeName: 'Rajesh Iyer', days: emp2Days },
+    { id: emp1Id, employeeId: 'E2E-COR-9001', employeeName: 'Anita Sharma', days: emp1Days },
+    { id: emp2Id, employeeId: 'E2E-COR-9002', employeeName: 'Rajesh Iyer', days: emp2Days },
   ]
   const punchRows = correctionEmployees.flatMap((emp) =>
     emp.days.flatMap((d, dayIndex) =>

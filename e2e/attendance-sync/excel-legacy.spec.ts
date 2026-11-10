@@ -1,22 +1,25 @@
 import { test, expect } from '@playwright/test'
 import JSZip from 'jszip'
-import prisma, { cleanupDatabase, getAttendanceRecordHours, getWeekRow, seedApprovedPayrollData } from '../utils/db'
+import prisma, { cleanupTestData, getAttendanceRecordHours, getWeekRow, seedApprovedPayrollData } from '../utils/db'
 import { openAttendance, settled, weekRow } from '../utils/attendance-ui'
+import { expectedCompletedWeek } from '../utils/etimeoffice-mock'
 import { extractPdfFlatText } from '../utils/pdf'
 
-// Weeks imported through the old Excel upload stay readable after F12 removes the upload:
-// 3-9 Apr 2025, two employees, an approved payroll run (revision 1).
-//   Meera Krishnan  EMP-RPT-001  46 regular + 6 overtime
-//   Vijay Kumar     EMP-RPT-002  56 regular
+// Weeks imported through the old Excel upload stay readable after F12 removes the upload: here the last completed
+// week (always at the top of the week list, which shows only the newest weeks, and the newest approved week for
+// the history page), two employees, an approved payroll run (revision 1). The real Excel weeks in the base are
+// covered by the real-data suite.
+//   Meera Krishnan  E2E-RPT-9001  46 regular + 6 overtime
+//   Vijay Kumar     E2E-RPT-9002  56 regular
 
-const WEEK = '2025-04-03'
+const WEEK = expectedCompletedWeek().start
 
 let payrollRunId: string
 
 test.describe.configure({ mode: 'serial' })
 
 test.beforeAll(async () => {
-  await cleanupDatabase()
+  await cleanupTestData()
   const seed = await seedApprovedPayrollData({ source: 'EXCEL', weekStartISO: WEEK })
   payrollRunId = seed.payrollRunId
 })
@@ -52,11 +55,11 @@ test.describe('E2E-27: Past Excel weeks stay readable', () => {
     await expect(page.getByTestId('excel-week-view')).toBeVisible({ timeout: 15000 })
     await expect(page.getByTestId('excel-read-only-note')).toBeVisible()
     await expect(page.getByTestId('excel-source')).toContainText('attendance-apr-wk1.xlsx')
-    await expect(page.getByTestId('excel-row-EMP-RPT-001')).toContainText('Meera Krishnan')
-    await expect(page.getByTestId('excel-row-EMP-RPT-002')).toContainText('Vijay Kumar')
+    await expect(page.getByTestId('excel-row-E2E-RPT-9001')).toContainText('Meera Krishnan')
+    await expect(page.getByTestId('excel-row-E2E-RPT-9002')).toContainText('Vijay Kumar')
     // Hours as imported: 46 + 6 and 56
-    await expect(page.getByTestId('excel-row-EMP-RPT-001')).toContainText('46.00')
-    await expect(page.getByTestId('excel-row-EMP-RPT-002')).toContainText('56.00')
+    await expect(page.getByTestId('excel-row-E2E-RPT-9001')).toContainText('46.00')
+    await expect(page.getByTestId('excel-row-E2E-RPT-9002')).toContainText('56.00')
 
     for (const id of ['approve-week-button', 'reopen-week-button', 'punch-grid', 'day-editor']) {
       await expect(page.getByTestId(id)).toHaveCount(0)
@@ -74,13 +77,13 @@ test.describe('E2E-27: Past Excel weeks stay readable', () => {
   test('the data is unchanged and the payroll run and history still open', async ({ page }) => {
     const hours = await getAttendanceRecordHours(WEEK)
     expect(hours).toHaveLength(14)
-    expect(hours.filter((h) => h.employeeCode === 'EMP-RPT-001').reduce((s, h) => s + h.regularHours, 0)).toBe(46)
-    expect(hours.filter((h) => h.employeeCode === 'EMP-RPT-001').reduce((s, h) => s + h.overtimeHours, 0)).toBe(6)
+    expect(hours.filter((h) => h.employeeCode === 'E2E-RPT-9001').reduce((s, h) => s + h.regularHours, 0)).toBe(46)
+    expect(hours.filter((h) => h.employeeCode === 'E2E-RPT-9001').reduce((s, h) => s + h.overtimeHours, 0)).toBe(6)
     const row = await getWeekRow(WEEK)
     expect(row?.source).toBe('EXCEL')
     expect(row?.status).toBe('READY')
     expect(row?.fileName).toBe('attendance-apr-wk1.xlsx')
-    expect(await prisma.attendancePunch.count()).toBe(0)
+    expect(await prisma.attendancePunch.count({ where: { attendanceUploadId: row!.id } })).toBe(0)
 
     await page.goto('/history')
     await expect(page.locator('h1:has-text("Payroll History")')).toBeVisible()

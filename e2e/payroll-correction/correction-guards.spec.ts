@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import prisma, {
-  cleanupDatabase,
+  cleanupTestData,
   seedApprovedPayrollForCorrection,
   getAttendanceRecordHours,
   getCorrectionSessions,
@@ -17,13 +17,13 @@ import { closeEditor, dayCell, openDay, setPairField, settled } from '../utils/a
 // adjustment forward.
 //
 // Seed: week 17-23 Apr 2025, revision 1 current.
-//   Anita Sharma  EMP-COR-001  46 regular + 6 overtime hours (Thursday 17 Apr: 08:00-18:00), a 500 deduction
-//   Rajesh Iyer   EMP-COR-002  56 regular hours (08:00-16:00 every day)
+//   Anita Sharma  E2E-COR-9001  46 regular + 6 overtime hours (Thursday 17 Apr: 08:00-18:00), a 500 deduction
+//   Rajesh Iyer   E2E-COR-9002  56 regular hours (08:00-16:00 every day)
 
 const WEEK = '2025-04-17'
 const NEXT_WEEK = '2025-04-24'
-const ANITA = 'EMP-COR-001'
-const RAJESH = 'EMP-COR-002'
+const ANITA = 'E2E-COR-9001'
+const RAJESH = 'E2E-COR-9002'
 const WEEK_DATES = Array.from({ length: 7 }, (_, i) => {
   const d = new Date(`${WEEK}T00:00:00Z`)
   d.setUTCDate(d.getUTCDate() + i)
@@ -37,7 +37,7 @@ test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async () => {
   clearMockScenario()
-  await cleanupDatabase()
+  await cleanupTestData()
   const seed = await seedApprovedPayrollForCorrection()
   payrollRunId = seed.payrollRunId
   adjustmentApplicationId = seed.adjustmentApplicationId

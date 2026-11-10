@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import prisma, {
-  cleanupDatabase,
+  cleanupTestData,
   getAuditRows,
   getCorrectionSessions,
   getPunchRows,
@@ -14,10 +14,10 @@ import { closeEditor, openDay, setPairField, settled } from '../utils/attendance
 // other, opened before that save, then edits the first pair. Without the version the stale tab's save
 // would delete the pair it never saw; now it is refused, reloads to the latest times, and the pair survives.
 //
-// Seed: week 17-23 Apr 2025. Anita Sharma (EMP-COR-001) has one pair on Thursday 17 Apr: 08:00-18:00.
+// Seed: week 17-23 Apr 2025. Anita Sharma (E2E-COR-9001) has one pair on Thursday 17 Apr: 08:00-18:00.
 
 const WEEK = '2025-04-17'
-const ANITA = 'EMP-COR-001'
+const ANITA = 'E2E-COR-9001'
 const DAY_CHANGED =
   'This day was changed in another tab or by a pull, so your change was not saved. It now shows the latest times. Enter your change again.'
 
@@ -27,7 +27,7 @@ test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async () => {
   clearMockScenario()
-  await cleanupDatabase()
+  await cleanupTestData()
   const seed = await seedApprovedPayrollForCorrection()
   payrollRunId = seed.payrollRunId
 })

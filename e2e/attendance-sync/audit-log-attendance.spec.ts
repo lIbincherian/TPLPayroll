@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { cleanupDatabase, createEmployee, getAuditRows } from '../utils/db'
+import prisma, { cleanupTestData, createEmployee, getAuditRows } from '../utils/db'
 import {
   clearMockScenario,
   expectedCompletedWeek,
@@ -14,20 +14,20 @@ import { approveWeekInUi, closeEditor, openDay, openReview, runCron, setPairFiel
 
 const week = expectedCompletedWeek()
 const dates = weekDates(week.start)
-const ANITA = 'TPLGOAHLP001'
+const ANITA = 'E2E-HLP-9001'
 
 test.describe.configure({ mode: 'serial' })
 
-test.beforeAll(async ({ request, browser }) => {
+test.beforeAll(async ({ request, browser }, testInfo) => {
   clearMockScenario()
-  await cleanupDatabase()
+  await cleanupTestData()
   await createEmployee({ employeeId: ANITA, employeeName: 'Anita Rao' })
-  setMockPunches(mockDay('0001', dates[0], FULL_DAY))
+  setMockPunches(mockDay('9001', dates[0], FULL_DAY))
   const loaded = await runCron(request)
   expect(loaded.body).toMatchObject({ outcome: 'LOADED' })
 
   // One edit and the approval, through the UI
-  const page = await browser.newPage({ baseURL: 'http://localhost:3100' })
+  const page = await browser.newPage({ baseURL: testInfo.project.use.baseURL })
   await openReview(page, week.start)
   await openDay(page, ANITA, dates[0])
   await setPairField(page, 2, 'out', '18:00')
@@ -84,9 +84,13 @@ test.describe('Audit log viewer: attendance entries', () => {
     await expect(body.locator('span', { hasText: /^APPROVE$/ })).toBeVisible()
     await expect(body.locator('span', { hasText: /^(SYNC|PULL)$/ }).first()).toBeVisible()
 
-    // Filtering by action narrows it
+    // Filtering by action narrows it. The viewer shows one page (20 rows) of every Attendance week approval in
+    // the database, newest first, so the expected count comes from the database: this spec's approval, and any
+    // an updated snapshot of production holds, up to a page.
     await filterAudit(page, 'ATTENDANCE_WEEK', 'APPROVE')
-    await expect(page.locator('tbody tr').filter({ hasText: 'Attendance week' })).toHaveCount(1)
+    const approvals = await prisma.auditLog.count({ where: { entityType: 'ATTENDANCE_WEEK', actionType: 'APPROVE' } })
+    expect(approvals).toBeGreaterThanOrEqual(1)
+    await expect(page.locator('tbody tr').filter({ hasText: 'Attendance week' })).toHaveCount(Math.min(approvals, 20))
     await expect(page.locator('tbody')).not.toContainText('PULL')
   })
 

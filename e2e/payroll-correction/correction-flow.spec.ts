@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import prisma, {
-  cleanupDatabase,
+  cleanupTestData,
   seedApprovedPayrollForCorrection,
   getAttendanceRecordHours,
   getAuditRows,
@@ -18,12 +18,12 @@ import { closeEditor, openDay, setPairField, settled } from '../utils/attendance
 // revision stays in effect until the new one is approved, and no file upload is involved.
 //
 // Seed: week 17-23 Apr 2025, revision 1 current.
-//   Anita Sharma  EMP-COR-001  46 regular + 6 overtime hours (Thursday 17 Apr: 08:00-18:00, 8 + 2)
-//   Rajesh Iyer   EMP-COR-002  56 regular hours
+//   Anita Sharma  E2E-COR-9001  46 regular + 6 overtime hours (Thursday 17 Apr: 08:00-18:00, 8 + 2)
+//   Rajesh Iyer   E2E-COR-9002  56 regular hours
 
 const WEEK = '2025-04-17'
-const ANITA = 'EMP-COR-001'
-const RAJESH = 'EMP-COR-002'
+const ANITA = 'E2E-COR-9001'
+const RAJESH = 'E2E-COR-9002'
 
 let payrollRunId: string
 let revisionId: string
@@ -32,7 +32,7 @@ test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(async () => {
   clearMockScenario()
-  await cleanupDatabase()
+  await cleanupTestData()
   const seed = await seedApprovedPayrollForCorrection()
   payrollRunId = seed.payrollRunId
   revisionId = seed.revisionId
@@ -109,7 +109,7 @@ test.describe('Payroll run page', () => {
 test.describe('E2E-24: Correct an approved week', () => {
   test('revision 1 stays current during the edit; approving punches then the revision creates revision 2', async ({ page }) => {
     // The API must not be called: if it were, the live punches would be replaced by this
-    setMockPunches(mockDay('0001', WEEK, ['09:00', '10:00'], 'Anita Sharma'))
+    setMockPunches(mockDay('9001', WEEK, ['09:00', '10:00'], 'Anita Sharma'))
 
     await startAttendanceCorrection(page) // reason left blank
     await expect(page.getByTestId('correction-banner')).toBeVisible()
@@ -180,16 +180,16 @@ test.describe('E2E-24: Correct an approved week', () => {
   })
 
   test('a reason typed on the first step is stored on the new revision', async ({ page }) => {
-    await startAttendanceCorrection(page, 'Wrong OUT time for EMP-COR-001')
-    await expect(page.getByTestId('correction-reason')).toContainText('Wrong OUT time for EMP-COR-001')
+    await startAttendanceCorrection(page, 'Wrong OUT time for E2E-COR-9001')
+    await expect(page.getByTestId('correction-reason')).toContainText('Wrong OUT time for E2E-COR-9001')
     await editAnitaThursday(page)
     await approvePunchesInUi(page)
     await approveRevisionInUi(page)
     await settled(page)
     const revisions = await getRevisions(payrollRunId)
-    expect(revisions[1].correctionReason).toBe('Wrong OUT time for EMP-COR-001')
+    expect(revisions[1].correctionReason).toBe('Wrong OUT time for E2E-COR-9001')
     await page.goto(`/payroll/run/${payrollRunId}`)
-    await expect(page.locator('text=Wrong OUT time for EMP-COR-001')).toBeVisible({ timeout: 10000 })
+    await expect(page.locator('text=Wrong OUT time for E2E-COR-9001')).toBeVisible({ timeout: 10000 })
   })
 
   test('punches with an incomplete pair cannot be approved in a correction', async ({ page }) => {
@@ -308,7 +308,7 @@ test.describe('E2E-39: Adjustment-only correction skips the grid', () => {
     // No punch copy was made
     expect((await getCorrectionSessions(payrollRunId))[0].status).toBe('IN_PROGRESS')
     expect(
-      await prisma.attendancePunch.count({ where: { correctionId: { not: null } } }),
+      await prisma.attendancePunch.count({ where: { correctionId: { not: null }, attendanceUpload: { payrollWeekStartDate: new Date(`${WEEK}T00:00:00Z`) } } }),
     ).toBe(0)
 
     // E2E-40: the draft exists but revision 1 is still current
