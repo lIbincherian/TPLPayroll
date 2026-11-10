@@ -238,3 +238,87 @@ describe('PunchReviewGridProps (compile time)', () => {
     expect([missing, unexpected, ...valid]).toHaveLength(4)
   })
 })
+
+// Round 3, item 10 (tester): what the injected actions carry reaches the screen, and the run id comes
+// from the review's own mode, not from anything the page hard-codes.
+describe('PunchReviewGrid in a correction: what the injected actions carry', () => {
+  it('shows the reason from the actions in the banner', () => {
+    renderCorrection({ ...correctionActions, reason: 'Wrong OUT time on Friday' })
+
+    expect(screen.getByTestId('correction-banner')).toBeInTheDocument()
+    expect(screen.getByTestId('correction-reason')).toHaveTextContent('Reason: Wrong OUT time on Friday')
+  })
+
+  it('shows no reason line when the reason is null', () => {
+    renderCorrection({ ...correctionActions, reason: null })
+
+    expect(screen.getByTestId('correction-banner')).toBeInTheDocument()
+    expect(screen.queryByTestId('correction-reason')).not.toBeInTheDocument()
+  })
+
+  it('shows the revision being corrected from the review mode in the banner', () => {
+    render(
+      <PunchReviewGrid
+        initialReview={reviewOf({ kind: 'CORRECTION', payrollRunId: 'run-1', correctionId: 'session-1', revisionNumber: 3 })}
+        backHref="/payroll"
+        backLabel="Payroll"
+        title="Punches"
+        correction={correctionActions}
+      />,
+    )
+
+    expect(screen.getByTestId('correction-banner')).toHaveTextContent('Revision 3 stays in effect')
+  })
+
+  const renderRun9 = () =>
+    render(
+      <PunchReviewGrid
+        initialReview={reviewOf({ kind: 'CORRECTION', payrollRunId: 'run-9', correctionId: 'session-9', revisionNumber: 1 })}
+        backHref="/payroll"
+        backLabel="Payroll"
+        title="Punches"
+        correction={correctionActions}
+      />,
+    )
+
+  it('hands the run id of the review itself to the approve action (not a fixed one)', async () => {
+    renderRun9()
+
+    await openApproveDialog()
+    fireEvent.click(screen.getByTestId('approve-confirm'))
+
+    await waitFor(() => expect(onApproveCorrection).toHaveBeenCalledWith('run-9'))
+    expect(onApproveCorrection).not.toHaveBeenCalledWith('run-1')
+  })
+
+  it('hands the run id of the review itself to the abandon action (not a fixed one)', async () => {
+    onAbandonCorrection.mockResolvedValue({ ok: true, data: { sessionId: 's-9', discardedEdits: 0 } })
+    renderRun9()
+
+    fireEvent.click(screen.getByTestId('cancel-correction'))
+    fireEvent.click(await screen.findByTestId('discard-correction'))
+
+    await waitFor(() => expect(onAbandonCorrection).toHaveBeenCalledWith('run-9'))
+    expect(onAbandonCorrection).not.toHaveBeenCalledWith('run-1')
+    await waitFor(() => expect(push).toHaveBeenCalledWith('/payroll/run/run-9'))
+  })
+
+  it('does not call either action just by rendering', () => {
+    renderCorrection()
+
+    expect(onApproveCorrection).not.toHaveBeenCalled()
+    expect(onAbandonCorrection).not.toHaveBeenCalled()
+  })
+
+  it('a failed approve result is shown as a failure and never falls through to the live approval', async () => {
+    onApproveCorrection.mockResolvedValue({ ok: false, error: 'Nothing changed.', code: 'VALIDATION_ERROR' })
+    renderCorrection()
+
+    await openApproveDialog()
+    fireEvent.click(screen.getByTestId('approve-confirm'))
+
+    await waitFor(() => expect(screen.getByTestId('approve-error')).toBeInTheDocument())
+    expect(push).not.toHaveBeenCalled()
+    expect(approveWeekAction).not.toHaveBeenCalled()
+  })
+})
