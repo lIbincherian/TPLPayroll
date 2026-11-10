@@ -832,18 +832,20 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
           },
         })
 
+      // B had an application skipped before the correction starts: the snapshot knows it was already carried forward.
+      const adjB = await adjustment(empB.id)
+      const bSkipped = await application(adjB.id, empB.id, 'SKIPPED', { skippedAt: new Date('2026-03-01T00:00:00Z') })
+
       await correction.beginCorrection(runId)
       await correction.startAttendanceCorrection(runId, { types: ['ATTENDANCE'], reason: 'f12 db 3' } as never)
       const session = await activeSession(runId)
       const mode = { kind: 'CORRECTION' as const, payrollRunId: runId, correctionId: session.id, revisionNumber: run.currentRevisionNumber }
 
       // Applications added during the correction, for the employee who is about to be left out (B) and one who stays (A).
-      const adjB = await adjustment(empB.id)
       const adjBCancelled = await adjustment(empB.id, 'CANCELLED')
       const adjA = await adjustment(empA.id)
       const bApproved = await application(adjB.id, empB.id, 'APPROVED', { payrollRunId: runId, approvedAt: new Date() })
       const bPending = await application(adjB.id, empB.id, 'PENDING')
-      const bSkipped = await application(adjB.id, empB.id, 'SKIPPED', { skippedAt: new Date('2026-03-01T00:00:00Z') })
       const bCancelledAdj = await application(adjBCancelled.id, empB.id, 'PENDING')
       const aApproved = await application(adjA.id, empA.id, 'APPROVED', { payrollRunId: runId, approvedAt: new Date() })
       const aPending = await application(adjA.id, empA.id, 'PENDING')

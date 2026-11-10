@@ -21,9 +21,13 @@ import {
   calculateNetPayable,
 } from '@/features/payroll-generation/services/payroll.service'
 import {
-  approveAdjustmentApplication,
-  skipAdjustmentApplication,
+  amountToApply,
+  applyApprovalToAdjustment,
+  carryApplicationForward,
+  removeCarryForward,
+  undoApprovalOnAdjustment,
 } from '@/features/payroll-adjustments/services/adjustment.service'
+import { AdjustmentServiceError } from '@/features/payroll-adjustments/types/adjustment.types'
 import { auditEntry } from '@/features/attendance-sync/services/attendance-audit.service'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
 import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
@@ -524,39 +528,165 @@ export async function approveSkippedAdjustment(
   return { applicationId, approvalStatus: 'APPROVED' }
 }
 
-// ─── approveAdjustmentInCorrection ────────────────────────────────────────────
+// ─── approving and skipping an application during a correction ────────────────
 
 /**
- * Approve one adjustment application while a correction is open. The reset at the start of the
- * correction put the week's approved applications back to PENDING but left what their original
- * approval did to the adjustment (balance taken, completion). An application that was approved then
- * is put back as it was, without taking the balance a second time or re-capping its amount at what
- * is left; any other application is approved the usual way.
+ * While a correction is open, approving or skipping an adjustment application changes only its status
+ * (and, for an approval, the amount it will be applied at). Nothing is done to the adjustment itself:
+ * `approveRevision` settles the balance once, from the session's snapshot of how each application was
+ * before the correction against how it ends up. Abandoning therefore has no balance to put back.
+ *
+ * It takes the week's row lock, like approveRevision and abandonCorrection, so a click cannot land
+ * between their reads and writes.
  */
+async function setApplicationStatusInCorrection(applicationId: string, next: 'APPROVED' | 'SKIPPED'): Promise<void> {
+  const found = await prisma.payrollAdjustmentApplication.findUnique({
+    where: { id: applicationId },
+    select: { payrollWeekStartDate: true },
+  })
+  if (!found) {
+    throw new CorrectionServiceError('APPLICATION_NOT_FOUND', `Application "${applicationId}" not found`)
+  }
+  const open = await prisma.payrollCorrectionSession.findFirst({
+    where: { status: 'IN_PROGRESS', payrollRun: { payrollWeekStartDate: found.payrollWeekStartDate } },
+    orderBy: { createdAt: 'desc' },
+  })
+  if (!open) {
+    throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'No correction is in progress for this week')
+  }
+
+  await prisma.$transaction(
+    async (tx) => {
+      await lockWeekRow(tx, { id: open.attendanceUploadId })
+      const current = await tx.payrollCorrectionSession.findUnique({ where: { id: open.id } })
+      if (!current || current.status !== 'IN_PROGRESS') {
+        throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'This correction is no longer in progress.')
+      }
+
+      const app = await tx.payrollAdjustmentApplication.findUnique({
+        where: { id: applicationId },
+        include: { payrollAdjustment: true },
+      })
+      if (!app) {
+        throw new CorrectionServiceError('APPLICATION_NOT_FOUND', `Application "${applicationId}" not found`)
+      }
+      const allowed = next === 'APPROVED' ? ['PENDING', 'SKIPPED'] : ['PENDING', 'APPROVED']
+      if (!allowed.includes(app.approvalStatus)) {
+        throw new AdjustmentServiceError(
+          'INVALID_APPROVAL_STATUS',
+          `Application is already ${app.approvalStatus.toLowerCase()}`,
+        )
+      }
+
+      if (next === 'SKIPPED') {
+        await tx.payrollAdjustmentApplication.update({
+          where: { id: applicationId },
+          data: { approvalStatus: 'SKIPPED', skippedAt: new Date() },
+        })
+        return
+      }
+
+      // An application the original approval applied keeps the amount it was applied at. Any other is
+      // approved at what an approval would apply now (capped at the balance), so the draft revision is
+      // calculated from the amount approveRevision will take off the balance.
+      const wasApplied = parseAdjustmentSnapshot(current.adjustmentSnapshotJson).some(
+        (entry) => entry.applicationId === applicationId && entry.approvalStatus === 'APPROVED',
+      )
+      await tx.payrollAdjustmentApplication.update({
+        where: { id: applicationId },
+        data: {
+          approvalStatus: 'APPROVED',
+          appliedAt: new Date(),
+          ...(wasApplied ? {} : { appliedAmount: amountToApply(app.payrollAdjustment) }),
+        },
+      })
+    },
+    { timeout: TRANSACTION_TIMEOUT_MS },
+  )
+}
+
 export async function approveAdjustmentInCorrection(
   applicationId: string,
 ): Promise<{ applicationId: string; approvalStatus: 'APPROVED' }> {
-  const app = await prisma.payrollAdjustmentApplication.findUnique({
-    where: { id: applicationId },
-    select: { payrollRunId: true },
-  })
-  if (!app) {
-    throw new CorrectionServiceError('APPLICATION_NOT_FOUND', `Application "${applicationId}" not found`)
-  }
-
-  const session = app.payrollRunId
-    ? await prisma.payrollCorrectionSession.findFirst({
-        where: { payrollRunId: app.payrollRunId, status: 'IN_PROGRESS' },
-        orderBy: { createdAt: 'desc' },
-        select: { adjustmentSnapshotJson: true },
-      })
-    : null
-  const alreadyApplied = parseAdjustmentSnapshot(session?.adjustmentSnapshotJson).some(
-    (entry) => entry.applicationId === applicationId && entry.approvalStatus === 'APPROVED',
-  )
-
-  await approveAdjustmentApplication(applicationId, { alreadyApplied })
+  await setApplicationStatusInCorrection(applicationId, 'APPROVED')
   return { applicationId, approvalStatus: 'APPROVED' }
+}
+
+export async function skipAdjustmentInCorrection(
+  applicationId: string,
+): Promise<{ applicationId: string; approvalStatus: 'SKIPPED' }> {
+  await setApplicationStatusInCorrection(applicationId, 'SKIPPED')
+  return { applicationId, approvalStatus: 'SKIPPED' }
+}
+
+// ─── settleAdjustmentBalances ─────────────────────────────────────────────────
+
+/**
+ * The one place a correction moves an adjustment's balance. For each of the week's applications it
+ * compares how it was before the correction (the session snapshot: did the original approval apply
+ * it?) with how it ends up, and does the net:
+ *
+ *   before \ after | APPROVED, employee paid | SKIPPED, or employee left out   | PENDING, employee paid
+ *   applied        | nothing                 | balance back, carry forward     | balance back, stays PENDING
+ *   not applied    | apply it now            | carry forward, no balance change | nothing
+ *
+ * An employee the revision leaves out is not paid, so their pending or approved application ends SKIPPED
+ * (carried to the next week). A pending application of a paid employee is left as it is, the way
+ * approvePayroll leaves one. Without a snapshot (a draft made without a session, where nothing was reset)
+ * the application's own status says whether it was applied. Runs in approveRevision's transaction, under the lock.
+ */
+async function settleAdjustmentBalances(
+  tx: Prisma.TransactionClient,
+  run: { id: string; payrollWeekStartDate: Date },
+  paidEmployeeIds: Set<string>,
+  snapshot: AdjustmentSnapshotEntry[] | null,
+): Promise<void> {
+  const before = new Map((snapshot ?? []).map((entry) => [entry.applicationId, entry.approvalStatus]))
+
+  const applications = await tx.payrollAdjustmentApplication.findMany({
+    where: {
+      payrollWeekStartDate: run.payrollWeekStartDate,
+      OR: [{ payrollRunId: run.id }, { payrollRunId: null }],
+      payrollAdjustment: { status: { not: 'CANCELLED' } },
+    },
+    select: { id: true, employeeId: true, approvalStatus: true },
+  })
+
+  for (const { id, employeeId, approvalStatus } of applications) {
+    const wasApplied = snapshot ? before.get(id) === 'APPROVED' : approvalStatus === 'APPROVED'
+    const wasSkipped = snapshot ? before.get(id) === 'SKIPPED' : approvalStatus === 'SKIPPED'
+    const after = paidEmployeeIds.has(employeeId) ? approvalStatus : 'SKIPPED'
+
+    // The cells of the table that do nothing.
+    if (after === 'APPROVED' && wasApplied) continue
+    if (after === 'PENDING' && !wasApplied) continue
+    if (after === 'SKIPPED' && approvalStatus === 'SKIPPED' && wasSkipped) continue
+
+    const app = await tx.payrollAdjustmentApplication.findUnique({
+      where: { id },
+      include: { payrollAdjustment: true },
+    })
+    if (!app) continue
+    const adj = app.payrollAdjustment
+
+    if (after === 'SKIPPED') {
+      await carryApplicationForward(tx, app, adj, { undoApproval: wasApplied })
+    } else if (after === 'APPROVED') {
+      // Not applied before, approved now: take it off the balance at the amount the draft used. A
+      // carry-forward made when it was skipped before this correction is taken back.
+      if (app.carriedForwardToPayrollWeekStartDate) {
+        await removeCarryForward(tx, app, adj)
+        await tx.payrollAdjustmentApplication.update({
+          where: { id },
+          data: { carriedForwardToPayrollWeekStartDate: null },
+        })
+      }
+      await applyApprovalToAdjustment(tx, app, adj, Number(app.appliedAmount))
+    } else {
+      // Applied before, pending for a paid employee now: not paid in the revision, so not on the balance.
+      await undoApprovalOnAdjustment(tx, app, adj)
+    }
+  }
 }
 
 // ─── recalculateAndCreateRevision ─────────────────────────────────────────────
@@ -958,7 +1088,8 @@ function staleRevisionError(): CorrectionServiceError {
  * Make the draft revision current. One transaction: the draft becomes the current approved
  * revision, the one it replaces is superseded, the run takes the new totals, the week's
  * adjustment applications move to the new revision (those of employees the revision leaves out
- * are carried forward instead), and, for an attendance correction, the corrected punches and
+ * are carried forward instead, and every application's net effect on its adjustment's balance is
+ * settled once), and, for an attendance correction, the corrected punches and
  * attendance records replace the live ones. If anything fails the current revision stays
  * exactly as it was.
  *
@@ -998,8 +1129,9 @@ export async function approveRevision(
       let clonedPunches = 0
       let correctedRecords: Prisma.AttendanceRecordCreateManyInput[] = []
       let approvedLeftOutCount = 0
-      // How the week's adjustment applications looked before the correction reset them.
-      let snapshot: AdjustmentSnapshotEntry[] = []
+      // How the week's adjustment applications looked before the correction reset them; null when
+      // there is no snapshot (a draft made without a session).
+      let snapshot: AdjustmentSnapshotEntry[] | null = null
       if (session) {
         await lockWeekRow(tx, { id: session.attendanceUploadId })
 
@@ -1008,7 +1140,9 @@ export async function approveRevision(
           throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'This correction is no longer in progress.')
         }
         if (current.draftRevisionId !== revisionId) throw staleRevisionError()
-        snapshot = parseAdjustmentSnapshot(current.adjustmentSnapshotJson)
+        snapshot = Array.isArray(current.adjustmentSnapshotJson)
+          ? parseAdjustmentSnapshot(current.adjustmentSnapshotJson)
+          : null
 
         clonedPunches = await tx.attendancePunch.count({ where: { correctionId: session.id } })
         // The copied punches are promoted only when Attendance is part of this correction. A copy
@@ -1069,33 +1203,14 @@ export async function approveRevision(
         },
       })
 
-      // An employee the new revision leaves out is not paid this week, so their adjustments move
-      // to the next week instead of staying attached to this run. Skip them before the link step
-      // below, which would otherwise point them at the new revision.
+      // Settle every application's effect on its adjustment's balance (see settleAdjustmentBalances); an
+      // employee the new revision leaves out is not paid this week, so their adjustments are carried to the
+      // next week. This runs before the link step below, which would otherwise point them at the new revision.
       const paid = await tx.payrollRunEmployee.findMany({
         where: { payrollRevisionId: revisionId },
         select: { employeeId: true },
       })
-      const includedIds = paid.map((p) => p.employeeId)
-      const leftOut = await tx.payrollAdjustmentApplication.findMany({
-        where: {
-          payrollWeekStartDate: run.payrollWeekStartDate,
-          approvalStatus: { in: ['PENDING', 'APPROVED'] },
-          employeeId: { notIn: includedIds },
-          OR: [{ payrollRunId: run.id }, { payrollRunId: null }],
-          payrollAdjustment: { status: { not: 'CANCELLED' } },
-        },
-        select: { id: true },
-      })
-      // The correction reset an application its original approval had applied to PENDING, but that
-      // approval's effect on the adjustment (balance taken, completion) is still in place. Carrying
-      // the application forward has to undo it, exactly as skipping an approved application does.
-      const appliedBefore = new Set(snapshot.filter((e) => e.approvalStatus === 'APPROVED').map((e) => e.applicationId))
-      for (const application of leftOut) {
-        await skipAdjustmentApplication(application.id, tx, {
-          originalStatus: appliedBefore.has(application.id) ? 'APPROVED' : undefined,
-        })
-      }
+      await settleAdjustmentBalances(tx, run, new Set(paid.map((p) => p.employeeId)), snapshot)
 
       // Update adjustment applications to point to the new revision ID.
       // Also link any newly approved applications that weren't previously attached.

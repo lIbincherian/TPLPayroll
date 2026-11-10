@@ -13,9 +13,8 @@ import {
   startAttendanceCorrectionAction,
   abandonCorrectionAction,
   approveAdjustmentInCorrectionAction,
+  skipAdjustmentInCorrectionAction,
 } from '@/features/payroll-correction/actions/correction.actions'
-
-import { skipAdjustmentApplicationAction } from '@/features/payroll-adjustments/actions/adjustment.actions'
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -77,7 +76,8 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
 
   function handleApproveAdjustment(applicationId: string) {
     startTransition(async () => {
-      // Not the weekly review's approve: this one knows the application was already applied once.
+      // Not the weekly review's approve: during a correction this only changes the status; the balance
+      // is settled once, when the revision is approved.
       const res = await approveAdjustmentInCorrectionAction(applicationId)
       if (res.ok) {
         setAppStatusOverrides((prev) => ({ ...prev, [applicationId]: 'APPROVED' }))
@@ -87,7 +87,7 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
 
   function handleSkipAdjustment(applicationId: string) {
     startTransition(async () => {
-      const res = await skipAdjustmentApplicationAction(applicationId)
+      const res = await skipAdjustmentInCorrectionAction(applicationId)
       if (res.ok) {
         setAppStatusOverrides((prev) => ({ ...prev, [applicationId]: 'SKIPPED' }))
       }

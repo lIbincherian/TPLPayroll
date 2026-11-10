@@ -26,10 +26,7 @@ vi.mock('@/features/payroll-correction/actions/correction.actions', () => ({
   startAttendanceCorrectionAction: vi.fn(),
   abandonCorrectionAction: vi.fn(),
   approveAdjustmentInCorrectionAction: vi.fn(),
-}))
-
-vi.mock('@/features/payroll-adjustments/actions/adjustment.actions', () => ({
-  skipAdjustmentApplicationAction: vi.fn(),
+  skipAdjustmentInCorrectionAction: vi.fn(),
 }))
 
 // ─── Fixture ──────────────────────────────────────────────────────────────────

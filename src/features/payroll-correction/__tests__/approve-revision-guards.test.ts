@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 //     session's draft pointer, so an older draft is REVISION_STALE; the check is repeated inside the
 //     transaction after the week row is locked, and the punches are read there too.
 //  7. An employee the new revision leaves out has their pending/approved adjustment applications
-//     skipped (carried to the next week) instead of staying attached to the run.
+//     carried to the next week instead of staying attached to the run, and every application's net
+//     effect on its adjustment's balance is settled once (against the session's snapshot).
 
 vi.mock('@/lib/prisma', () => {
   const m = () => vi.fn()
@@ -22,7 +23,13 @@ vi.mock('@/lib/prisma', () => {
 vi.mock('@/features/attendance-sync/services/punch-review.service', () => ({ getPunchReview: vi.fn() }))
 vi.mock('@/features/attendance-sync/services/attendance-audit.service', () => ({ auditEntry: vi.fn() }))
 vi.mock('@/features/attendance-sync/services/week-lock.service', () => ({ lockWeekRow: vi.fn() }))
-vi.mock('@/features/payroll-adjustments/services/adjustment.service', () => ({ skipAdjustmentApplication: vi.fn() }))
+vi.mock('@/features/payroll-adjustments/services/adjustment.service', () => ({
+  amountToApply: vi.fn(),
+  applyApprovalToAdjustment: vi.fn(),
+  carryApplicationForward: vi.fn(),
+  removeCarryForward: vi.fn(),
+  undoApprovalOnAdjustment: vi.fn(),
+}))
 vi.mock('@/features/payroll-generation/services/payroll.service', () => ({
   calculateRegularPay: vi.fn(),
   calculateOvertimePay: vi.fn(),
@@ -35,7 +42,11 @@ import { CorrectionServiceError } from '@/features/payroll-correction/types/corr
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
 import { auditEntry } from '@/features/attendance-sync/services/attendance-audit.service'
 import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
-import { skipAdjustmentApplication } from '@/features/payroll-adjustments/services/adjustment.service'
+import {
+  applyApprovalToAdjustment,
+  carryApplicationForward,
+  undoApprovalOnAdjustment,
+} from '@/features/payroll-adjustments/services/adjustment.service'
 
 const RUN_ID = 'run-1'
 const SESSION_ID = 'session-1'
@@ -63,7 +74,7 @@ function makeTx() {
     payrollRun: { update: m() },
     payrollRunEmployee: { findMany: m() },
     payrollCorrectionSession: { findUnique: m(), update: m() },
-    payrollAdjustmentApplication: { findMany: m(), updateMany: m() },
+    payrollAdjustmentApplication: { findMany: m(), findUnique: m(), updateMany: m() },
     attendanceEmployeeDecision: { findMany: m() },
     attendancePunch: { count: m(), deleteMany: m(), updateMany: m() },
     attendanceRecord: { deleteMany: m(), createMany: m() },
@@ -128,7 +139,7 @@ function expectNothingWritten() {
   expect(tx.attendancePunch.deleteMany).not.toHaveBeenCalled()
   expect(tx.attendancePunch.updateMany).not.toHaveBeenCalled()
   expect(tx.payrollCorrectionSession.update).not.toHaveBeenCalled()
-  expect(skipAdjustmentApplication).not.toHaveBeenCalled()
+  expect(carryApplicationForward).not.toHaveBeenCalled()
   expect(auditEntry).not.toHaveBeenCalled()
   // and nothing outside the transaction either
   expect(prisma.payrollRun.update).not.toHaveBeenCalled()
@@ -353,8 +364,30 @@ describe('approveRevision: a stale preview cannot be approved', () => {
 
 // ─── Item 7: left-out employees' adjustments ──────────────────────────────────
 
-describe('approveRevision carries forward the adjustments of employees the revision leaves out', () => {
-  it('asks for PENDING/APPROVED applications of the week for employees outside the new revision, not on cancelled adjustments', async () => {
+describe('approveRevision settles the adjustments of the week: employees the revision leaves out are carried forward', () => {
+  const adjustment = { id: 'adj-1', adjustmentType: 'DEDUCTION', amount: 500 }
+  const row = (id: string, employeeId: string, approvalStatus = 'PENDING') => ({
+    id,
+    employeeId,
+    approvalStatus,
+    appliedAmount: 500,
+    carriedForwardToPayrollWeekStartDate: null,
+    payrollWeekStartDate: WEEK_START,
+    payrollWeekEndDate: new Date('2025-03-12T00:00:00.000Z'),
+    payrollAdjustment: adjustment,
+  })
+  /** What the week query returns, and what each application reads back when it is settled. */
+  function serveApplications(rows: ReturnType<typeof row>[]) {
+    tx.payrollAdjustmentApplication.findMany.mockResolvedValue(
+      rows.map(({ id, employeeId, approvalStatus }) => ({ id, employeeId, approvalStatus })),
+    )
+    tx.payrollAdjustmentApplication.findUnique.mockImplementation((async ({ where }: { where: { id: string } }) =>
+      rows.find((r) => r.id === where.id) ?? null) as never)
+  }
+  const snapshot = (...entries: Array<[string, string]>) =>
+    entries.map(([applicationId, approvalStatus]) => ({ applicationId, approvalStatus }))
+
+  it('asks for every application of the week that is on the run or not yet linked, on adjustments that are not cancelled', async () => {
     setup()
 
     await approveRevision(DRAFT_ID)
@@ -366,41 +399,40 @@ describe('approveRevision carries forward the adjustments of employees the revis
     expect(tx.payrollAdjustmentApplication.findMany).toHaveBeenCalledWith({
       where: {
         payrollWeekStartDate: WEEK_START,
-        approvalStatus: { in: ['PENDING', 'APPROVED'] },
-        employeeId: { notIn: ['emp-1', 'emp-2'] },
         OR: [{ payrollRunId: RUN_ID }, { payrollRunId: null }],
         payrollAdjustment: { status: { not: 'CANCELLED' } },
       },
-      select: { id: true },
+      select: { id: true, employeeId: true, approvalStatus: true },
     })
   })
 
-  it('skips each left-out application with the transaction client', async () => {
-    setup()
-    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([{ id: 'app-pending' }, { id: 'app-approved' }])
+  it('carries each left-out application forward on the transaction client', async () => {
+    // The snapshot says the original approval had applied the second one: carrying it forward gives the balance back.
+    setup({ before: session({ adjustmentSnapshotJson: snapshot(['app-approved', 'APPROVED']) }) })
+    serveApplications([row('app-pending', 'emp-9'), row('app-approved', 'emp-9', 'APPROVED')])
 
     await approveRevision(DRAFT_ID)
 
-    expect(skipAdjustmentApplication).toHaveBeenCalledTimes(2)
-    expect(skipAdjustmentApplication).toHaveBeenNthCalledWith(1, 'app-pending', tx, { originalStatus: undefined })
-    expect(skipAdjustmentApplication).toHaveBeenNthCalledWith(2, 'app-approved', tx, { originalStatus: undefined })
+    expect(carryApplicationForward).toHaveBeenCalledTimes(2)
+    expect(carryApplicationForward).toHaveBeenNthCalledWith(1, tx, expect.objectContaining({ id: 'app-pending' }), adjustment, { undoApproval: false })
+    expect(carryApplicationForward).toHaveBeenNthCalledWith(2, tx, expect.objectContaining({ id: 'app-approved' }), adjustment, { undoApproval: true })
   })
 
-  it('does the skipping after the run is updated and before the applications are re-pointed to the new revision', async () => {
+  it('does the settling after the run is updated and before the applications are re-pointed to the new revision', async () => {
     setup()
-    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([{ id: 'app-1' }])
+    serveApplications([row('app-1', 'emp-9')])
 
     await approveRevision(DRAFT_ID)
 
     expect(order(tx.payrollRun.update)).toBeLessThan(order(tx.payrollRunEmployee.findMany))
     expect(order(tx.payrollRunEmployee.findMany)).toBeLessThan(order(tx.payrollAdjustmentApplication.findMany))
-    expect(order(tx.payrollAdjustmentApplication.findMany)).toBeLessThan(order(vi.mocked(skipAdjustmentApplication)))
-    expect(order(vi.mocked(skipAdjustmentApplication))).toBeLessThan(order(tx.payrollAdjustmentApplication.updateMany))
+    expect(order(tx.payrollAdjustmentApplication.findMany)).toBeLessThan(order(vi.mocked(carryApplicationForward)))
+    expect(order(vi.mocked(carryApplicationForward))).toBeLessThan(order(tx.payrollAdjustmentApplication.updateMany))
   })
 
   it('still re-points the week\'s applications to the new revision afterwards', async () => {
     setup()
-    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([{ id: 'app-1' }])
+    serveApplications([row('app-1', 'emp-9')])
 
     await approveRevision(DRAFT_ID)
 
@@ -415,57 +447,57 @@ describe('approveRevision carries forward the adjustments of employees the revis
     })
   })
 
-  it('skips nothing when the paid set is unchanged (nobody is left out)', async () => {
+  it('settles nothing when the paid set is unchanged and no application changed (nobody is left out)', async () => {
     setup()
-    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([])
+    serveApplications([])
 
     await approveRevision(DRAFT_ID)
 
-    expect(skipAdjustmentApplication).not.toHaveBeenCalled()
+    expect(carryApplicationForward).not.toHaveBeenCalled()
+    expect(applyApprovalToAdjustment).not.toHaveBeenCalled()
+    expect(undoApprovalOnAdjustment).not.toHaveBeenCalled()
     expect(tx.payrollAdjustmentApplication.updateMany).toHaveBeenCalledTimes(1)
   })
 
-  it('with nobody paid at all, every pending or approved application is carried forward (notIn: [])', async () => {
+  it('with nobody paid at all, every pending or approved application is carried forward', async () => {
     setup()
     tx.payrollRunEmployee.findMany.mockResolvedValue([])
-    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([{ id: 'a' }, { id: 'b' }, { id: 'c' }])
+    serveApplications([row('a', 'emp-1'), row('b', 'emp-2', 'APPROVED'), row('c', 'emp-3')])
 
     await approveRevision(DRAFT_ID)
 
-    expect(tx.payrollAdjustmentApplication.findMany.mock.calls[0][0].where.employeeId).toEqual({ notIn: [] })
-    expect(skipAdjustmentApplication).toHaveBeenCalledTimes(3)
+    expect(carryApplicationForward).toHaveBeenCalledTimes(3)
   })
 
-  it('runs for a draft without a session too (an adjustments-only or legacy correction)', async () => {
+  it('runs for a draft without a session too (an adjustments-only or legacy correction): the application\'s own status says whether it was applied', async () => {
     setup({ before: null })
-    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([{ id: 'app-legacy' }])
+    serveApplications([row('app-legacy', 'emp-9', 'APPROVED')])
 
     await approveRevision(DRAFT_ID)
 
-    expect(skipAdjustmentApplication).toHaveBeenCalledWith('app-legacy', tx, { originalStatus: undefined })
+    expect(carryApplicationForward).toHaveBeenCalledWith(tx, expect.objectContaining({ id: 'app-legacy' }), adjustment, { undoApproval: true })
   })
 
   it('runs for an attendance correction that deletes every punch of an employee', async () => {
     setup({ clones: 28 })
     tx.payrollRunEmployee.findMany.mockResolvedValue([{ employeeId: 'emp-2' }]) // emp-1 now has zero hours
-    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([{ id: 'emp-1-deduction' }])
+    serveApplications([row('emp-1-deduction', 'emp-1')])
 
     await approveRevision(DRAFT_ID)
 
-    expect(tx.payrollAdjustmentApplication.findMany.mock.calls[0][0].where.employeeId).toEqual({ notIn: ['emp-2'] })
-    expect(skipAdjustmentApplication).toHaveBeenCalledWith('emp-1-deduction', tx, { originalStatus: undefined })
+    expect(carryApplicationForward).toHaveBeenCalledWith(tx, expect.objectContaining({ id: 'emp-1-deduction' }), adjustment, { undoApproval: false })
     // The corrected attendance still replaces the live one.
     expect(tx.attendanceRecord.deleteMany).toHaveBeenCalled()
   })
 
-  it('a skip that throws aborts the approval: nothing after it runs and the session is not marked applied', async () => {
+  it('a carry-forward that throws aborts the approval: nothing after it runs and the session is not marked applied', async () => {
     setup({ clones: 28 })
-    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([{ id: 'app-1' }, { id: 'app-2' }])
-    vi.mocked(skipAdjustmentApplication).mockRejectedValueOnce(new Error('carry-forward failed'))
+    serveApplications([row('app-1', 'emp-9'), row('app-2', 'emp-9')])
+    vi.mocked(carryApplicationForward).mockRejectedValueOnce(new Error('carry-forward failed'))
 
     await expect(approveRevision(DRAFT_ID)).rejects.toThrow('carry-forward failed')
 
-    expect(skipAdjustmentApplication).toHaveBeenCalledTimes(1) // the second one is never attempted
+    expect(carryApplicationForward).toHaveBeenCalledTimes(1) // the second one is never attempted
     expect(tx.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
     expect(tx.attendanceRecord.deleteMany).not.toHaveBeenCalled()
     expect(tx.attendancePunch.deleteMany).not.toHaveBeenCalled()
@@ -473,11 +505,11 @@ describe('approveRevision carries forward the adjustments of employees the revis
     expect(auditEntry).not.toHaveBeenCalled()
   })
 
-  it('does not skip anything when the approval is refused as stale', async () => {
+  it('does not settle anything when the approval is refused as stale', async () => {
     setup({ before: session({ draftRevisionId: null }) })
 
     await expect(approveRevision(DRAFT_ID)).rejects.toMatchObject({ code: 'REVISION_STALE' })
     expect(tx.payrollRunEmployee.findMany).not.toHaveBeenCalled()
-    expect(skipAdjustmentApplication).not.toHaveBeenCalled()
+    expect(carryApplicationForward).not.toHaveBeenCalled()
   })
 })
