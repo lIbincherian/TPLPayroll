@@ -108,10 +108,18 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
     } else {
       setApprovalError(result.error)
       // The attendance changed (or was reopened) since this summary was calculated, so the
-      // summary can't be approved. Send the user back to calculate it again.
+      // summary can't be approved. What steps 0 and 1 hold was loaded from the old attendance, so it is
+      // loaded again: the user reviews the adjustments of the attendance as it is now, or, when it is no
+      // longer approved, goes back to the first step, which says why.
       if (result.code === 'ATTENDANCE_CHANGED' || result.code === 'ATTENDANCE_NOT_APPROVED') {
         setSummary(null)
-        setStep(1)
+        const [current, pending] = await Promise.all([
+          checkAttendanceReadinessAction(weekStart, weekEnd),
+          getPendingAdjustmentsForWeekAction(weekStart, weekEnd),
+        ])
+        if (current.ok) setReadiness(current.data)
+        if (pending.ok) setAdjustments(pending.data)
+        setStep(current.ok && current.data.ready && pending.ok ? 1 : 0)
       }
     }
   }
@@ -127,6 +135,12 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
       <div className="rounded-2xl border border-zinc-200/60 bg-white p-6 shadow-sm">
         {/* key={step} re-mounts on each step change → replays step-enter */}
         <div key={step} className="step-enter">
+        {step === 0 && approvalError && (
+          <div role="alert" className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+            {approvalError}
+          </div>
+        )}
+
         {step === 0 && (
           readiness == null ? (
             <div className="space-y-4">
