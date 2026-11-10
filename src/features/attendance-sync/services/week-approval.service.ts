@@ -123,10 +123,11 @@ export async function approveWeek(weekId: string): Promise<{ approvedAt: Date; s
       const records = buildAttendanceRecords(upload.id, review, decisions)
 
       // Only one caller can move the week out of review (guards a double approve). An approval is a
-      // fresh start: a pull error from before it is no longer actionable.
+      // fresh start: a pull error, or a "newer data may be available" notice, from before it is no
+      // longer actionable (an approved week can't be pulled).
       const moved = await tx.attendanceUpload.updateMany({
         where: { id: upload.id, status: 'REVIEW' },
-        data: { status: 'APPROVED', approvedAt, lastSyncError: null },
+        data: { status: 'APPROVED', approvedAt, lastSyncError: null, staleNoticeAt: null },
       })
       if (moved.count === 0) throw new AttendanceSyncError('WEEK_NOT_IN_REVIEW', "This week isn't in review.")
 
@@ -198,10 +199,11 @@ export async function reopenWeek(weekId: string): Promise<{ reopenedAt: Date }> 
       }
 
       // A reopen is a fresh start too: a pull error from before it (a pull that lost the race to the
-      // approval records WEEK_CHANGED on the then-approved row) would otherwise show as "Last pull failed".
+      // approval records WEEK_CHANGED on the then-approved row) would otherwise show as "Last pull failed",
+      // and a stale notice from before the approval no longer describes the week.
       const moved = await tx.attendanceUpload.updateMany({
         where: { id: upload.id, status: 'APPROVED' },
-        data: { status: 'REVIEW', approvedAt: null, lastSyncError: null },
+        data: { status: 'REVIEW', approvedAt: null, lastSyncError: null, staleNoticeAt: null },
       })
       if (moved.count === 0) {
         throw new AttendanceSyncError('WEEK_NOT_IN_REVIEW', "This week isn't approved, so there is nothing to reopen.")

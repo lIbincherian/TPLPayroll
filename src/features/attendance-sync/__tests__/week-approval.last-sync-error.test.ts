@@ -110,12 +110,12 @@ describe('approveWeek clears an earlier pull error', () => {
     expect(db.tx.attendanceUpload.updateMany).toHaveBeenCalledTimes(1)
     expect(db.tx.attendanceUpload.updateMany).toHaveBeenCalledWith({
       where: { id: 'upload-1', status: 'REVIEW' },
-      data: { status: 'APPROVED', approvedAt, lastSyncError: null },
+      data: { status: 'APPROVED', approvedAt, lastSyncError: null, staleNoticeAt: null },
     })
     expectNoOtherUploadWrites()
   })
 
-  it('does not touch the other pull bookkeeping (last pull time, trigger, stale notice) on the row', async () => {
+  it('clears the stale notice too, and does not touch the other pull bookkeeping (last pull time, trigger)', async () => {
     const lastSyncedAt = new Date('2026-11-12T01:00:00Z')
     installRowStore(
       makeUpload({
@@ -133,7 +133,7 @@ describe('approveWeek clears an earlier pull error', () => {
     expect(row.lastSyncError).toBeNull()
     expect(row.lastSyncedAt).toEqual(lastSyncedAt)
     expect(row.lastSyncTrigger).toBe('SCHEDULED')
-    expect(row.staleNoticeAt).toEqual(new Date('2026-11-12T02:00:00Z'))
+    expect(row.staleNoticeAt).toBeNull()
   })
 
   it('a row that never had an error is approved with the error still null', async () => {
@@ -196,7 +196,7 @@ describe('reopenWeek clears an earlier pull error', () => {
     expect(db.tx.attendanceUpload.updateMany).toHaveBeenCalledTimes(1)
     expect(db.tx.attendanceUpload.updateMany).toHaveBeenCalledWith({
       where: { id: 'upload-1', status: 'APPROVED' },
-      data: { status: 'REVIEW', approvedAt: null, lastSyncError: null },
+      data: { status: 'REVIEW', approvedAt: null, lastSyncError: null, staleNoticeAt: null },
     })
     expectNoOtherUploadWrites()
   })

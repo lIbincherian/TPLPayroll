@@ -108,7 +108,10 @@ function WeekDetails({ week }: { week: AttendanceWeekListItem }) {
 /** Notices under the details: a failed pull on a week that has data, and newer data waiting. */
 function WeekNotices({ week }: { week: AttendanceWeekListItem }) {
   const failedPull = week.status === 'REVIEW' && week.lastSyncError
-  if (!failedPull && !week.staleNoticeAt) return null
+  // "Pull now" is what the notice tells the user to do, so it shows only where a pull is possible:
+  // never on an approved week or one whose payroll is approved.
+  const staleNotice = Boolean(week.staleNoticeAt) && week.canPullNow && (week.status === 'REVIEW' || week.status === 'SYNC_FAILED')
+  if (!failedPull && !staleNotice) return null
 
   return (
     <div className="mt-1 space-y-0.5">
@@ -118,7 +121,7 @@ function WeekNotices({ week }: { week: AttendanceWeekListItem }) {
           {week.lastSyncAttemptAt ? ` (${formatIstDateTime(week.lastSyncAttemptAt)})` : ''}
         </span>
       )}
-      {week.staleNoticeAt && (
+      {staleNotice && (
         <span className="block text-xs text-amber-700" data-testid="week-stale-notice">
           Newer data may be available. Pull now to replace this week, discarding your edits.
         </span>
