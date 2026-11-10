@@ -326,10 +326,12 @@ describe('isSyncing with a null lock (item 11)', () => {
     expect(isSyncing({ syncLockedAt: new Date(NOW.getTime() - 1000) }, NOW)).toBe(true)
   })
 
-  it('week-lock.service.ts compares syncLockedAt strictly: `!== null`, never the loose `!= null`', () => {
+  it('week-lock.service.ts compares syncLockedAt strictly: `=== null` / `=== undefined`, never the loose `== null`', () => {
     const source = readFileSync(path.resolve(__dirname, '../services/week-lock.service.ts'), 'utf8')
 
     expect(source).not.toMatch(/syncLockedAt\s*!=\s*null/)
-    expect(source).toMatch(/syncLockedAt\s*!==\s*null/)
+    expect(source).not.toMatch(/syncLockedAt\s*==\s*null/)
+    expect(source).toMatch(/syncLockedAt\s*===\s*null/)
+    expect(source).toMatch(/syncLockedAt\s*===\s*undefined/)
   })
 })

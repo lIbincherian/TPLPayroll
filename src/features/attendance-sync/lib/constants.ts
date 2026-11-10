@@ -20,4 +20,7 @@ export const API_FETCH_TIMEOUT_MS = 45000
 
 export const SYNC_LOCK_TTL_MS = 5 * 60 * 1000
 
+/** Upper bound for an interactive transaction that holds the week lock. */
+export const TRANSACTION_TIMEOUT_MS = 30000
+
 export const WEEK_LIST_LIMIT = 26

@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import type { AttendanceUpload, PayrollCorrectionSession, PayrollRun, Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
+import { TRANSACTION_TIMEOUT_MS } from '../lib/constants'
 import { validateDayPairs } from '../lib/hours'
 import { getReviewGridEmployees } from '../lib/matching'
 import {
@@ -22,6 +23,7 @@ import {
   type EmployeeLite,
   type GridEmployee,
   type HHmm,
+  type LiveReview,
   type PunchReview,
   type ReviewMode,
   type SavePair,
@@ -36,7 +38,6 @@ import { requireApiWeek } from './week-list.service'
 import { assertNotSyncing, lockWeekRow } from './week-lock.service'
 
 const MAX_NOTE_LENGTH = 500
-const TRANSACTION_TIMEOUT_MS = 30000
 
 const EMPLOYEE_LITE_SELECT = {
   id: true,
@@ -256,11 +257,17 @@ function buildReview<M extends ReviewMode>(
  * The review grid, counts, totals and approval state. Reads only; never calls the API.
  * Pass the interactive transaction client as `db` to read inside the caller's transaction.
  */
-export async function getPunchReview<M extends ReviewMode = { kind: 'LIVE' }>(
+export function getPunchReview(weekId: string): Promise<LiveReview>
+export function getPunchReview<M extends ReviewMode>(
   weekId: string,
-  mode: M = { kind: 'LIVE' } as M,
+  mode: M,
+  db?: Prisma.TransactionClient,
+): Promise<PunchReview & { mode: M }>
+export async function getPunchReview(
+  weekId: string,
+  mode: ReviewMode = { kind: 'LIVE' },
   db: Prisma.TransactionClient = prisma,
-): Promise<PunchReview & { mode: M }> {
+): Promise<PunchReview> {
   return buildReview(weekId, mode, await loadReviewContext(weekId, mode, db))
 }
 

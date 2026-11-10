@@ -18,6 +18,7 @@ import {
 import { listAttendanceWeeks } from '@/features/attendance-sync/services/week-list.service'
 import { getApprovalSummary } from '@/features/attendance-sync/services/week-approval.service'
 import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
+import { TRANSACTION_TIMEOUT_MS } from '@/features/attendance-sync/lib/constants'
 import { toISODate } from '@/features/attendance-sync/lib/week'
 
 // ─── Pure calculation helpers (exported for unit testing) ────────────────────
@@ -449,7 +450,7 @@ export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePa
           },
         })
       },
-      { timeout: 30000 },
+      { timeout: TRANSACTION_TIMEOUT_MS },
     )
   } catch (error) {
     // Unique approvedWeekStart: a second approval slipped past every check (it cannot, but the key is the floor).

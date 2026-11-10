@@ -25,10 +25,10 @@ import { auditEntry } from '@/features/attendance-sync/services/attendance-audit
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
 import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
 import { buildAttendanceRecords, getPayrollEmployees } from '@/features/attendance-sync/lib/review'
+import { TRANSACTION_TIMEOUT_MS } from '@/features/attendance-sync/lib/constants'
 import { toISODate } from '@/features/attendance-sync/lib/week'
 import type { DiscardedEdit } from '@/features/attendance-sync/types/attendance-sync.types'
 
-const TRANSACTION_TIMEOUT_MS = 30000
 const CREATE_MANY_CHUNK_SIZE = 1000
 const MAX_AUDITED_EDITS = 500
 

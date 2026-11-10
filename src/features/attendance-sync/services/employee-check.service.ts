@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
+import { TRANSACTION_TIMEOUT_MS } from '../lib/constants'
 import { buildDayView } from '../lib/hours'
 import { matchEmployeeCode, needsEmployeeDecision } from '../lib/matching'
 import { countEmployeeCheckIssues } from '../lib/review'
@@ -16,8 +17,6 @@ import {
 import { auditEntry } from './attendance-audit.service'
 import { requireApiWeek } from './week-list.service'
 import { assertNotSyncing, lockWeekRow } from './week-lock.service'
-
-const TRANSACTION_TIMEOUT_MS = 30000
 
 const EMPLOYEE_LITE_SELECT = {
   id: true,

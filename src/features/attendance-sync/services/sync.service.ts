@@ -1,6 +1,6 @@
 import { Prisma, type AttendanceUpload } from '@prisma/client'
 import prisma from '@/lib/prisma'
-import { SYNC_LOCK_TTL_MS } from '../lib/constants'
+import { SYNC_LOCK_TTL_MS, TRANSACTION_TIMEOUT_MS } from '../lib/constants'
 import { buildPunchRowsFromParsed } from '../lib/pairing'
 import { shouldScheduledSyncReplace } from '../lib/review'
 import { SYNC_FAILURE_COPY } from '../lib/etimeoffice/parser'
@@ -32,7 +32,6 @@ import { getOrCreateApiWeekRow, getWeekByStart } from './week-list.service'
 import { lockWeekRow } from './week-lock.service'
 
 const CREATE_MANY_CHUNK_SIZE = 1000
-const TRANSACTION_TIMEOUT_MS = 30000
 const MAX_AUDITED_EDITS = 500
 
 // ─── Edits and decisions ──────────────────────────────────────────────────────

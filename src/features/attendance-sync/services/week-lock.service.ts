@@ -63,11 +63,12 @@ export async function lockWeekRow(
 }
 
 /** True while a pull holds the week: its sync lock is set and younger than SYNC_LOCK_TTL_MS. */
-export function isSyncing(row: { syncLockedAt: Date | null }, now: Date = new Date()): boolean {
-  return row.syncLockedAt !== null && now.getTime() - row.syncLockedAt.getTime() < SYNC_LOCK_TTL_MS
+export function isSyncing(row: { syncLockedAt?: Date | null }, now: Date = new Date()): boolean {
+  if (row.syncLockedAt === null || row.syncLockedAt === undefined) return false
+  return now.getTime() - row.syncLockedAt.getTime() < SYNC_LOCK_TTL_MS
 }
 
 /** Throws SYNC_IN_PROGRESS while a pull holds the week (see isSyncing). */
-export function assertNotSyncing(row: { syncLockedAt: Date | null }, now: Date = new Date()): void {
+export function assertNotSyncing(row: { syncLockedAt?: Date | null }, now: Date = new Date()): void {
   if (isSyncing(row, now)) throw new AttendanceSyncError('SYNC_IN_PROGRESS', SYNC_IN_PROGRESS_MESSAGE)
 }

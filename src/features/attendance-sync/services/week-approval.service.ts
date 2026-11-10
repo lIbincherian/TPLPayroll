@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
+import { TRANSACTION_TIMEOUT_MS } from '../lib/constants'
 import { buildApprovalSummary, buildAttendanceRecords, canReopenWeek, getAttendanceWeekStatus } from '../lib/review'
 import { toISODate, toUtcDate } from '../lib/week'
 import {
@@ -14,8 +15,6 @@ import { auditEntry } from './attendance-audit.service'
 import { getPunchReview } from './punch-review.service'
 import { requireApiWeek } from './week-list.service'
 import { assertNotSyncing, lockWeekRow } from './week-lock.service'
-
-const TRANSACTION_TIMEOUT_MS = 30000
 
 async function loadDecisionInputs(
   uploadId: string,
