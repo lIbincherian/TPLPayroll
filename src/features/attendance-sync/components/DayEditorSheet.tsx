@@ -48,6 +48,14 @@ type SaveState =
 
 const LABEL = 'text-xs font-medium uppercase tracking-wider text-zinc-500'
 
+/**
+ * What reloading a day after a DAY_CHANGED refusal found: its latest view; `null` when the reload itself
+ * failed (the editor stays open and offers a retry); or `'gone'` when the employee or the day is no longer in
+ * the review. For `'gone'` the grid has already closed the editor, and the editor needs to hear that now, not
+ * on the render that follows, or it would flag the header "Not saved" for a day nobody is editing.
+ */
+export type DayReload = DayView | null | 'gone'
+
 // ─── Time field ───────────────────────────────────────────────────────────────
 
 interface TimeFieldProps {
@@ -129,8 +137,8 @@ interface EditorBodyProps {
   onSaved: (result: SavePunchEditResult) => void
   /** Tells the grid header whether the last save worked. */
   onSaveFailed: (failed: boolean) => void
-  /** The day was changed elsewhere: reload it and return the latest view, or null if that failed. */
-  onDayChanged: () => Promise<DayView | null>
+  /** The day was changed elsewhere: reload it and return what that found (see DayReload). */
+  onDayChanged: () => Promise<DayReload>
 }
 
 function EditorBody({
@@ -163,6 +171,17 @@ function EditorBody({
   const baseSignatureRef = useRef(day.signature)
   const savingRef = useRef(false)
   const rerunRef = useRef(false)
+  // Set once the editor has closed (this body unmounted, or the grid reported the day gone). A save that is
+  // still in flight then has nobody to report to, and a blur or Enter from an input that is going away must
+  // not start another one, least of all with the draft and base signature the server just refused.
+  const closedRef = useRef(false)
+
+  useEffect(() => {
+    closedRef.current = false // a development remount reuses the ref
+    return () => {
+      closedRef.current = true
+    }
+  }, [])
 
   useEffect(() => {
     savedDayRef.current = day
@@ -179,7 +198,7 @@ function EditorBody({
   }, [])
 
   const commit = useCallback(async () => {
-    if (readOnly) return
+    if (readOnly || closedRef.current) return
     if (savingRef.current) {
       rerunRef.current = true
       return
@@ -212,12 +231,18 @@ function EditorBody({
         pairs: toSavePairs(normalized, notesRef.current),
       })
 
+      // The editor may have closed while the save was in flight. A refusal then has nobody to show it to: no
+      // header flag, no reload, no state. A save that landed is still handed to the grid below.
+      if (!res.ok && closedRef.current) return
+
       if (res.ok) {
         savedDayRef.current = res.data.day
         baseSignatureRef.current = res.data.day.signature
-        setDraft(reconcileDraft(res.data.day, draftRef.current, normalized))
-        setSaveState({ kind: 'saved', at: res.data.savedAt })
-        onSaveFailed(false)
+        if (!closedRef.current) {
+          setDraft(reconcileDraft(res.data.day, draftRef.current, normalized))
+          setSaveState({ kind: 'saved', at: res.data.savedAt })
+          onSaveFailed(false)
+        }
         onSaved(res.data)
       } else if (res.validation && !res.validation.valid) {
         setError({ pairIndex: res.validation.pairIndex, field: res.validation.field, message: res.validation.message })
@@ -225,6 +250,11 @@ function EditorBody({
       } else if (res.code === 'DAY_CHANGED') {
         const fresh = await onDayChanged()
         rerunRef.current = false // what was typed against the stale day is dropped
+        if (fresh === 'gone') {
+          closedRef.current = true // the grid closed the editor; React has not unmounted this body yet
+          return
+        }
+        if (closedRef.current) return
         if (fresh) {
           savedDayRef.current = fresh
           baseSignatureRef.current = fresh.signature
@@ -242,6 +272,7 @@ function EditorBody({
         onSaveFailed(true)
       }
     } catch {
+      if (closedRef.current) return
       setSaveState({ kind: 'failed', message: "Couldn't save. Your last saved times are unchanged." })
       onSaveFailed(true)
     } finally {
@@ -594,8 +625,8 @@ interface DayEditorSheetProps {
   onStep: (direction: 'previous' | 'next') => void
   onSaved: (employeeId: string, date: ISODate, result: SavePunchEditResult) => void
   onSaveFailed: (failed: boolean) => void
-  /** Reloads the review after a DAY_CHANGED refusal and returns the latest view of the day, or null if that failed. */
-  onDayChanged: (employeeId: string, date: ISODate) => Promise<DayView | null>
+  /** Reloads the review after a DAY_CHANGED refusal and says what it found for the day (see DayReload). */
+  onDayChanged: (employeeId: string, date: ISODate) => Promise<DayReload>
 }
 
 /**

@@ -41,7 +41,6 @@ import type {
   ActionResult,
   ApprovalSummary,
   CorrectionReview,
-  DayView,
   ISODate,
   LiveReview,
   PunchReview,
@@ -49,7 +48,7 @@ import type {
 } from '../types/attendance-sync.types'
 import { ApproveWeekDialog, type ApproveResult } from './ApproveWeekDialog'
 import { CorrectionBanner } from './CorrectionBanner'
-import { DayEditorSheet } from './DayEditorSheet'
+import { DayEditorSheet, type DayReload } from './DayEditorSheet'
 import { cellKey, PunchGridTable } from './PunchGridTable'
 import { PunchMobileList } from './PunchMobileList'
 import { ReopenWeekDialog } from './ReopenWeekDialog'
@@ -322,9 +321,10 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
     if (isDesktop) focusCell(lastFocusKey.current)
   }, [focusCell, isDesktop])
 
-  // The editor's save was refused because the day moved on: reload the review and hand back the latest view.
+  // The editor's save was refused because the day moved on: reload the review and hand back the latest view,
+  // null if the reload failed, or 'gone' (after closing the editor) if the employee left the review.
   const reloadDay = useCallback(
-    async (employeeId: string, date: ISODate): Promise<DayView | null> => {
+    async (employeeId: string, date: ISODate): Promise<DayReload> => {
       const res = await getPunchReviewAction(weekId, mode)
       if (!res.ok) return null
       setReview(res.data)
@@ -332,6 +332,7 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
       if (!day) {
         closeEditor()
         toast.error("That employee is no longer in this week's review.")
+        return 'gone'
       }
       return day
     },
