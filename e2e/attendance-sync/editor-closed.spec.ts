@@ -6,8 +6,9 @@ import { weekDates } from '../utils/etimeoffice-mock'
 // The grid header says "Saved 10:42" or "Not saved" for the LAST save. A save that is still in flight when the
 // user steps to another day or closes the editor must still set it (a failure used to be swallowed, so the user
 // could believe the edit was saved), and a day that leaves the review during a DAY_CHANGED reload must not set it
-// at all (the grid has already closed the editor and told the user). The save request is held in the browser
-// until the test releases it, so the editor can be left while the save is genuinely in flight.
+// at all (the grid has already closed the editor and told the user). After the editor has closed, a DAY_CHANGED
+// refusal is a failed save and is never reloaded. The save request is held in the browser until the test
+// releases it, so the editor can be left while the save is genuinely in flight.
 
 const W = '2026-10-08' // an ended week
 const dates = weekDates(W)
@@ -45,13 +46,18 @@ const lastOut = async () => (await anitaDay()).find((r) => r.pairIndex === 1 && 
 const isSaveRequest = (route: Route) => route.request().method() === 'POST' && (route.request().postData() ?? '').includes('baseSignature')
 const isReviewReload = (route: Route) => route.request().method() === 'POST' && !(route.request().postData() ?? '').includes('baseSignature') && (route.request().postData() ?? '').includes('LIVE')
 
-/** Hold the first save request of the page in the browser until the test lets it through or drops it. */
+/**
+ * Hold the first save request of the page in the browser until the test lets it through or drops it. Dropping it
+ * means the network is down: every save request after it is dropped too, including the copy of the edit that the
+ * blur queued behind the held save, which the editor still sends once after it has closed.
+ */
 async function holdFirstSave(page: Page) {
   let arrived!: () => void
   const saveArrived = new Promise<void>((resolve) => (arrived = resolve))
   let decide!: (what: 'continue' | 'abort') => void
   const decision = new Promise<'continue' | 'abort'>((resolve) => (decide = resolve))
   let held = false
+  let networkDown = false
   const saves = { count: 0 }
   await page.route('**/attendance/**', async (route) => {
     if (isSaveRequest(route)) {
@@ -59,8 +65,9 @@ async function holdFirstSave(page: Page) {
       if (!held) {
         held = true
         arrived()
-        if ((await decision) === 'abort') return route.abort('failed')
+        networkDown = (await decision) === 'abort'
       }
+      if (networkDown) return route.abort('failed')
     }
     return route.continue()
   })
@@ -97,12 +104,18 @@ test.describe('E2E: a save still in flight when the user steps to the next day',
     await expect(page.getByTestId('editor-retry')).toHaveCount(0) // and carries nothing of the lost save
     await settled(page)
     expect(await lastOut()).toBe('17:00')
-    expect(hold.saves.count).toBe(1)
+    // The held save, and the copy of it that clicking Next queued by blurring the field; both were lost.
+    expect(hold.saves.count).toBe(2)
   })
 
-  test('the server refuses it because the day changed meanwhile: the review is reloaded and the header says "Not saved"', async ({ page }) => {
+  test('the server refuses it because the day changed meanwhile: the header says "Not saved" and the review is not reloaded under the editor that is open now', async ({ page }) => {
     const hold = await startHeldSave(page)
     await stepToNextDay(page)
+    let reloads = 0
+    await page.route('**/attendance/**', (route) => {
+      if (isReviewReload(route)) reloads++
+      return route.fallback()
+    })
 
     // Another tab edits the day while this save is held.
     const anita = await prisma.employee.findFirstOrThrow({ where: { employeeId: ANITA } })
@@ -110,9 +123,13 @@ test.describe('E2E: a save still in flight when the user steps to the next day',
     hold.release('continue')
 
     await expect(page.getByTestId('saved-status')).toHaveText('Not saved')
-    await expect.poll(() => cellText(page, ANITA, DAY), { timeout: 10000 }).toContain('17:10') // the reloaded review
-    await expect(page.getByTestId('editor-day-changed')).toHaveCount(0) // the open editor is for the next day
     await settled(page)
+    await page.waitForTimeout(500) // a reload would have landed by now
+    // A reload could close the editor the user has open now, so the closed editor does not ask for one.
+    expect(reloads).toBe(0)
+    expect(await cellText(page, ANITA, DAY)).toContain('17:00')
+    await expect(page.getByTestId('day-editor')).toBeVisible()
+    await expect(page.getByTestId('editor-day-changed')).toHaveCount(0) // the open editor is for the next day
     expect(await lastOut()).toBe('17:10') // nothing of the refused save
   })
 

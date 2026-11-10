@@ -18,10 +18,14 @@ import type {
 //  - "closed" means the body is unmounted (the user stepped to another day or closed the editor) or the grid
 //    reported the day gone (a DAY_CHANGED reload found the employee or day missing; the grid has already closed
 //    the editor and cleared its header, but React has not unmounted the body yet).
-//  - A closed body starts no new save and updates none of its own state.
+//  - A closed body starts no new save on its own (a blur or Enter) and updates none of its own state.
 //  - It still reports a save that was already in flight to the grid, because the grid's header must never claim
-//    an edit was saved when it was not: a failure through onSaveFailed(true), a success through
-//    onSaveFailed(false) and onSaved. Only the 'gone' close, which the grid itself caused, reports nothing.
+//    an edit was saved when it was not: a failure through the reporter of that save (onSaveStart) as true, a
+//    success as false plus onSaved. Only the 'gone' close, which the grid itself caused, reports nothing.
+//  - An edit that was queued behind the in-flight save before the close is still sent when that save returns,
+//    from the refs, and its outcome is reported the same way.
+//  - A DAY_CHANGED refusal after the close is a failed save for the header. It is never reloaded: that could
+//    make the grid close whichever editor the user has open by then.
 
 vi.mock('@/features/attendance-sync/actions/attendance-sync.actions', () => ({ savePunchEditAction: vi.fn() }))
 
@@ -113,7 +117,7 @@ function renderEditor(day: DayView = OPENED) {
       canStepNext
       onStep={vi.fn()}
       onSaved={onSaved}
-      onSaveFailed={onSaveFailed}
+      onSaveStart={() => onSaveFailed}
       onDayChanged={onDayChanged}
     />
   )
@@ -317,7 +321,7 @@ describe.each([
     expect(onSaveFailed).not.toHaveBeenCalledWith(true)
   })
 
-  it('a DAY_CHANGED refusal reloads the day that was saved and still reports a failure (the new editor is not the one to tell)', async () => {
+  it('a DAY_CHANGED refusal is a failed save for the header and is not reloaded (the grid would close the editor the user has open now)', async () => {
     const view = renderEditor()
     const inFlight = await saveInFlight()
     onDayChanged.mockResolvedValue(AFTER_OTHER_TAB)
@@ -325,77 +329,54 @@ describe.each([
 
     inFlight.resolve(dayChanged)
     await waitFor(() => expect(onSaveFailed).toHaveBeenCalledTimes(1))
-
-    expect(onDayChanged).toHaveBeenCalledTimes(1)
-    expect(onDayChanged).toHaveBeenCalledWith('emp-36', DATE)
-    expect(onSaveFailed).toHaveBeenCalledWith(true)
-    expect(onSaved).not.toHaveBeenCalled()
-  })
-
-  it('a DAY_CHANGED refusal whose reload fails reports a failure as well', async () => {
-    const view = renderEditor()
-    const inFlight = await saveInFlight()
-    onDayChanged.mockResolvedValue(null)
-    view[leave]()
-
-    inFlight.resolve(dayChanged)
-    await waitFor(() => expect(onSaveFailed).toHaveBeenCalledTimes(1))
-
-    expect(onSaveFailed).toHaveBeenCalledWith(true)
-  })
-
-  it('a DAY_CHANGED refusal whose reload finds the day gone reports nothing: the grid closed and cleared it itself', async () => {
-    const view = renderEditor()
-    const inFlight = await saveInFlight()
-    onDayChanged.mockResolvedValue('gone')
-    view[leave]()
-
-    inFlight.resolve(dayChanged)
-    await waitFor(() => expect(onDayChanged).toHaveBeenCalledTimes(1))
     await settle()
 
-    expect(onSaveFailed).not.toHaveBeenCalled()
-    expect(onSaved).not.toHaveBeenCalled()
-  })
-
-  it('a DAY_CHANGED refusal whose reload throws reports a failure as well', async () => {
-    const view = renderEditor()
-    const inFlight = await saveInFlight()
-    onDayChanged.mockRejectedValue(new Error('Failed to fetch'))
-    view[leave]()
-
-    inFlight.resolve(dayChanged)
-    await waitFor(() => expect(onSaveFailed).toHaveBeenCalledTimes(1))
-
+    expect(onDayChanged).not.toHaveBeenCalled()
     expect(onSaveFailed).toHaveBeenCalledWith(true)
     expect(onSaved).not.toHaveBeenCalled()
   })
 
-  it('no new save starts after it closed: an edit queued behind the save is not sent when the save returns', async () => {
+  it('an edit queued behind the save is still sent when the save returns, from the refs, and its outcome is reported', async () => {
     const view = renderEditor()
     const inFlight = await saveInFlight()
     enter('editor-pair-1-in', '07:30') // queued: the first save is still running
     expect(save).toHaveBeenCalledTimes(1)
     view[leave]()
 
-    inFlight.resolve(savedWith(OPENED))
-    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
+    const afterFirst = buildDayView(DATE, rowsFor('p').map((r) => (r.id === 'p-3' ? { ...r, currentTime: '17:30' as StoredPunchRow['currentTime'] } : r)))
+    const afterSecond = buildDayView(
+      DATE,
+      rowsFor('p').map((r) => (r.id === 'p-3' ? { ...r, currentTime: '17:30' as StoredPunchRow['currentTime'] } : r.id === 'p-0' ? { ...r, currentTime: '07:30' as StoredPunchRow['currentTime'] } : r)),
+    )
+    save.mockResolvedValueOnce(savedWith(afterSecond))
+    inFlight.resolve(savedWith(afterFirst))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(2))
     await settle()
 
-    expect(save).toHaveBeenCalledTimes(1)
+    expect(save).toHaveBeenCalledTimes(2)
+    // The second request carries both edits and is built on the day the first save returned, not on the opened one.
+    const second = save.mock.calls[1][0]
+    expect(second).toMatchObject({ date: DATE, baseSignature: afterFirst.signature })
+    expect(second.pairs[0].in.time).toBe('07:30')
+    expect(second.pairs[1].out.time).toBe('17:30')
+    expect(onSaved).toHaveBeenLastCalledWith('emp-36', DATE, expect.objectContaining({ day: afterSecond }))
+    expect(onSaveFailed.mock.calls).toEqual([[false], [false]])
   })
 
-  it('no new save starts after it closed when the save failed either', async () => {
+  it('an edit queued behind a save that failed is sent once after it closed too, and the failure of that one is reported as well', async () => {
     const view = renderEditor()
     const inFlight = await saveInFlight()
     enter('editor-pair-1-in', '07:30')
     view[leave]()
 
+    save.mockResolvedValueOnce(failure('WEEK_LOCKED', 'This week is locked. Reopen it to edit punches.'))
     inFlight.resolve(failure('WEEK_LOCKED', 'This week is locked. Reopen it to edit punches.'))
-    await waitFor(() => expect(onSaveFailed).toHaveBeenCalledWith(true))
+    await waitFor(() => expect(onSaveFailed).toHaveBeenCalledTimes(2))
     await settle()
 
-    expect(save).toHaveBeenCalledTimes(1)
+    expect(save).toHaveBeenCalledTimes(2) // once, not in a loop
+    expect(onSaveFailed.mock.calls).toEqual([[true], [true]])
+    expect(onSaved).not.toHaveBeenCalled()
   })
 })
 

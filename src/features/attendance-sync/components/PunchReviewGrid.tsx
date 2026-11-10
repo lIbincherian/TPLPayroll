@@ -48,7 +48,7 @@ import type {
 } from '../types/attendance-sync.types'
 import { ApproveWeekDialog, type ApproveResult } from './ApproveWeekDialog'
 import { CorrectionBanner } from './CorrectionBanner'
-import { DayEditorSheet, type DayReload } from './DayEditorSheet'
+import { DayEditorSheet, type DayReload, type SaveReport } from './DayEditorSheet'
 import { cellKey, PunchGridTable } from './PunchGridTable'
 import { PunchMobileList } from './PunchMobileList'
 import { ReopenWeekDialog } from './ReopenWeekDialog'
@@ -359,6 +359,21 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
     refreshChangedDays(600)
   }
 
+  // The header's "Saved" / "Not saved" belongs to the newest save only. Saves are numbered as they start, and a
+  // save may set the header only if no newer save has reported yet. A late answer from an old day (the user
+  // stepped on or closed the editor while it was in flight) therefore never overwrites a newer failure, while a
+  // newer success still clears an older failure.
+  const savesStarted = useRef(0)
+  const newestReportedSave = useRef(0)
+  const beginSave = useCallback((): SaveReport => {
+    const token = ++savesStarted.current
+    return (failed) => {
+      if (token < newestReportedSave.current) return
+      newestReportedSave.current = token
+      setSaveFailed(failed)
+    }
+  }, [])
+
   // ── Approve and reopen ──────────────────────────────────────────────────────
 
   async function confirmApprove(): Promise<ApproveResult | undefined> {
@@ -645,7 +660,7 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
         canStepNext={canStepNext}
         onStep={stepEditor}
         onSaved={handleSaved}
-        onSaveFailed={setSaveFailed}
+        onSaveStart={beginSave}
         onDayChanged={reloadDay}
       />
 

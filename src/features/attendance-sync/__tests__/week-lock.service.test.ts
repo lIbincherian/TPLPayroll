@@ -373,10 +373,10 @@ describe('isSyncing and assertNotSyncing keep the strict syncLockedAt contract',
   it('week-lock.service.ts has no loose `== null` / `!= null` comparison anywhere', () => {
     const source = readFileSync(path.resolve(__dirname, '../services/week-lock.service.ts'), 'utf8')
 
-    expect(source).not.toMatch(/[^=!<>]==s*null/)
-    expect(source).not.toMatch(/!=s*null/)
-    expect(source).not.toMatch(/[^=!]==s*undefined/)
-    expect(source).not.toMatch(/!=s*undefined/)
+    expect(source).not.toMatch(/[^=!<>]==\s*null\b/)
+    expect(source).not.toMatch(/!=\s*null\b/)
+    expect(source).not.toMatch(/[^=!]==\s*undefined\b/)
+    expect(source).not.toMatch(/!=\s*undefined\b/)
   })
 
   it('the parameter types require the column (checked by tsc): a row without syncLockedAt does not type-check', () => {

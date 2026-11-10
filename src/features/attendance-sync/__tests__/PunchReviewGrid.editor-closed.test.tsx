@@ -16,8 +16,10 @@ import type {
 
 // The grid header ("Saved 10:42" / "Not saved") must tell the truth about the LAST save, including a save that
 // was still in flight when the user stepped to another day or closed the editor. The editor reports such a save
-// to the grid (onSaveFailed / onSaved); only a day that left the review during a DAY_CHANGED reload is silent,
-// because the grid closed the editor and cleared the header itself.
+// to the grid (the reporter it gets from onSaveStart, and onSaved); only a day that left the review during a
+// DAY_CHANGED reload is silent, because the grid closed the editor and cleared the header itself. An edit that
+// was queued behind the in-flight save before the editor closed is still sent, and that save is reported too.
+// After the close a DAY_CHANGED refusal is a failed save, not a reload.
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn(), back: vi.fn() }) }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
@@ -257,7 +259,7 @@ describe('PunchReviewGrid: the user steps to another day while a save is in flig
     expect(cell(ASHA.employeeId, DATE)).toHaveTextContent('17:47')
   })
 
-  it('the save is refused as DAY_CHANGED: the review is reloaded and the header says "Not saved"', async () => {
+  it('the save is refused as DAY_CHANGED: the header says "Not saved" and the review is not reloaded under the editor that is open now', async () => {
     renderLive(reviewOf({ rows: rows() }))
     const totalBefore = screen.getByTestId(`week-total-${ASHA.employeeId}`).textContent
     getReview.mockResolvedValue({ ok: true, data: reviewOf({ rows: [...ASHA_AFTER_OTHER_TAB, ...ASHA_NEXT_DAY_ROWS, ...RAVI_ROWS] }) })
@@ -268,10 +270,12 @@ describe('PunchReviewGrid: the user steps to another day while a save is in flig
     inFlight.resolve(dayChangedFailure)
 
     await waitFor(() => expect(screen.getByTestId('saved-status')).toHaveTextContent('Not saved'))
-    expect(getReview).toHaveBeenCalledTimes(1)
-    // The reloaded review is applied: the week total of the employee now includes the other tab's third pair.
-    expect(screen.getByTestId(`week-total-${ASHA.employeeId}`).textContent).not.toBe(totalBefore)
+    await settle()
+    // A reload would let the grid close the editor the user has open now (and lose its draft), so none happens.
+    expect(getReview).not.toHaveBeenCalled()
+    expect(screen.getByTestId(`week-total-${ASHA.employeeId}`).textContent).toBe(totalBefore)
     // The editor that is open now is for the next day and does not carry the old day's notice.
+    expect(screen.getByTestId('day-editor')).toBeInTheDocument()
     expect(screen.queryByTestId('editor-day-changed')).not.toBeInTheDocument()
   })
 
@@ -352,7 +356,7 @@ describe('PunchReviewGrid: the user closes the editor while a save is in flight'
     expect(screen.queryByText('Not saved')).not.toBeInTheDocument()
   })
 
-  it('an edit queued behind the save is not sent once the editor is closed', async () => {
+  it('an edit queued behind the save is still sent once the editor is closed, and the header reports that save', async () => {
     renderLive(reviewOf({ rows: rows() }))
     await openAshasDay()
     const inFlight = await saveInFlight()
@@ -362,10 +366,17 @@ describe('PunchReviewGrid: the user closes the editor while a save is in flight'
     fireEvent.click(screen.getByTestId('editor-close'))
     await waitFor(() => expect(screen.queryByTestId('day-editor')).not.toBeInTheDocument())
 
-    inFlight.resolve(savedResult(DATE, rows()))
-    await waitFor(() => expect(screen.getByTestId('saved-status')).toHaveTextContent('Saved'))
+    const withOut = ASHA_ROWS.map((r) => (r.id === 'p-3' ? { ...r, currentTime: '17:30' as StoredPunchRow['currentTime'] } : r))
+    const withBoth = withOut.map((r) => (r.id === 'p-0' ? { ...r, currentTime: '07:30' as StoredPunchRow['currentTime'] } : r))
+    save.mockResolvedValueOnce(savedResult(DATE, withBoth))
+    inFlight.resolve(savedResult(DATE, withOut))
+
+    await waitFor(() => expect(cell(ASHA.employeeId, DATE)).toHaveTextContent('07:30'))
     await settle()
 
-    expect(save).toHaveBeenCalledTimes(1)
+    expect(save).toHaveBeenCalledTimes(2)
+    expect(cell(ASHA.employeeId, DATE)).toHaveTextContent('17:30')
+    expect(screen.getByTestId('saved-status')).toHaveTextContent('Saved')
+    expect(screen.queryByText('Not saved')).not.toBeInTheDocument()
   })
 })

@@ -106,7 +106,7 @@ function renderEditor(day: DayView, over: { mode?: ReviewMode; readOnly?: boolea
       canStepNext={false}
       onStep={vi.fn()}
       onSaved={onSaved}
-      onSaveFailed={onSaveFailed}
+      onSaveStart={() => onSaveFailed}
       onDayChanged={onDayChanged}
     />
   )
