@@ -171,13 +171,19 @@ function EditorBody({
   const baseSignatureRef = useRef(day.signature)
   const savingRef = useRef(false)
   const rerunRef = useRef(false)
-  // Set once the editor has closed (this body unmounted, or the grid reported the day gone). A save that is
-  // still in flight then has nobody to report to, and a blur or Enter from an input that is going away must
-  // not start another one, least of all with the draft and base signature the server just refused.
+  // Set once the editor has closed or moved on (this body unmounted, or the grid reported the day gone). A
+  // save still in flight then leaves this body's own state alone, and a blur or Enter from an input that is
+  // going away must not start another one, least of all with the draft and base signature the server just
+  // refused. A failed in-flight save is still reported to the grid (onSaveFailed is the grid's setter), so
+  // the header never claims an edit was saved after the user stepped to another day or closed the editor.
   const closedRef = useRef(false)
+  // Set only when a DAY_CHANGED reload found the employee or day gone: the grid has already closed the
+  // editor and cleared its header, so nothing about this save is reported any more.
+  const goneRef = useRef(false)
 
   useEffect(() => {
-    closedRef.current = false // a development remount reuses the ref
+    closedRef.current = false // a development remount reuses the refs
+    goneRef.current = false
     return () => {
       closedRef.current = true
     }
@@ -231,31 +237,30 @@ function EditorBody({
         pairs: toSavePairs(normalized, notesRef.current),
       })
 
-      // The editor may have closed while the save was in flight. A refusal then has nobody to show it to: no
-      // header flag, no reload, no state. A save that landed is still handed to the grid below.
-      if (!res.ok && closedRef.current) return
-
       if (res.ok) {
         savedDayRef.current = res.data.day
         baseSignatureRef.current = res.data.day.signature
         if (!closedRef.current) {
           setDraft(reconcileDraft(res.data.day, draftRef.current, normalized))
           setSaveState({ kind: 'saved', at: res.data.savedAt })
-          onSaveFailed(false)
         }
+        onSaveFailed(false)
         onSaved(res.data)
       } else if (res.validation && !res.validation.valid) {
-        setError({ pairIndex: res.validation.pairIndex, field: res.validation.field, message: res.validation.message })
-        setSaveState({ kind: 'invalid' })
+        if (!closedRef.current) {
+          setError({ pairIndex: res.validation.pairIndex, field: res.validation.field, message: res.validation.message })
+          setSaveState({ kind: 'invalid' })
+        }
       } else if (res.code === 'DAY_CHANGED') {
         const fresh = await onDayChanged()
         rerunRef.current = false // what was typed against the stale day is dropped
         if (fresh === 'gone') {
-          closedRef.current = true // the grid closed the editor; React has not unmounted this body yet
+          // The grid closed the editor, told the user, and cleared its header; React has not unmounted this body yet.
+          closedRef.current = true
+          goneRef.current = true
           return
         }
-        if (closedRef.current) return
-        if (fresh) {
+        if (fresh && !closedRef.current) {
           savedDayRef.current = fresh
           baseSignatureRef.current = fresh.signature
           setDraft(draftFromDay(fresh))
@@ -264,17 +269,19 @@ function EditorBody({
           setSaveState({ kind: 'reloaded' })
           onSaveFailed(false)
         } else {
-          setSaveState({ kind: 'failed', message: res.error })
+          // The reload failed, or the editor is no longer here to show the reloaded day: nothing was saved.
+          if (!closedRef.current) setSaveState({ kind: 'failed', message: res.error })
           onSaveFailed(true)
         }
       } else {
-        setSaveState({ kind: 'failed', message: res.error })
+        if (!closedRef.current) setSaveState({ kind: 'failed', message: res.error })
         onSaveFailed(true)
       }
     } catch {
-      if (closedRef.current) return
-      setSaveState({ kind: 'failed', message: "Couldn't save. Your last saved times are unchanged." })
-      onSaveFailed(true)
+      if (!closedRef.current) {
+        setSaveState({ kind: 'failed', message: "Couldn't save. Your last saved times are unchanged." })
+      }
+      if (!goneRef.current) onSaveFailed(true)
     } finally {
       savingRef.current = false
       if (rerunRef.current) {
