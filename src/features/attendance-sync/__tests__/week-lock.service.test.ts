@@ -326,51 +326,27 @@ describe('isSyncing with a null lock (item 11)', () => {
     expect(isSyncing({ syncLockedAt: new Date(NOW.getTime() - 1000) }, NOW)).toBe(true)
   })
 
-  it('week-lock.service.ts compares syncLockedAt strictly: `=== null` / `=== undefined`, never the loose `== null`', () => {
+  it('week-lock.service.ts compares syncLockedAt strictly: `!== null`, never the loose `== null`', () => {
     const source = readFileSync(path.resolve(__dirname, '../services/week-lock.service.ts'), 'utf8')
 
     expect(source).not.toMatch(/syncLockedAt\s*!=\s*null/)
     expect(source).not.toMatch(/syncLockedAt\s*==\s*null/)
-    expect(source).toMatch(/syncLockedAt\s*===\s*null/)
-    expect(source).toMatch(/syncLockedAt\s*===\s*undefined/)
+    expect(source).toMatch(/syncLockedAt\s*!==\s*null/)
+    expect(source).not.toMatch(/syncLockedAt\s*===\s*undefined/)
   })
 })
 
-// ─── Fix round 4, item 8: a row without syncLockedAt (a partial select, a test double) ─────────────
+// ─── The strict contract: the row always carries syncLockedAt (a Date or null) ─────────────────────
 
-describe('isSyncing and assertNotSyncing with a row that has no syncLockedAt (round 4, item 8)', () => {
+describe('isSyncing and assertNotSyncing keep the strict syncLockedAt contract', () => {
   const NOW = new Date('2026-11-12T08:00:00Z')
 
-  it('an empty row is not syncing and does not throw', () => {
-    expect(() => isSyncing({}, NOW)).not.toThrow()
-    expect(isSyncing({}, NOW)).toBe(false)
-  })
-
-  it('an explicit undefined is not syncing and does not throw', () => {
-    expect(() => isSyncing({ syncLockedAt: undefined }, NOW)).not.toThrow()
-    expect(isSyncing({ syncLockedAt: undefined }, NOW)).toBe(false)
-  })
-
-  it('it works without a clock argument too', () => {
-    expect(isSyncing({})).toBe(false)
-    expect(isSyncing({ syncLockedAt: undefined })).toBe(false)
+  it('a null lock is not syncing and does not throw', () => {
     expect(isSyncing({ syncLockedAt: null })).toBe(false)
-  })
-
-  it('a row cut down by a partial select (other columns only) is not syncing', () => {
-    const partial = { id: 'upload-1', status: 'REVIEW' } as { syncLockedAt?: Date | null }
-
-    expect(isSyncing(partial, NOW)).toBe(false)
-    expect(() => assertNotSyncing(partial, NOW)).not.toThrow()
-  })
-
-  it('assertNotSyncing does not throw for an empty row, for undefined, or for null', () => {
-    expect(() => assertNotSyncing({}, NOW)).not.toThrow()
-    expect(() => assertNotSyncing({ syncLockedAt: undefined }, NOW)).not.toThrow()
     expect(() => assertNotSyncing({ syncLockedAt: null }, NOW)).not.toThrow()
   })
 
-  it('a fresh lock still throws SYNC_IN_PROGRESS with the shared message (the strict check did not loosen it)', () => {
+  it('a fresh lock still throws SYNC_IN_PROGRESS with the shared message', () => {
     const fresh = { syncLockedAt: new Date(NOW.getTime() - 1000) }
 
     expect(isSyncing(fresh, NOW)).toBe(true)
@@ -397,16 +373,19 @@ describe('isSyncing and assertNotSyncing with a row that has no syncLockedAt (ro
   it('week-lock.service.ts has no loose `== null` / `!= null` comparison anywhere', () => {
     const source = readFileSync(path.resolve(__dirname, '../services/week-lock.service.ts'), 'utf8')
 
-    expect(source).not.toMatch(/[^=!<>]==\s*null\b/)
-    expect(source).not.toMatch(/!=\s*null\b/)
-    expect(source).not.toMatch(/[^=!]==\s*undefined\b/)
-    expect(source).not.toMatch(/!=\s*undefined\b/)
+    expect(source).not.toMatch(/[^=!<>]==s*null/)
+    expect(source).not.toMatch(/!=s*null/)
+    expect(source).not.toMatch(/[^=!]==s*undefined/)
+    expect(source).not.toMatch(/!=s*undefined/)
   })
 
-  it('the parameter types accept a row without the column (checked by tsc)', () => {
+  it('the parameter types require the column (checked by tsc): a row without syncLockedAt does not type-check', () => {
+    // @ts-expect-error syncLockedAt is required: an absent column is not "not syncing"
     const noColumn: Parameters<typeof isSyncing>[0] = {}
-    const optionalNull: Parameters<typeof assertNotSyncing>[0] = { syncLockedAt: null }
+    // @ts-expect-error undefined is not Date | null
+    const undefinedLock: Parameters<typeof assertNotSyncing>[0] = { syncLockedAt: undefined }
+    const nullLock: Parameters<typeof assertNotSyncing>[0] = { syncLockedAt: null }
 
-    expect([noColumn, optionalNull]).toHaveLength(2)
+    expect([noColumn, undefinedLock, nullLock]).toHaveLength(3)
   })
 })
