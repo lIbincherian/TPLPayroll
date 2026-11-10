@@ -356,17 +356,29 @@ export function EmployeeCheck({ initial, status }: EmployeeCheckProps) {
     if (rematched.current || readOnly || initial.codes.length === 0) return
     rematched.current = true
     void (async () => {
+      let res: Awaited<ReturnType<typeof rematchWeekCodesAction>> | null = null
       try {
-        const res = await rematchWeekCodesAction(weekId)
-        if (res.ok && res.data.matched.length > 0) {
-          for (const match of res.data.matched) {
-            toast.success(`Code ${match.empCode} matched to ${match.employeeCode}`)
-          }
-          await refresh()
-        }
-      } finally {
-        setRechecking(false)
+        res = await rematchWeekCodesAction(weekId)
+      } catch {
+        // Reported below, after the reload.
       }
+
+      // Always reload: a run that failed part-way may still have linked some codes (each commits on its
+      // own), so the page cannot trust what it was rendered with.
+      try {
+        await refresh()
+      } catch {
+        // The page keeps what it has; the error below says the rematch did not finish.
+      }
+
+      if (!res) setError("Couldn't reach the server. Try again.")
+      else if (!res.ok) setError(res.error)
+      else {
+        for (const match of res.data.matched) {
+          toast.success(`Code ${match.empCode} matched to ${match.employeeCode}`)
+        }
+      }
+      setRechecking(false)
     })()
   }, [weekId, readOnly, initial.codes.length, refresh])
 
