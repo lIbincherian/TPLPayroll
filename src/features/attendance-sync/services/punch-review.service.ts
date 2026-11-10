@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import type { AttendanceUpload, PayrollCorrectionSession, PayrollRun, Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { TRANSACTION_TIMEOUT_MS } from '../lib/constants'
-import { validateDayPairs } from '../lib/hours'
+import { buildDayView, validateDayPairs } from '../lib/hours'
 import { getReviewGridEmployees } from '../lib/matching'
 import {
   buildGridEmployees,
@@ -402,6 +402,10 @@ async function requireGridEmployee(
  * or EMPLOYEE_NOT_FOUND instead of applying stale operations. In a
  * correction, a saved change also clears the session's draft revision: the preview built
  * from the earlier punches is then stale and can no longer be approved.
+ *
+ * The returned `day` (and so the signature the editor sends next) is built from the punches re-read
+ * inside the same locked transaction after the writes, never from the review read after the commit,
+ * which may already hold another tab's later save. Only the totals, counts and approval come from that.
  */
 export async function savePunchEdit(input: SavePunchEditInput): Promise<SavePunchEditResult> {
   const { upload, week } = await requireApiWeek(input.weekId)
@@ -553,8 +557,12 @@ export async function savePunchEdit(input: SavePunchEditInput): Promise<SavePunc
     }
   }
 
+  // The rows of this employee-day that the save leaves behind. With nothing to write they are the rows
+  // the base signature was just checked against; otherwise they are re-read under the week lock after
+  // the writes, so the day returned (and the signature the editor sends next) is exactly this save's result.
+  let dayRows: StoredPunchRow[] = stored
   if (ops.length > 0) {
-    await prisma.$transaction(
+    dayRows = await prisma.$transaction(
       async (tx) => {
         const locked = await lockWeekRow(tx, { id: upload.id })
         if (!locked) throw new AttendanceSyncError('WEEK_NOT_READY', 'No attendance has been loaded for this week.')
@@ -586,15 +594,23 @@ export async function savePunchEdit(input: SavePunchEditInput): Promise<SavePunc
         if (session) {
           await tx.payrollCorrectionSession.update({ where: { id: session.id }, data: { draftRevisionId: null } })
         }
+
+        // Still under the lock: nothing else can touch the day before this read.
+        return (await tx.attendancePunch.findMany({
+          where: { attendanceUploadId: upload.id, correctionId, employeeId: input.employeeId, punchDate },
+          select: PUNCH_SELECT,
+        })) as PunchRecord[]
       },
       { timeout: TRANSACTION_TIMEOUT_MS },
     )
   }
+  const day: DayView = buildDayView(input.date, dayRows)
 
+  // Display data only (totals, counts, approval). It is read after the commit, so it may already include
+  // another tab's later save; the day above never comes from it.
   const review = await getPunchReview(input.weekId, mode)
   const gridEmployee = review.employees.find((e) => e.employeeId === input.employeeId)
-  const day: DayView | undefined = gridEmployee?.days.find((d) => d.date === input.date)
-  if (!gridEmployee || !day) {
+  if (!gridEmployee) {
     throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', "That employee isn't in this week's review.")
   }
 

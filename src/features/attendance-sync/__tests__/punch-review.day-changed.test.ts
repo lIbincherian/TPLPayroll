@@ -390,7 +390,8 @@ describe('savePunchEdit: the re-read runs on the transaction client, after the l
     await save(ashaPairs('18:00'))
 
     expect(db.tx.$queryRaw).toHaveBeenCalledTimes(1)
-    expect(db.tx.attendancePunch.findMany).toHaveBeenCalledTimes(1) // the re-read; the pre-read used the plain client
+    // The re-read before the writes, then the read of the saved day after the last write (the pre-read used the plain client).
+    expect(db.tx.attendancePunch.findMany).toHaveBeenCalledTimes(2)
     const lock = order(db.tx.$queryRaw)
     const reread = order(db.tx.attendancePunch.findMany)
     const employee = order(db.tx.employee.findUnique)
@@ -402,6 +403,7 @@ describe('savePunchEdit: the re-read runs on the transaction client, after the l
     expect(employee).toBeLessThan(decision)
     expect(decision).toBeLessThan(write)
     expect(write).toBeLessThan(audit)
+    expect(audit).toBeLessThan(order(db.tx.attendancePunch.findMany, 1))
   })
 
   it('reads exactly this employee-day of this set, and the employee and decision rows of this week', async () => {
