@@ -45,6 +45,18 @@ export default defineConfig({
     command: 'npm run start',
     url: 'http://localhost:3000',
     reuseExistingServer: !process.env.CI,
+    // Next.js reads .env.local, which may point at staging or hold the real eTimeOffice login. Next never
+    // overrides a variable that is already set, so pin these to the local test setup: empty Supabase keys
+    // keep the mock storage, an empty eTimeOffice login keeps the in-app mock API. DATABASE_URL and
+    // DIRECT_DATABASE_URL already come from .env via dotenv above.
+    env: {
+      ...(process.env as Record<string, string>),
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '',
+      ETIMEOFFICE_CORPORATE_ID: '',
+      ETIMEOFFICE_USERNAME: '',
+      ETIMEOFFICE_PASSWORD: '',
+    },
     stdout: 'pipe',
     stderr: 'pipe',
     timeout: 120000,
