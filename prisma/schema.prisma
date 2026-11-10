@@ -95,6 +95,7 @@ model AttendanceUpload {
   staleNoticeAt          DateTime? // scheduled sync skipped because the week has edits/decisions
   syncLockedAt           DateTime?
   approvedAt             DateTime?
+  approvedLeftOutCount   Int? // employees the approval left out (zero hours or rejected), counted when the week was approved or a correction rebuilt its records; null = not approved, or approved before this column existed
   activeWeekStart        DateTime? @unique // = payrollWeekStartDate while isActiveForPayrollWeek, else null. Postgres NULLs are distinct, so this is one active row per week. Any code that sets isActiveForPayrollWeek = false must null this too.
 
   attendanceRecords  AttendanceRecord[]

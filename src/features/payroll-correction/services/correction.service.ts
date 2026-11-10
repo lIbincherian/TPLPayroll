@@ -27,7 +27,7 @@ import {
 import { auditEntry } from '@/features/attendance-sync/services/attendance-audit.service'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
 import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
-import { buildAttendanceRecords, getPayrollEmployees } from '@/features/attendance-sync/lib/review'
+import { buildAttendanceRecords, countLeftOut, getPayrollEmployees } from '@/features/attendance-sync/lib/review'
 import { TRANSACTION_TIMEOUT_MS } from '@/features/attendance-sync/lib/constants'
 import { toISODate } from '@/features/attendance-sync/lib/week'
 import type { DiscardedEdit } from '@/features/attendance-sync/types/attendance-sync.types'
@@ -997,6 +997,7 @@ export async function approveRevision(
       // Corrected punches and records, read inside the transaction once the week is locked.
       let clonedPunches = 0
       let correctedRecords: Prisma.AttendanceRecordCreateManyInput[] = []
+      let approvedLeftOutCount = 0
       // How the week's adjustment applications looked before the correction reset them.
       let snapshot: AdjustmentSnapshotEntry[] = []
       if (session) {
@@ -1031,11 +1032,9 @@ export async function approveRevision(
             where: { attendanceUploadId: session.attendanceUploadId },
             select: { employeeId: true, decision: true },
           })
-          correctedRecords = buildAttendanceRecords(
-            session.attendanceUploadId,
-            review,
-            decisions.map((d) => ({ employeeId: d.employeeId, decision: d.decision as 'APPROVED' | 'REJECTED' })),
-          )
+          const decisionRows = decisions.map((d) => ({ employeeId: d.employeeId, decision: d.decision as 'APPROVED' | 'REJECTED' }))
+          correctedRecords = buildAttendanceRecords(session.attendanceUploadId, review, decisionRows)
+          approvedLeftOutCount = countLeftOut(review, decisionRows)
         }
       } else {
         // A draft made without a session still promotes under the week lock, so it cannot interleave
@@ -1120,6 +1119,11 @@ export async function approveRevision(
           // The corrected punches become the live set, and the attendance records follow them.
           await tx.attendanceRecord.deleteMany({ where: { attendanceUploadId: session.attendanceUploadId } })
           if (correctedRecords.length > 0) await tx.attendanceRecord.createMany({ data: correctedRecords })
+          // The records changed, so the left-out count payroll shows for the week changes with them.
+          await tx.attendanceUpload.update({
+            where: { id: session.attendanceUploadId },
+            data: { approvedLeftOutCount },
+          })
           await tx.attendancePunch.deleteMany({
             where: { attendanceUploadId: session.attendanceUploadId, correctionId: null },
           })

@@ -197,7 +197,7 @@ function makeTx() {
     attendanceEmployeeDecision: { findMany: m() },
     attendancePunch: { count: m(), findMany: m(), createMany: m(), deleteMany: m(), updateMany: m() },
     attendanceRecord: { deleteMany: m(), createMany: m(), findMany: m() },
-    attendanceUpload: { findFirst: m() },
+    attendanceUpload: { findFirst: m(), update: m() },
     employee: { findMany: m() },
     auditLog: { create: m(), update: m(), delete: m(), deleteMany: m(), updateMany: m() },
   }
@@ -920,6 +920,8 @@ describe('approveRevision for an attendance correction', () => {
     expect(rows[0]).toMatchObject({ attendanceDate: THU, regularHours: 8, overtimeHours: 1.47, verificationDecision: 'APPROVED' })
     expect(rows.slice(1).every((r) => r.regularHours === 0 && r.overtimeHours === 0)).toBe(true)
     expect(callOrder(tx.attendanceRecord.deleteMany)).toBeLessThan(callOrder(tx.attendanceRecord.createMany))
+    // The left-out count payroll shows follows the rebuilt records (the zero-hour employee is the one left out).
+    expect(tx.attendanceUpload.update).toHaveBeenCalledWith({ where: { id: UPLOAD_ID }, data: { approvedLeftOutCount: 1 } })
     // The review is read on the transaction client, so it sees the punches the lock protects.
     expect(getPunchReview).toHaveBeenCalledWith(
       '2025-03-06',

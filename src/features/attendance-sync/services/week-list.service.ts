@@ -233,8 +233,16 @@ async function computeRecordStats(uploadIds: string[]): Promise<Map<string, Uplo
  * The week list: active uploads (both sources), plus virtual rows for the current
  * in-progress week and the last completed week when they have no row yet, so Pull now
  * always has a target.
+ *
+ * Counts for weeks in review need a full review grid per week. A caller that does not show them
+ * (the payroll page) passes `includeReviewStats: false` to skip that work; those weeks then report
+ * zero counts. Everything else in the list is the same.
  */
-export async function listAttendanceWeeks(todayISO: ISODate = todayInIST()): Promise<AttendanceWeekListItem[]> {
+export async function listAttendanceWeeks(
+  todayISO: ISODate = todayInIST(),
+  options: { includeReviewStats?: boolean } = {},
+): Promise<AttendanceWeekListItem[]> {
+  const includeReviewStats = options.includeReviewStats !== false
   const now = new Date()
 
   const uploads = await prisma.attendanceUpload.findMany({
@@ -261,7 +269,7 @@ export async function listAttendanceWeeks(todayISO: ISODate = todayInIST()): Pro
   const inReview = (u: AttendanceUpload) => getAttendanceWeekStatus(u) === 'REVIEW'
   const approved = (u: AttendanceUpload) => getAttendanceWeekStatus(u) === 'APPROVED'
   const [reviewStats, recordStats] = await Promise.all([
-    computeReviewStats(uploads.filter(inReview)),
+    computeReviewStats(includeReviewStats ? uploads.filter(inReview) : []),
     computeRecordStats(uploads.filter(approved).map((u) => u.id)),
   ])
 

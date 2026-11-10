@@ -175,6 +175,22 @@ export async function seedApiWeek(opts: {
   assertTestWeek(weekStartISO, 'seedApiWeek')
   const dates = weekDatesISO(weekStartISO)
   const loadedAt = new Date(`${addDaysISO(weekStartISO, 7)}T01:00:00.000Z`)
+
+  // Approving a week stores how many employees it left out (zero hours or rejected). This seed bypasses the
+  // approval, so it stores what the approval would have: every active employee outside `employees` has no punches
+  // in the week, and so does any of `employees` whose days are all empty.
+  let approvedLeftOutCount: number | null = null
+  if (status === 'APPROVED') {
+    const unseeded = await prisma.employee.count({
+      where: {
+        id: { notIn: employees.map((emp) => emp.id) },
+        isActive: true,
+        OR: [{ dateOfResignation: null }, { dateOfResignation: { gte: utcDate(weekStartISO) } }],
+      },
+    })
+    approvedLeftOutCount = unseeded + employees.filter((_, ei) => days[ei].every((d) => d.reg + d.ot <= 0)).length
+  }
+
   const upload = await prisma.attendanceUpload.create({
     data: {
       source: 'ETIMEOFFICE',
@@ -189,6 +205,7 @@ export async function seedApiWeek(opts: {
       lastSyncedAt: loadedAt,
       lastSyncTrigger: 'SCHEDULED',
       approvedAt: status === 'APPROVED' ? new Date(`${addDaysISO(weekStartISO, 7)}T08:00:00.000Z`) : null,
+      approvedLeftOutCount,
     },
   })
 

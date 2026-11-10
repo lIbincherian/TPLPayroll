@@ -178,7 +178,7 @@ function makeTx() {
     attendanceEmployeeDecision: { findMany: m() },
     attendancePunch: { count: m(), findMany: m(), createMany: m(), deleteMany: m(), updateMany: m() },
     attendanceRecord: { deleteMany: m(), createMany: m(), findMany: m() },
-    attendanceUpload: { findFirst: m() },
+    attendanceUpload: { findFirst: m(), update: m() },
     employee: { findMany: m() },
     auditLog: { create: m() },
   }

@@ -110,7 +110,7 @@ describe('approveWeek clears an earlier pull error', () => {
     expect(db.tx.attendanceUpload.updateMany).toHaveBeenCalledTimes(1)
     expect(db.tx.attendanceUpload.updateMany).toHaveBeenCalledWith({
       where: { id: 'upload-1', status: 'REVIEW' },
-      data: { status: 'APPROVED', approvedAt, lastSyncError: null, staleNoticeAt: null },
+      data: { status: 'APPROVED', approvedAt, lastSyncError: null, staleNoticeAt: null, approvedLeftOutCount: 0 },
     })
     expectNoOtherUploadWrites()
   })
@@ -196,7 +196,7 @@ describe('reopenWeek clears an earlier pull error', () => {
     expect(db.tx.attendanceUpload.updateMany).toHaveBeenCalledTimes(1)
     expect(db.tx.attendanceUpload.updateMany).toHaveBeenCalledWith({
       where: { id: 'upload-1', status: 'APPROVED' },
-      data: { status: 'REVIEW', approvedAt: null, lastSyncError: null, staleNoticeAt: null },
+      data: { status: 'REVIEW', approvedAt: null, lastSyncError: null, staleNoticeAt: null, approvedLeftOutCount: null },
     })
     expectNoOtherUploadWrites()
   })

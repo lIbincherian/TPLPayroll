@@ -41,12 +41,9 @@ vi.mock('@/features/payroll-adjustments/services/adjustment.service', () => ({
   skipAdjustmentApplication: vi.fn(),
 }))
 
-// ─── Mock F12 attendance services (the payroll week list and readiness build on them) ─
+// ─── Mock F12 attendance services (the payroll week list builds on them) ─
 vi.mock('@/features/attendance-sync/services/week-list.service', () => ({
   listAttendanceWeeks: vi.fn(),
-}))
-vi.mock('@/features/attendance-sync/services/week-approval.service', () => ({
-  getApprovalSummary: vi.fn(),
 }))
 
 import prisma from '@/lib/prisma'
@@ -55,7 +52,6 @@ import {
   skipAdjustmentApplication,
 } from '@/features/payroll-adjustments/services/adjustment.service'
 import { listAttendanceWeeks } from '@/features/attendance-sync/services/week-list.service'
-import { getApprovalSummary } from '@/features/attendance-sync/services/week-approval.service'
 import type { AttendanceWeekListItem } from '@/features/attendance-sync/types/attendance-sync.types'
 import {
   calculateRegularPay,
@@ -96,6 +92,7 @@ function makeUpload(overrides: Partial<AttendanceUpload> = {}): AttendanceUpload
     staleNoticeAt: null,
     syncLockedAt: null,
     approvedAt: new Date('2025-03-14'),
+    approvedLeftOutCount: null,
     activeWeekStart: WEEK_START,
     ...overrides,
   }
@@ -275,12 +272,11 @@ describe('calculateNetPayable', () => {
 
 describe('checkAttendanceReadiness', () => {
   it('returns ready:true with stats when attendance is approved', async () => {
-    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload({ status: 'APPROVED' }))
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload({ status: 'APPROVED', approvedLeftOutCount: 1 }))
     vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([
       makeRecord({ employeeId: 'emp-1', regularHours: 8 as unknown as AttendanceRecord['regularHours'], overtimeHours: 0 as unknown as AttendanceRecord['overtimeHours'] }),
       makeRecord({ id: 'rec-2', employeeId: 'emp-2', regularHours: 6 as unknown as AttendanceRecord['regularHours'], overtimeHours: 2 as unknown as AttendanceRecord['overtimeHours'] }),
     ])
-    vi.mocked(getApprovalSummary).mockResolvedValue({ leftOut: [{ employeeId: 'emp-3' }] } as never)
 
     const result = await checkAttendanceReadiness(WEEK_START, WEEK_END)
 
@@ -348,7 +344,6 @@ describe('checkAttendanceReadiness', () => {
         overtimeHours: 1.25 as unknown as AttendanceRecord['overtimeHours'],
       }),
     ])
-    vi.mocked(getApprovalSummary).mockResolvedValue({ leftOut: [] } as never)
 
     const result = await checkAttendanceReadiness(WEEK_START, WEEK_END)
 
@@ -368,7 +363,6 @@ describe('checkAttendanceReadiness', () => {
       makeRecord({ id: 'r2', employeeId: 'emp-1' }),
       makeRecord({ id: 'r3', employeeId: 'emp-1' }),
     ])
-    vi.mocked(getApprovalSummary).mockResolvedValue({ leftOut: [] } as never)
 
     const result = await checkAttendanceReadiness(WEEK_START, WEEK_END)
 
@@ -376,21 +370,13 @@ describe('checkAttendanceReadiness', () => {
     expect(result.ready && result.totalRegularHours).toBe(24)
   })
 
-  it('takes leftOutCount from the approval summary (zero-hour and rejected employees)', async () => {
-    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload())
+  it('takes leftOutCount from the count stored when the week was approved (zero-hour and rejected employees)', async () => {
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload({ approvedLeftOutCount: 2 }))
     vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([makeRecord()])
-    vi.mocked(getApprovalSummary).mockResolvedValue({
-      leftOut: [
-        { employeeId: 'a', reason: 'ZERO_HOURS' },
-        { employeeId: 'b', reason: 'REJECTED' },
-      ],
-    } as never)
 
     const result = await checkAttendanceReadiness(WEEK_START, WEEK_END)
 
     expect(result.ready && result.leftOutCount).toBe(2)
-    // The summary is read for this week, keyed by its Thursday ISO date.
-    expect(vi.mocked(getApprovalSummary)).toHaveBeenCalledWith('2025-03-06')
   })
 
   // US-12.27: a reopened week goes back to REVIEW and its records are removed
@@ -403,7 +389,6 @@ describe('checkAttendanceReadiness', () => {
 
     expect(result).toEqual({ ready: false, reason: 'NOT_APPROVED' })
     expect(prisma.attendanceRecord.findMany).not.toHaveBeenCalled()
-    expect(getApprovalSummary).not.toHaveBeenCalled()
   })
 
   it('only looks at the active attendance row for exactly this week', async () => {
@@ -638,6 +623,8 @@ describe('getAvailablePayrollWeeks', () => {
     const result = await getAvailablePayrollWeeks()
 
     expect(listAttendanceWeeks).toHaveBeenCalledTimes(1)
+    // The payroll page shows no counts for weeks in review, so it asks for no review grids.
+    expect(listAttendanceWeeks).toHaveBeenCalledWith(undefined, { includeReviewStats: false })
     expect(result[0].totalRegularHours).toBe(8)
     expect(result[0].totalOvertimeHours).toBe(1.25)
   })

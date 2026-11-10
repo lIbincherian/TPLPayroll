@@ -32,7 +32,6 @@ vi.mock('@/features/payroll-adjustments/services/adjustment.service', () => ({
   skipAdjustmentApplication: vi.fn(),
 }))
 vi.mock('@/features/attendance-sync/services/week-list.service', () => ({ listAttendanceWeeks: vi.fn() }))
-vi.mock('@/features/attendance-sync/services/week-approval.service', () => ({ getApprovalSummary: vi.fn() }))
 
 import prisma from '@/lib/prisma'
 import { skipAdjustmentApplication } from '@/features/payroll-adjustments/services/adjustment.service'

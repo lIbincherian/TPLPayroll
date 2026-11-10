@@ -16,10 +16,8 @@ import {
   skipAdjustmentApplication,
 } from '@/features/payroll-adjustments/services/adjustment.service'
 import { listAttendanceWeeks } from '@/features/attendance-sync/services/week-list.service'
-import { getApprovalSummary } from '@/features/attendance-sync/services/week-approval.service'
 import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
 import { TRANSACTION_TIMEOUT_MS } from '@/features/attendance-sync/lib/constants'
-import { toISODate } from '@/features/attendance-sync/lib/week'
 
 // ─── Pure calculation helpers (exported for unit testing) ────────────────────
 
@@ -54,9 +52,12 @@ export function calculateNetPayable(
 /**
  * The payroll week list, built on the attendance week list so both pages show the same
  * statuses. Only an approved eTimeOffice week without a payroll run can be generated.
+ *
+ * The list shows no counts for a week still in review (it can't be generated), so those weeks are
+ * not built into review grids here: their counts come back as zero.
  */
 export async function getAvailablePayrollWeeks(): Promise<PayrollWeekItem[]> {
-  const weeks = await listAttendanceWeeks()
+  const weeks = await listAttendanceWeeks(undefined, { includeReviewStats: false })
 
   return weeks.map((week): PayrollWeekItem => {
     const source = week.source === 'EXCEL' ? 'EXCEL' : 'ETIMEOFFICE'
@@ -104,13 +105,12 @@ export async function checkAttendanceReadiness(
   const totalRegularHours = records.reduce((sum, r) => sum + Number(r.regularHours), 0)
   const totalOvertimeHours = records.reduce((sum, r) => sum + Number(r.overtimeHours), 0)
 
-  // "Left out" is what the approval summary showed: zero-hour employees plus rejected ones.
-  const summary = await getApprovalSummary(toISODate(weekStart))
-
   return {
     ready: true,
     matchedEmployeeCount: employeeIds.size,
-    leftOutCount: summary.leftOut.length,
+    // "Left out" is what the approval summary showed (zero-hour employees plus rejected ones), stored when
+    // the week was approved. A week approved before that was stored shows 0.
+    leftOutCount: upload.approvedLeftOutCount ?? 0,
     totalRegularHours,
     totalOvertimeHours,
   }

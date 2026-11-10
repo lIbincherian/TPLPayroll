@@ -189,6 +189,18 @@ export function buildApprovalSummary(
 }
 
 /**
+ * How many employees approving this review leaves out: zero hours, or rejected in the employee
+ * check. The same rule as the approval summary's `leftOut` list, which it counts.
+ */
+export function countLeftOut(
+  review: Pick<PunchReview, 'employees'>,
+  decisions: Array<{ employeeId: string; decision: EmployeeDecisionValue }>,
+): number {
+  const inputs = decisions.map((d) => ({ ...d, employeeCode: '', employeeName: '' }))
+  return buildApprovalSummary(review, inputs).leftOut.length
+}
+
+/**
  * The seven `AttendanceRecord` rows per payroll employee (one per week date). Days with
  * no hours get 0.00. The six legacy slot columns stay null.
  */

@@ -67,6 +67,7 @@ function makeTx() {
     attendanceEmployeeDecision: { findMany: m() },
     attendancePunch: { count: m(), deleteMany: m(), updateMany: m() },
     attendanceRecord: { deleteMany: m(), createMany: m() },
+    attendanceUpload: { update: m() },
   }
 }
 type Tx = ReturnType<typeof makeTx>
