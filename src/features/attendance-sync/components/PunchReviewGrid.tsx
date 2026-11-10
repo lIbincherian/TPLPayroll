@@ -321,20 +321,29 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
     if (isDesktop) focusCell(lastFocusKey.current)
   }, [focusCell, isDesktop])
 
+  // The day the editor shows now. reloadDay is asked about a day the user may have left while it was running.
+  const openCellRef = useRef<DayTarget | null>(null)
+  useEffect(() => {
+    openCellRef.current = openCell
+  }, [openCell])
+
   // The editor's save was refused because the day moved on: reload the review and hand back the latest view,
-  // null if the reload failed, or 'gone' (after closing the editor) if the employee left the review.
+  // null if the reload failed, or 'gone' (after closing the editor) if the employee left the review. The editor
+  // is closed and the user told only when it still shows that employee and day; if the user has stepped to or
+  // opened another day meanwhile, that editor and its draft are left alone, the review data is just updated,
+  // and null tells the old save it has nothing to show (so it counts as not saved).
   const reloadDay = useCallback(
     async (employeeId: string, date: ISODate): Promise<DayReload> => {
       const res = await getPunchReviewAction(weekId, mode)
       if (!res.ok) return null
       setReview(res.data)
       const day = res.data.employees.find((e) => e.employeeId === employeeId)?.days.find((d) => d.date === date) ?? null
-      if (!day) {
-        closeEditor()
-        toast.error("That employee is no longer in this week's review.")
-        return 'gone'
-      }
-      return day
+      if (day) return day
+      const shown = openCellRef.current
+      if (!shown || shown.employeeId !== employeeId || shown.date !== date) return null
+      closeEditor()
+      toast.error("That employee is no longer in this week's review.")
+      return 'gone'
     },
     [weekId, mode, closeEditor],
   )

@@ -50,9 +50,11 @@ const LABEL = 'text-xs font-medium uppercase tracking-wider text-zinc-500'
 
 /**
  * What reloading a day after a DAY_CHANGED refusal found: its latest view; `null` when the reload itself
- * failed (the editor stays open and offers a retry); or `'gone'` when the employee or the day is no longer in
- * the review. For `'gone'` the grid has already closed the editor, and the editor needs to hear that now, not
- * on the render that follows, or it would flag the header "Not saved" for a day nobody is editing.
+ * failed (the editor stays open and offers a retry) or the day left the review while the user was already on
+ * another day (that editor is left alone); or `'gone'` when the employee or the day is no longer in the review
+ * and the editor that showed it has been closed. For `'gone'` the grid has already closed the editor, and the
+ * editor needs to hear that now, not on the render that follows, or it would flag the header "Not saved" for a
+ * day nobody is editing.
  */
 export type DayReload = DayView | null | 'gone'
 
