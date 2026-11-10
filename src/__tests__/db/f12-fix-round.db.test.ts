@@ -19,7 +19,7 @@ import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { Client } from 'pg'
-import type { PrismaClient } from '@prisma/client'
+import { Prisma, type PrismaClient } from '@prisma/client'
 import { punchSetSignature } from '@/features/attendance-sync/lib/day-signature'
 
 vi.mock('@/features/attendance-sync/services/etimeoffice.client', () => ({ fetchPunchData: vi.fn() }))
@@ -75,6 +75,10 @@ const W = {
   r4day: '2026-11-05', // day version and membership
   r4rematch: '2026-04-09', // rematchWeekCodes per code
   r4corr: '2026-04-16', // drafts and promotions without a session
+  // Final fix pass (Thursdays)
+  r6rematch: '2026-04-23', // rematchWeekCodes: an employee deleted before the lock
+  r6day: '2026-04-30', // the day savePunchEdit returns
+  r6rematch2: '2026-05-07', // rematchWeekCodes: a real foreign-key refusal
 }
 const ALL_WEEKS = Object.values(W).map(utc)
 
@@ -2143,4 +2147,247 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
       expect(await prisma.payrollRun.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({ status: 'REVISED', currentRevisionNumber: 2 })
     })
   })
+  // ─── Final fix pass ─────────────────────────────────────────────────────────
+
+  describe('final pass item 1: rematchWeekCodes matches each code again under its lock, on a real database', () => {
+    const week = W.r6rematch
+    const week2 = W.r6rematch2
+    let uploadId: string
+    let upload2Id: string
+    let ec: typeof import('@/features/attendance-sync/services/employee-check.service')
+
+    const mk = (code: string, name: string) =>
+      prisma.employee.create({
+        data: {
+          employeeId: code, employeeName: name, designation: 'Guard', designationShort: 'G', site: 'Gate', isActive: true,
+          wageHistory: { create: { weeklySalary: 2500, hourlyRate: 62.5, effectiveFrom: utc('2025-01-01'), changeSource: 'SEED' } },
+        },
+      })
+    /** An unresolved code with one IN/OUT pair on the week's first day. */
+    const unresolved = (id: string, empCode: string) => [
+      { attendanceUploadId: id, employeeId: null, empCode, matchStatus: 'UNKNOWN', punchDate: utc(week), pairIndex: 0, position: 'IN', source: 'API', originalTime: '08:00', currentTime: '08:00' },
+      { attendanceUploadId: id, employeeId: null, empCode, matchStatus: 'UNKNOWN', punchDate: utc(week), pairIndex: 0, position: 'OUT', source: 'API', originalTime: '12:00', currentTime: '12:00' },
+    ]
+    const rowsOf = (id: string, code: string) => prisma.attendancePunch.findMany({ where: { attendanceUploadId: id, empCode: code } })
+    const auditedCodes = async (id: string) =>
+      (await prisma.auditLog.findMany({ where: { entityType: 'ATTENDANCE_CODE', entityId: id } })).map((a) => (a.detailsJson as { empCode: string }).empCode).sort()
+
+    beforeAll(async () => {
+      ec = await import('@/features/attendance-sync/services/employee-check.service')
+      uploadId = (await seedWeek(week, 'REVIEW')).id
+      upload2Id = (await seedWeek(week2, 'REVIEW')).id
+    }, 60000)
+
+    it('an employee deleted after the first read and before the lock leaves the code unresolved: no link, no audit, no foreign-key error', async () => {
+      const hotel = await mk('TPLF12DB9601', 'F12 Hotel')
+      const india = await mk('TPLF12DB9602', 'F12 India')
+      await prisma.attendancePunch.createMany({ data: [...unresolved(uploadId, '9601'), ...unresolved(uploadId, '9602')] as never })
+      // Everything the service reads before its transactions sees Hotel. The moment its first transaction is
+      // about to start, Hotel is deleted, so every locked read after that sees only India.
+      const real = prisma.$transaction.bind(prisma) as (...args: unknown[]) => Promise<unknown>
+      let started = 0
+      const spy = vi.spyOn(prisma, '$transaction').mockImplementation((async (...args: unknown[]) => {
+        if (started++ === 0) {
+          await prisma.employeeWageHistory.deleteMany({ where: { employeeId: hotel.id } })
+          await prisma.employee.delete({ where: { id: hotel.id } })
+        }
+        return real(...args)
+      }) as never)
+
+      let result: Awaited<ReturnType<typeof ec.rematchWeekCodes>>
+      try {
+        result = await ec.rematchWeekCodes(week)
+      } finally {
+        spy.mockRestore()
+      }
+
+      expect(started).toBe(2) // one transaction per code that might change
+      expect(result.matched).toEqual([{ empCode: '9602', employeeId: india.id, employeeCode: 'TPLF12DB9602' }])
+      expect(result.stillUnresolved).toEqual(['9601'])
+      const hotelRows = await rowsOf(uploadId, '9601')
+      expect(hotelRows).toHaveLength(2)
+      expect(hotelRows.every((r) => r.employeeId === null && r.matchStatus === 'UNKNOWN')).toBe(true)
+      const indiaRows = await rowsOf(uploadId, '9602')
+      expect(indiaRows.every((r) => r.employeeId === india.id && r.matchStatus === 'MATCHED')).toBe(true)
+      expect(await auditedCodes(uploadId)).toEqual(['9602'])
+    })
+
+    it('the database refuses a link to an employee that does not exist with a Prisma P2003', async () => {
+      await prisma.attendancePunch.createMany({ data: unresolved(upload2Id, '9620') as never })
+
+      const error = await prisma.attendancePunch
+        .updateMany({ where: { attendanceUploadId: upload2Id, empCode: '9620' }, data: { employeeId: 'f12db-no-such-employee', matchStatus: 'MATCHED' } })
+        .catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(Prisma.PrismaClientKnownRequestError)
+      expect(error).toMatchObject({ code: 'P2003' })
+      expect((await rowsOf(upload2Id, '9620')).every((r) => r.employeeId === null && r.matchStatus === 'UNKNOWN')).toBe(true)
+      await prisma.attendancePunch.deleteMany({ where: { attendanceUploadId: upload2Id, empCode: '9620' } })
+    })
+
+    it('an employee that disappears after the locked read: the real P2003 rolls that code back and it is reported unresolved; the other code links', async () => {
+      const juliet = await mk('TPLF12DB9611', 'F12 Juliet')
+      const kilo = await mk('TPLF12DB9612', 'F12 Kilo')
+      const punchesOf = (code: string) => [
+        { attendanceUploadId: upload2Id, employeeId: null, empCode: code, matchStatus: 'UNKNOWN', punchDate: utc(week2), pairIndex: 0, position: 'IN', source: 'API', originalTime: '08:00', currentTime: '08:00' },
+        { attendanceUploadId: upload2Id, employeeId: null, empCode: code, matchStatus: 'UNKNOWN', punchDate: utc(week2), pairIndex: 0, position: 'OUT', source: 'API', originalTime: '12:00', currentTime: '12:00' },
+      ]
+      await prisma.attendancePunch.createMany({ data: [...punchesOf('9611'), ...punchesOf('9612')] as never })
+      // Under the lock the service reads Juliet as an employee that no longer exists (a row id the database
+      // does not have), exactly what is left when she is deleted between the locked read and the link. Every
+      // other statement of the transaction runs against the real database.
+      const ghost = { id: 'f12db-ghost-employee', employeeId: 'TPLF12DB9611', employeeName: 'F12 Juliet', isActive: true, dateOfResignation: null }
+      const real = prisma.$transaction.bind(prisma) as (fn: (tx: unknown) => Promise<unknown>, options?: unknown) => Promise<unknown>
+      const spy = vi.spyOn(prisma, '$transaction').mockImplementation(((fn: (tx: unknown) => Promise<unknown>, options?: unknown) =>
+        real(
+          (tx) =>
+            fn(
+              new Proxy(tx as object, {
+                get(target, prop) {
+                  if (prop === 'employee') {
+                    return {
+                      findMany: async (args: unknown) => {
+                        const all = (await (target as { employee: { findMany: (a: unknown) => Promise<Array<{ employeeId: string }>> } }).employee.findMany(args)) as Array<{ employeeId: string }>
+                        return all.map((e) => (e.employeeId === 'TPLF12DB9611' ? ghost : e))
+                      },
+                    }
+                  }
+                  const value = Reflect.get(target, prop)
+                  return typeof value === 'function' ? value.bind(target) : value
+                },
+              }),
+            ),
+          options,
+        )) as never)
+
+      let result: Awaited<ReturnType<typeof ec.rematchWeekCodes>>
+      try {
+        result = await ec.rematchWeekCodes(week2)
+      } finally {
+        spy.mockRestore()
+      }
+
+      expect(result.matched).toEqual([{ empCode: '9612', employeeId: kilo.id, employeeCode: 'TPLF12DB9612' }])
+      expect(result.stillUnresolved).toEqual(['9611'])
+      // Juliet's code was rolled back as a whole: still unmatched, still unresolved, and no audit row for it.
+      const julietRows = await rowsOf(upload2Id, '9611')
+      expect(julietRows).toHaveLength(2)
+      expect(julietRows.every((r) => r.employeeId === null && r.matchStatus === 'UNKNOWN')).toBe(true)
+      expect((await rowsOf(upload2Id, '9612')).every((r) => r.employeeId === kilo.id && r.matchStatus === 'MATCHED')).toBe(true)
+      expect(await auditedCodes(upload2Id)).toEqual(['9612'])
+      // With the real employee in the list the same code links normally on the next run.
+      await expect(ec.rematchWeekCodes(week2)).resolves.toEqual({
+        matched: [{ empCode: '9611', employeeId: juliet.id, employeeCode: 'TPLF12DB9611' }],
+        stillUnresolved: [],
+      })
+    })
+  })
+
+  describe('final pass item 2: the day savePunchEdit returns is the day it saved, on a real database', () => {
+    const week = W.r6day
+    let uploadId: string
+
+    const dayRows = () =>
+      prisma.attendancePunch.findMany({ where: { attendanceUploadId: uploadId, correctionId: null, employeeId: empA.id, punchDate: utc(week) }, orderBy: [{ pairIndex: 'asc' }, { position: 'desc' }] })
+    const pairsOf = (rows: Array<{ id: string; pairIndex: number; position: string; currentTime: string | null }>) => {
+      const byIndex = new Map<number, { pairIndex: number; in: { punchId: string; time: string | null }; out: { punchId: string; time: string | null } }>()
+      for (const r of rows) {
+        const pair = byIndex.get(r.pairIndex) ?? { pairIndex: r.pairIndex, in: { punchId: '', time: null }, out: { punchId: '', time: null } }
+        pair[r.position === 'IN' ? 'in' : 'out'] = { punchId: r.id, time: r.currentTime }
+        byIndex.set(r.pairIndex, pair)
+      }
+      return [...byIndex.values()]
+    }
+    const live = { kind: 'LIVE' as const }
+    const deleteAudits = () => prisma.auditLog.count({ where: { actionType: 'DELETE', detailsJson: { path: ['weekStart'], equals: week } } })
+
+    beforeAll(async () => {
+      uploadId = (await seedWeek(week, 'REVIEW')).id
+      await seedPunches(uploadId, week, [empA])
+    }, 60000)
+
+    it('another tab\'s save that commits right after this one is not in the returned day, and the next save from it is refused instead of deleting that pair', async () => {
+      const opened = await dayRows()
+      const base = await baseSignatureOf(week, empA.id, week)
+      const editorPairs = pairsOf(opened) // the two pairs the editor holds
+      let signatureAtCommit = ''
+      // The save's own transaction commits; then, before the review is read for the display data, another tab's
+      // save lands: a hand-entered third pair.
+      const real = prisma.$transaction.bind(prisma) as (...args: unknown[]) => Promise<unknown>
+      const spy = vi.spyOn(prisma, '$transaction').mockImplementation((async (...args: unknown[]) => {
+        const out = await real(...args)
+        signatureAtCommit = await baseSignatureOf(week, empA.id, week)
+        await prisma.attendancePunch.createMany({
+          data: [
+            { attendanceUploadId: uploadId, employeeId: empA.id, empCode: '9101', matchStatus: 'MATCHED', punchDate: utc(week), pairIndex: 2, position: 'IN', source: 'MANUAL', originalTime: null, currentTime: '18:30' },
+            { attendanceUploadId: uploadId, employeeId: empA.id, empCode: '9101', matchStatus: 'MATCHED', punchDate: utc(week), pairIndex: 2, position: 'OUT', source: 'MANUAL', originalTime: null, currentTime: '19:30' },
+          ] as never,
+        })
+        return out
+      }) as never)
+
+      let result: Awaited<ReturnType<typeof savePunchEdit>>
+      try {
+        result = await savePunchEdit({
+          weekId: week, mode: live, employeeId: empA.id, date: week, baseSignature: base,
+          pairs: editorPairs.map((p) => (p.pairIndex === 1 ? { ...p, out: { ...p.out, time: '17:30' } } : p)),
+        } as never)
+      } finally {
+        spy.mockRestore()
+      }
+
+      // The day is this save's own: two pairs, the edited OUT, the signature of the rows at the moment of commit.
+      expect(result.day.pairs).toHaveLength(2)
+      expect(result.day.pairs[1].out?.time).toBe('17:30')
+      expect(result.day.signature).toBe(signatureAtCommit)
+      expect(await dayRows()).toHaveLength(6)
+      expect(result.day.signature).not.toBe(await baseSignatureOf(week, empA.id, week))
+      // The display data is the later read: the employee's totals are those of a fresh review, which already holds the other tab's hour.
+      const fresh = (await getPunchReview(week)).employees.find((e) => e.employeeId === empA.id)!
+      expect(result.employeeTotals).toEqual({ regular: fresh.totalRegularHours, overtime: fresh.totalOvertimeHours, hasAnyPunch: true })
+      expect(fresh.days.find((d) => d.date === week)!.totalHours).toBeCloseTo(result.day.totalHours + 1, 2)
+
+      // The editor's next save (two pairs, the signature it was just given) is refused, and the other tab's pair survives.
+      const deletesBefore = await deleteAudits()
+      const next = await savePunchEdit({
+        weekId: week, mode: live, employeeId: empA.id, date: week, baseSignature: result.day.signature,
+        pairs: editorPairs.map((p) => (p.pairIndex === 1 ? { ...p, out: { ...p.out, time: '17:45' } } : p)),
+      } as never).catch((e) => e)
+
+      expect(next).toMatchObject({ code: 'DAY_CHANGED' })
+      const after = await dayRows()
+      expect(after).toHaveLength(6)
+      expect(after.filter((r) => r.source === 'MANUAL').map((r) => r.currentTime).sort()).toEqual(['18:30', '19:30'])
+      expect(after.find((r) => r.pairIndex === 1 && r.position === 'OUT')!.currentTime).toBe('17:30')
+      expect(await deleteAudits()).toBe(deletesBefore)
+
+      // After a reload the editor holds all three pairs and the same edit goes through.
+      const reloaded = await dayRows()
+      await expect(
+        savePunchEdit({
+          weekId: week, mode: live, employeeId: empA.id, date: week, baseSignature: await baseSignatureOf(week, empA.id, week),
+          pairs: pairsOf(reloaded).map((p) => (p.pairIndex === 1 ? { ...p, out: { ...p.out, time: '17:45' } } : p)),
+        } as never),
+      ).resolves.toMatchObject({ day: { date: week } })
+      expect(await dayRows()).toHaveLength(6)
+    })
+
+    it('with nothing to write there is no transaction, and the returned day is the one the base signature matched', async () => {
+      const rows = await dayRows()
+      const base = await baseSignatureOf(week, empA.id, week)
+      const spy = vi.spyOn(prisma, '$transaction')
+
+      let result: Awaited<ReturnType<typeof savePunchEdit>>
+      try {
+        result = await savePunchEdit({ weekId: week, mode: live, employeeId: empA.id, date: week, baseSignature: base, pairs: pairsOf(rows) } as never)
+        expect(spy).not.toHaveBeenCalled()
+      } finally {
+        spy.mockRestore()
+      }
+
+      expect(result.day.signature).toBe(base)
+      expect(result.day.pairs).toHaveLength(3)
+    })
+  })
+
 })
