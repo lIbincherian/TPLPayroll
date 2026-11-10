@@ -136,7 +136,7 @@ describe('getPunchReview', () => {
       ...ashaDay('a', FULL_DAY, '2026-11-05'),
       ...ashaDay('b', ['18:26'], '2026-11-06'), // incomplete: needs fixing
       ...ashaDay('c', ['08:00', '11:10'], '2026-11-07'), // 3.17 h: unusual
-      // Two 4-hour pairs per day, so the day is a normal 8 hours (a single pair over 6 hours would be unusual).
+      // Two 4-hour pairs per day, so the day is a normal 8 hours (a single pair over 9 hours would be unusual).
       ...ashaDay('d', ['08:30', '12:30', '13:30', '17:30'], '2026-11-08').map((p, i) =>
         i === 0 ? { ...p, originalTime: '08:00' } : p,
       ), // an edited day

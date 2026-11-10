@@ -431,20 +431,21 @@ TEST: pairPunches does not treat 10:00 and 10:30 as special
 
 ---
 
-## US-12.11: Merge duplicate scans within 2 minutes
+## US-12.11: Merge duplicate scans within 10 minutes
 
 **As a** Payroll Owner
-**I want to** have repeat scans within 2 minutes merged into the earlier punch
+**I want to** have repeat scans within 10 minutes merged into the earlier punch
 **So that** a double scan at the machine doesn't create a false pair.
 
 ### Acceptance Criteria
 
-- AC1: A scan within 2 minutes of the punch being kept, inclusive, merges into that earlier punch.
+- AC1: A scan within 10 minutes of the punch being kept, inclusive, merges into that earlier punch.
 - AC2: A later scan outside the window starts a new punch.
 - AC3: The window is measured from the kept punch, not from the previous scan.
 - AC4: The original scans are kept.
 - AC5: A day with a merge shows a "Merged" marker.
 - AC6: Merging happens before pairing.
+- AC7: The 10-minute window is defined in one place. It was tuned against the 29 Oct–4 Nov 2026 eTimeOffice week, where repeat scans came 5 to 10 minutes apart.
 
 ### Unit Tests
 
@@ -456,21 +457,21 @@ TEST: mergeScans merges scans in the window
   AND merged = true
   AND originals still holds all 6 scans
 
-TEST: mergeScans includes a scan at exactly 2 minutes
-  GIVEN scans 07:40, 07:42
+TEST: mergeScans includes a scan at exactly 10 minutes
+  GIVEN scans 07:40, 07:50
   WHEN mergeScans(scans) is called
   THEN punches = [07:40]
 
 TEST: mergeScans keeps scans outside the window separate
-  GIVEN scans 07:40, 07:43
+  GIVEN scans 07:40, 07:51
   WHEN mergeScans(scans) is called
-  THEN punches = [07:40, 07:43]
+  THEN punches = [07:40, 07:51]
   AND merged = false
 
 TEST: mergeScans measures from the kept punch
-  GIVEN scans 07:40, 07:41, 07:42, 07:43
+  GIVEN scans 07:40, 07:45, 07:50, 07:55
   WHEN mergeScans(scans) is called
-  THEN punches = [07:40, 07:43]
+  THEN punches = [07:40, 07:55]
 
 TEST: mergeScans merges identical scans
   GIVEN scans 07:40, 07:40
@@ -479,9 +480,9 @@ TEST: mergeScans merges identical scans
   AND merged = true
 
 TEST: scans just outside the window form a short complete pair
-  GIVEN scans 07:40, 07:43
+  GIVEN scans 07:40, 07:51
   WHEN mergeScans() and then pairPunches() are called
-  THEN pairs = [07:40–07:43]
+  THEN pairs = [07:40–07:51]
   AND incomplete = null
 ```
 
@@ -674,9 +675,9 @@ TEST: adding a pair by hand calculates hours
 ### Acceptance Criteria
 
 - AC1: A complete day under 4 hours is highlighted.
-- AC2: A complete day with a single pair over 6 hours is highlighted.
+- AC2: A complete day with a single pair over 9 hours is highlighted.
 - AC3: A highlight does not block approval.
-- AC4: The 4-hour and 6-hour values are proposed defaults, defined in one place so they can be tuned with real data.
+- AC4: The 4-hour and 9-hour values are defined in one place so they can be tuned with real data. The 9-hour value was tuned against the 29 Oct–4 Nov 2026 eTimeOffice week, where early shifts such as 05:13–13:45 are normal; the 4-hour value is unchanged.
 
 ### Unit Tests
 
@@ -691,13 +692,13 @@ TEST: isUnusualDay does not flag exactly 4 hours
   WHEN isUnusualDay(pairs) is called
   THEN it returns false
 
-TEST: isUnusualDay flags a single pair over 6 hours
-  GIVEN pair 08:00–14:01
+TEST: isUnusualDay flags a single pair over 9 hours
+  GIVEN pair 06:00–15:01
   WHEN isUnusualDay(pairs) is called
   THEN it returns true
 
-TEST: isUnusualDay does not flag a pair of exactly 6 hours
-  GIVEN pair 08:00–14:00
+TEST: isUnusualDay does not flag a pair of exactly 9 hours
+  GIVEN pair 06:00–15:00
   WHEN isUnusualDay(pairs) is called
   THEN it returns false
 

@@ -3,16 +3,22 @@
 /** Payroll weeks run Thursday to Wednesday. JavaScript getUTCDay(): Sunday = 0, Thursday = 4. */
 export const PAYROLL_WEEK_START_DOW = 4
 
-/** A scan within this many minutes of the kept punch merges into it (inclusive). */
-export const MERGE_WINDOW_MINUTES = 2
+/**
+ * A scan within this many minutes of the kept punch merges into it (inclusive).
+ * Tuned against the 29 Oct–4 Nov 2026 eTimeOffice week, where repeat scans came 5–10 minutes apart.
+ */
+export const MERGE_WINDOW_MINUTES = 10
 
 export const DAILY_REGULAR_HOURS = 8
 
 /** A complete day under this many hours is highlighted as unusual. */
 export const UNUSUAL_DAY_MIN_HOURS = 4
 
-/** A single pair longer than this many hours is highlighted as unusual. */
-export const UNUSUAL_SINGLE_PAIR_MAX_HOURS = 6
+/**
+ * A single pair longer than this many hours is highlighted as unusual.
+ * Tuned against the same week: early shifts such as 05:13–13:45 are normal.
+ */
+export const UNUSUAL_SINGLE_PAIR_MAX_HOURS = 9
 
 export const IST_TIME_ZONE = 'Asia/Kolkata'
 

@@ -35,7 +35,7 @@ const dates = weekDates(week.start)
 
 const ANITA = 'TPLGOAHLP001' // a full day with overtime
 const DEV = 'TPLGOAHLP004' // merged scans
-const GITA = 'TPLGOAHLP036' // two scans three minutes apart
+const GITA = 'TPLGOAHLP036' // two scans eleven minutes apart
 const HARI = 'TPLGOAHLP1000' // a single punch: needs fixing
 const ISHAAN = 'TPLGOAHLP010' // a short day: unusual
 const JAYA = 'TPLGOAHLP011' // no punches at all
@@ -54,8 +54,8 @@ test.beforeEach(async ({ request }) => {
 
   setMockPunches([
     ...mockDay('0001', dates[0], FULL_DAY),
-    ...mockDay('0004', dates[0], ['07:40', '07:41', '13:00', '13:50', '17:45', '17:46']),
-    ...mockDay('0036', dates[0], ['07:40', '07:43']),
+    ...mockDay('0004', dates[0], ['07:40', '07:50', '13:00', '13:50', '17:45', '17:46']),
+    ...mockDay('0036', dates[0], ['07:40', '07:51']),
     ...mockDay('1000', dates[1], ['18:26']),
     ...mockDay('0010', dates[0], ['08:00', '11:10']),
   ])
@@ -106,14 +106,14 @@ test.describe('E2E-11: Punches pair in time order and hours calculate per day', 
   })
 })
 
-test.describe('E2E-12: Scans within 2 minutes merge', () => {
+test.describe('E2E-12: Scans within 10 minutes merge', () => {
   test('Six scans become 4 punches, the day shows Merged and the original scans are kept', async ({ page }) => {
     const punches = await getPunchRows(week.start, { employeeCode: DEV })
     expect(punches.map((p) => p.currentTime)).toEqual(['07:40', '13:00', '13:50', '17:45'])
     // Every scan is still stored: the kept punch holds the scans it absorbed
     const all = punches.flatMap((p) => [p.originalTime, ...p.mergedScans]).sort()
-    expect(all).toEqual(['07:40', '07:41', '13:00', '13:50', '17:45', '17:46'])
-    expect(punches.find((p) => p.originalTime === '07:40')?.mergedScans).toEqual(['07:41'])
+    expect(all).toEqual(['07:40', '07:50', '13:00', '13:50', '17:45', '17:46'])
+    expect(punches.find((p) => p.originalTime === '07:40')?.mergedScans).toEqual(['07:50'])
     expect(punches.find((p) => p.originalTime === '17:45')?.mergedScans).toEqual(['17:46'])
 
     await openReview(page, week.start)
@@ -124,26 +124,26 @@ test.describe('E2E-12: Scans within 2 minutes merge', () => {
 
     await openDay(page, DEV, dates[0])
     await expect(page.getByTestId('editor-merged')).toBeVisible()
-    await expect(page.getByTestId('editor-merged')).toContainText('07:40 07:41')
+    await expect(page.getByTestId('editor-merged')).toContainText('07:40 07:50')
     await expect(page.getByTestId('editor-merged')).toContainText('17:45 17:46')
   })
 })
 
 test.describe('E2E-13: Scans outside the window stay separate', () => {
-  test('07:40 and 07:43 are two punches forming one complete pair', async ({ page }) => {
+  test('07:40 and 07:51 are two punches forming one complete pair', async ({ page }) => {
     const punches = await getPunchRows(week.start, { employeeCode: GITA })
-    expect(punches.map((p) => p.currentTime)).toEqual(['07:40', '07:43'])
+    expect(punches.map((p) => p.currentTime)).toEqual(['07:40', '07:51'])
     expect(punches.every((p) => p.mergedScans.length === 0)).toBe(true)
 
     await openReview(page, week.start)
     await expect(dayCell(page, GITA, dates[0])).not.toHaveAttribute('data-merged', 'true')
     await expect(dayCell(page, GITA, dates[0])).not.toHaveAttribute('data-needs-fixing', 'true')
-    expect(await cellText(page, GITA, dates[0])).toContain('07:40–07:43')
+    expect(await cellText(page, GITA, dates[0])).toContain('07:40–07:51')
     await openDay(page, GITA, dates[0])
     await expect(page.getByTestId('editor-pair-1-in')).toHaveValue('07:40')
-    await expect(page.getByTestId('editor-pair-1-out')).toHaveValue('07:43')
+    await expect(page.getByTestId('editor-pair-1-out')).toHaveValue('07:51')
     await expect(page.getByTestId('editor-merged')).toHaveCount(0)
-    await expect(page.getByTestId('editor-day-regular')).toHaveText('0.05')
+    await expect(page.getByTestId('editor-day-regular')).toHaveText('0.18')
   })
 })
 

@@ -89,7 +89,8 @@ Payroll                 Existing generation flow, adjustments, slips
 ### Pairing and Duplicate Scans
 
 - Each day's punches are sorted by time and paired in order: first with second, third with fourth, and so on.
-- Scans within 2 minutes of the punch being kept (inclusive) merge into that earlier punch. A later scan outside the window starts a new punch. The original scans are kept, and the day shows a **Merged** marker.
+- Scans within 10 minutes of the punch being kept (inclusive) merge into that earlier punch. A later scan outside the window starts a new punch. The original scans are kept, and the day shows a **Merged** marker.
+- The 10-minute window was tuned against the 29 Oct–4 Nov 2026 eTimeOffice week, where repeat scans came 5 to 10 minutes apart.
 - An odd number of punches leaves an **incomplete pair**.
 - No punch is treated as special. Exact 10:00 and 10:30 punches pair like any others.
 - Pairing and merging happen only on load. Editing or deleting a punch doesn't re-pair the others, and times entered by hand aren't merged.
@@ -112,7 +113,7 @@ overtimeHours = max(0, dailyTotal − 8)
 - The grid lists every active employee: `isActive = true`, not resigned before the week. It also lists inactive or resigned employees approved in the employee check.
 - **Needs fixing** shows days with an incomplete pair. These block approval.
 - **No punches this week** shows employees with no punches. These don't block approval, and the user can add pairs by hand.
-- Complete days that look unusual are highlighted without blocking approval. Proposed defaults, to be tuned with real data: a day under 4 hours, or a single pair over 6 hours. A day with no punches isn't flagged.
+- Complete days that look unusual are highlighted without blocking approval: a day under 4 hours, or a single pair over 9 hours. A day with no punches isn't flagged. The 9-hour value was tuned against the 29 Oct–4 Nov 2026 eTimeOffice week, where early shifts such as 05:13–13:45 are normal; the 4-hour value is unchanged.
 - The user can change any time in a day, add or delete a pair, or delete a stray punch. Deleting can leave a day at zero hours.
 - Saved times must be valid `HH:mm`, each OUT must be after its IN, and pairs can't overlap.
 
@@ -316,10 +317,10 @@ AND regularHours = 8.00
 AND overtimeHours = 1.25
 ```
 
-### E2E-12: Scans within 2 minutes merge
+### E2E-12: Scans within 10 minutes merge
 
 ```
-GIVEN an employee's scans are 07:40, 07:41, 13:00, 13:50, 17:45, 17:46
+GIVEN an employee's scans are 07:40, 07:50, 13:00, 13:50, 17:45, 17:46
 WHEN the week loads
 THEN the punches used are 07:40, 13:00, 13:50, 17:45
 AND the day shows a "Merged" marker
@@ -329,10 +330,10 @@ AND the original scans are still stored
 ### E2E-13: Scans outside the window stay separate
 
 ```
-GIVEN an employee's scans are 07:40 and 07:43
+GIVEN an employee's scans are 07:40 and 07:51
 WHEN the week loads
 THEN both remain separate punches
-AND the day has one complete pair, 07:40–07:43
+AND the day has one complete pair, 07:40–07:51
 ```
 
 ### E2E-14: Incomplete pair blocks approval

@@ -39,7 +39,7 @@ export function calculateDailyHours(pairs: CompletePair[]): {
   }
 }
 
-/** A complete day under 4 hours, or with a single pair over 6 hours, is highlighted. */
+/** A complete day under UNUSUAL_DAY_MIN_HOURS, or with a single pair over UNUSUAL_SINGLE_PAIR_MAX_HOURS, is highlighted. */
 export function isUnusualDay(pairs: CompletePair[]): { unusual: boolean; reason: string | null } {
   if (pairs.length === 0) return { unusual: false, reason: null }
 

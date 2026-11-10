@@ -248,7 +248,7 @@ describe('countUnusualDays', () => {
   it('counts unusual days across employees', () => {
     const a = gridEmployee('1', 'A', { '2026-11-05': apiPair('a', 0, '08:00', '11:10') })
     const b = gridEmployee('2', 'B', {
-      '2026-11-05': apiPair('b', 0, '08:00', '14:30'),
+      '2026-11-05': apiPair('b', 0, '08:00', '17:30'),
       '2026-11-06': fullDayRows('c'),
     })
     expect(countUnusualDays([a, b])).toBe(2)

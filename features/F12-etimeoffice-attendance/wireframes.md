@@ -343,8 +343,8 @@ Sized for the smallest common laptop, 1366×768. Above that, day columns widen a
 - **Edits save as you go** and survive leaving the page (E2E-20). The week stays Ready for review.
 - **Needs fixing filter:** shows employees with at least one incomplete day, with their other days dimmed to `opacity-40`. The count is days. A fixed row stays visible until the editor closes, so the list doesn't shift mid-task.
 - **No punches this week filter:** shows employees with no punches. These don't block approval. Under Open Item 3, this list could be long (33 enrolled of 102 in the October report).
-- **Unusual days filter** is an addition to the spec's two filters, for reaching highlighted days without scrolling. It filters only and never blocks. Unusual uses the proposed defaults: under 4 hours, or a single pair over 6 hours. A day with no pairs isn't highlighted.
-- **Tooltips:** a highlighted cell states its reason, for example "Under 4 hours (3.17)" or "One pair over 6 hours (07:00–14:00)". Icon markers read "Merged" and "Edited".
+- **Unusual days filter** is an addition to the spec's two filters, for reaching highlighted days without scrolling. It filters only and never blocks. Unusual means under 4 hours, or a single pair over 9 hours; the 9-hour value was tuned against the 29 Oct–4 Nov 2026 eTimeOffice week. A day with no pairs isn't highlighted.
+- **Tooltips:** a highlighted cell states its reason, for example "Under 4 hours (3.17)" or "One pair over 9 hours (05:00–14:30)". Icon markers read "Merged" and "Edited".
 - **Color is never the only signal:** unusual has a left border, Needs fixing has `--:--`, and the markers are distinct icons.
 - **Employee check link:** a text link in the filter bar overflow, "Employee check (2 decisions)".
 - **Example dates:** E2E-14's lone 18:26 punch is on 12 Nov, which is in the following week. It is drawn on Fri 6 Nov here so it stays inside the 5–11 Nov example.

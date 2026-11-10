@@ -84,14 +84,14 @@ describe('isUnusualDay (US-12.16)', () => {
     expect(isUnusualDay([pair('08:00', '12:00')])).toEqual({ unusual: false, reason: null })
   })
 
-  it('flags a single pair over 6 hours', () => {
-    const result = isUnusualDay([pair('08:00', '14:01')])
+  it('flags a single pair over 9 hours', () => {
+    const result = isUnusualDay([pair('06:00', '15:01')])
     expect(result.unusual).toBe(true)
-    expect(result.reason).toBe('One pair over 6 hours (08:00–14:01)')
+    expect(result.reason).toBe('One pair over 9 hours (06:00–15:01)')
   })
 
-  it('does not flag a pair of exactly 6 hours', () => {
-    expect(isUnusualDay([pair('08:00', '14:00')])).toEqual({ unusual: false, reason: null })
+  it('does not flag a pair of exactly 9 hours', () => {
+    expect(isUnusualDay([pair('06:00', '15:00')])).toEqual({ unusual: false, reason: null })
   })
 
   it('does not flag a normal two-pair day', () => {
@@ -106,8 +106,8 @@ describe('isUnusualDay (US-12.16)', () => {
     expect(isUnusualDay([pair('08:00', '09:00'), pair('10:00', '11:00')]).unusual).toBe(true)
   })
 
-  it('does not flag two 3-hour pairs (total 6 h, no single pair over 6 h)', () => {
-    expect(isUnusualDay([pair('08:00', '11:00'), pair('12:00', '15:00')]).unusual).toBe(false)
+  it('does not flag two 5-hour pairs (total 10 h, no single pair over 9 h)', () => {
+    expect(isUnusualDay([pair('06:00', '11:00'), pair('12:00', '17:00')]).unusual).toBe(false)
   })
 })
 

@@ -66,23 +66,25 @@ describe('mergeScans (US-12.11)', () => {
     expect(result.mergedInto).toEqual({ '07:40': ['07:41'], '17:45': ['17:46'] })
   })
 
-  it('includes a scan at exactly 2 minutes', () => {
-    const result = mergeScans(['07:40', '07:42'])
+  it('includes a scan at exactly 10 minutes', () => {
+    const result = mergeScans(['07:40', '07:50'])
     expect(result.punches).toEqual(['07:40'])
     expect(result.merged).toBe(true)
+    expect(result.mergedInto).toEqual({ '07:40': ['07:50'] })
   })
 
   it('keeps scans outside the window separate', () => {
-    const result = mergeScans(['07:40', '07:43'])
-    expect(result.punches).toEqual(['07:40', '07:43'])
+    const result = mergeScans(['07:40', '07:51'])
+    expect(result.punches).toEqual(['07:40', '07:51'])
     expect(result.merged).toBe(false)
     expect(result.mergedInto).toEqual({})
   })
 
   it('measures from the kept punch, not the previous scan', () => {
-    const result = mergeScans(['07:40', '07:41', '07:42', '07:43'])
-    expect(result.punches).toEqual(['07:40', '07:43'])
-    expect(result.mergedInto).toEqual({ '07:40': ['07:41', '07:42'] })
+    // 07:55 is only 5 minutes after 07:50 but 15 after the kept 07:40, so it starts a new punch.
+    const result = mergeScans(['07:40', '07:45', '07:50', '07:55'])
+    expect(result.punches).toEqual(['07:40', '07:55'])
+    expect(result.mergedInto).toEqual({ '07:40': ['07:45', '07:50'] })
   })
 
   it('merges identical scans', () => {
@@ -103,8 +105,8 @@ describe('mergeScans (US-12.11)', () => {
   })
 
   it('scans just outside the window form a short complete pair', () => {
-    const { punches } = mergeScans(['07:40', '07:43'])
-    expect(pairPunches(punches)).toEqual({ pairs: [{ in: '07:40', out: '07:43' }], incomplete: null })
+    const { punches } = mergeScans(['07:40', '07:51'])
+    expect(pairPunches(punches)).toEqual({ pairs: [{ in: '07:40', out: '07:51' }], incomplete: null })
   })
 
   it('merging happens before pairing: a double scan does not create a false pair', () => {
@@ -195,14 +197,14 @@ describe('buildPunchRowsFromParsed', () => {
 
   it('keeps scans outside the merge window as separate punches', () => {
     const rows = buildPunchRowsFromParsed(
-      ['07:40', '07:43'].map((time) => punch({ time })),
+      ['07:40', '07:51'].map((time) => punch({ time })),
       [emp36],
       [],
       week,
     )
     expect(rows.map((r) => [r.pairIndex, r.position, r.currentTime, r.mergedScansJson])).toEqual([
       [0, 'IN', '07:40', null],
-      [0, 'OUT', '07:43', null],
+      [0, 'OUT', '07:51', null],
     ])
   })
 
