@@ -26,6 +26,7 @@ import {
 } from '../lib/day-draft'
 import { formatHours, formatIstTime, formatDayLong } from '../lib/format'
 import { validateDayPairs } from '../lib/hours'
+import type { DayTarget } from '../lib/review-view'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 import type {
   DayView,
@@ -60,8 +61,8 @@ export type DayReload = DayView | null | 'gone'
 
 /**
  * How one save ended, for the grid header: `true` when it failed. The grid hands one out per save it is told
- * about (`onSaveStart`) and decides whether that save is still new enough to set the header, so a late answer
- * from an old save never overwrites a newer one.
+ * about (`onSaveStart`, with the day the save is for) and keeps the failed days, so a failure stays until a later
+ * save of the same day succeeds.
  */
 export type SaveReport = (failed: boolean) => void
 
@@ -144,8 +145,8 @@ interface EditorBodyProps {
   onStep: (direction: 'previous' | 'next') => void
   onClose: () => void
   onSaved: (result: SavePunchEditResult) => void
-  /** A save is about to be sent. Returns the reporter this save uses to tell the grid header how it ended. */
-  onSaveStart: () => SaveReport
+  /** A save for this day is about to be sent. Returns the reporter this save uses to tell the grid how it ended. */
+  onSaveStart: (target: DayTarget) => SaveReport
   /** The day was changed elsewhere: reload it and return what that found (see DayReload). */
   onDayChanged: () => Promise<DayReload>
 }
@@ -224,12 +225,17 @@ function EditorBody({
    */
   const save = useCallback(async () => {
     const onScreen = () => !closedRef.current
+    const target: DayTarget = { employeeId: employee.employeeId, date: day.date }
 
     const validation = validateDayPairs(toValidationPairs(draftRef.current))
     if (!validation.valid) {
       if (onScreen()) {
         setError({ pairIndex: validation.pairIndex, field: validation.field, message: validation.message })
         setSaveState({ kind: 'invalid' })
+      } else {
+        // An edit queued before the editor closed turns out not to be a valid day: it cannot be sent and nobody
+        // can see the field error any more, so the day is reported as not saved instead of dropped silently.
+        onSaveStart(target)(true)
       }
       return
     }
@@ -244,7 +250,7 @@ function EditorBody({
 
     savingRef.current = true
     if (onScreen()) setSaveState({ kind: 'saving' })
-    const report = onSaveStart()
+    const report = onSaveStart(target)
     try {
       const res = await savePunchEditAction({
         weekId,
@@ -668,8 +674,8 @@ interface DayEditorSheetProps {
   canStepNext: boolean
   onStep: (direction: 'previous' | 'next') => void
   onSaved: (employeeId: string, date: ISODate, result: SavePunchEditResult) => void
-  /** A save is about to be sent; returns the reporter that save uses to tell the grid header how it ended. */
-  onSaveStart: () => SaveReport
+  /** A save for a day is about to be sent; returns the reporter that save uses to tell the grid how it ended. */
+  onSaveStart: (target: DayTarget) => SaveReport
   /** Reloads the review after a DAY_CHANGED refusal and says what it found for the day (see DayReload). */
   onDayChanged: (employeeId: string, date: ISODate) => Promise<DayReload>
 }

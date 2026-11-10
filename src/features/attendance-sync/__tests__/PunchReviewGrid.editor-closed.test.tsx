@@ -19,7 +19,8 @@ import type {
 // to the grid (the reporter it gets from onSaveStart, and onSaved); only a day that left the review during a
 // DAY_CHANGED reload is silent, because the grid closed the editor and cleared the header itself. An edit that
 // was queued behind the in-flight save before the editor closed is still sent, and that save is reported too.
-// After the close a DAY_CHANGED refusal is a failed save, not a reload.
+// After the close a DAY_CHANGED refusal is a failed save, not a reload. The header's "Not saved" is kept per day: a
+// failed day stays listed until a later save of the same day succeeds, and a success on another day does not clear it.
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn(), back: vi.fn() }) }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
@@ -294,7 +295,7 @@ describe('PunchReviewGrid: the user steps to another day while a save is in flig
     expect(screen.getByTestId('editor-pair-1-out')).toHaveValue('16:00') // still the next day's editor
   })
 
-  it('a later save in the new editor clears the "Not saved" the step-away left', async () => {
+  it('a later save of ANOTHER day in the new editor does not clear the "Not saved" the step-away left (the failed day is still unsaved)', async () => {
     renderLive(reviewOf({ rows: rows() }))
     await openAshasDay()
     const inFlight = await saveInFlight()
@@ -307,8 +308,10 @@ describe('PunchReviewGrid: the user steps to another day while a save is in flig
     fireEvent.change(out, { target: { value: '17:00' } })
     fireEvent.keyDown(out, { key: 'Enter' })
 
-    await waitFor(() => expect(screen.getByTestId('saved-status')).toHaveTextContent('Saved'))
-    expect(screen.queryByText('Not saved')).not.toBeInTheDocument()
+    await waitFor(() => expect(cell(ASHA.employeeId, NEXT_DATE)).toHaveTextContent('17:00')) // the second save landed
+    await settle()
+    expect(screen.getByTestId('saved-status')).toHaveTextContent('Not saved')
+    expect(cell(ASHA.employeeId, DATE)).toHaveTextContent('17:47') // the first day still holds what was stored
     expect(save).toHaveBeenCalledTimes(2)
   })
 })

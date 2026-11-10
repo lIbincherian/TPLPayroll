@@ -16,13 +16,14 @@ import type {
 
 // Two grid contracts, each with the failure that would break it:
 //
-//  1. The header's "Saved" / "Not saved" belongs to the newest save only (per-save tokens from onSaveStart). A save
-//     may set the header only when no newer save has reported yet, so a late answer from an old day never
-//     overwrites what a newer save said, and a newer save always replaces an older one's verdict.
-//  2. reloadDay (the DAY_CHANGED reload) closes the editor and tells the user only when the editor still shows the
-//     employee AND day that were reloaded. If the user has moved on while the reload was running, the editor they
-//     are on is left alone (no close, no toast, draft kept), the review data is still updated, and the old save
-//     counts as not saved.
+//  1. The header's "Not saved" is kept per day (a reporter per save from onSaveStart, for the day the save is for).
+//     A failed save puts its day in the set, a later successful save of the SAME day takes it out, and the header
+//     says "Not saved" while any day is in the set. So an older save that fails late is never hidden by a newer
+//     success on another day, and a newer success on another day does not clear an older failure.
+//  2. reloadDay (the DAY_CHANGED reload) looks at the editor that is open NOW. If that editor's employee or day is
+//     gone from the reloaded review (whichever day it shows) it is closed with the notice; if it shows something that
+//     still exists it is left alone (no close, no toast, draft kept) and only the review data is updated, and the old
+//     save counts as not saved.
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn(), back: vi.fn() }) }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
@@ -207,7 +208,7 @@ const allRows = () => [...ASHA_DAY1, ...ASHA_DAY2, ...RAVI_ROWS]
 
 // ─── 1. The header follows the newest save ────────────────────────────────────
 
-describe('PunchReviewGrid header: the newest save decides "Saved" / "Not saved"', () => {
+describe('PunchReviewGrid header: "Not saved" is kept per day', () => {
   async function twoSavesInFlight() {
     renderLive(reviewOf({ rows: allRows() }))
     await openDay(ASHA.employeeId, DATE)
@@ -232,39 +233,36 @@ describe('PunchReviewGrid header: the newest save decides "Saved" / "Not saved"'
     expect(header()).not.toHaveTextContent(/^Saved/)
   })
 
-  it('an older save that fails late cannot overwrite the success of a newer save (the header belongs to the newest save)', async () => {
+  it('an older save that fails late still shows "Not saved": the newer success was for another day', async () => {
     const { older, newer } = await twoSavesInFlight()
     newer.resolve(day2With1700())
     await waitFor(() => expect(header()).toHaveTextContent('Saved'))
 
     older.resolve(weekLocked)
-    await settle()
 
-    expect(header()).toHaveTextContent('Saved')
-    expect(screen.queryByText('Not saved')).not.toBeInTheDocument()
+    await waitFor(() => expect(header()).toHaveTextContent('Not saved'))
   })
 
-  it('an older save that fails late is ignored the same way when the network drops', async () => {
+  it('an older save that fails late shows "Not saved" the same way when the network drops', async () => {
     const { older, newer } = await twoSavesInFlight()
     newer.resolve(day2With1700())
     await waitFor(() => expect(header()).toHaveTextContent('Saved'))
 
     older.reject(new Error('Failed to fetch'))
-    await settle()
 
-    expect(header()).toHaveTextContent('Saved')
-    expect(screen.queryByText('Not saved')).not.toBeInTheDocument()
+    await waitFor(() => expect(header()).toHaveTextContent('Not saved'))
   })
 
-  it('a newer save that succeeds clears the failure the older save reported first', async () => {
+  it('a newer save of another day that succeeds does not clear the failure the older day reported first', async () => {
     const { older, newer } = await twoSavesInFlight()
     older.resolve(weekLocked)
-    await waitFor(() => expect(header()).toHaveTextContent('Not saved')) // nothing newer has reported, so this stands
+    await waitFor(() => expect(header()).toHaveTextContent('Not saved'))
 
     newer.resolve(day2With1700())
 
-    await waitFor(() => expect(header()).toHaveTextContent('Saved'))
-    expect(screen.queryByText('Not saved')).not.toBeInTheDocument()
+    await waitFor(() => expect(cell(ASHA.employeeId, NEXT_DATE)).toHaveTextContent('17:00')) // the newer save landed
+    await settle()
+    expect(header()).toHaveTextContent('Not saved') // the first day is still unsaved
   })
 
   it('a newer save that fails replaces the success the older save reported first', async () => {
@@ -426,11 +424,13 @@ describe('PunchReviewGrid reloadDay: the editor is closed only when it still sho
     await settle()
   }
 
-  it('the user stepped to the next day of the SAME employee while the reload ran and that employee is gone: the guard sees another day than the refused one and shows no toast', async () => {
+  it('the user stepped to the next day of the SAME employee while the reload ran and that employee is gone: the editor shows a day that no longer exists, so it closes with the toast', async () => {
     await steppedToAnotherDayOfAshaWhileAshaIsGone()
 
-    expect(toast.error).not.toHaveBeenCalled()
-    expect(header()).toHaveTextContent('Not saved') // the refused save counts as not saved
+    expect(toast.error).toHaveBeenCalledTimes(1)
+    expect(toast.error).toHaveBeenCalledWith("That employee is no longer in this week's review.")
+    expect(screen.queryByTestId('day-editor')).not.toBeInTheDocument()
+    expect(header()).not.toBeInTheDocument() // the day left the review: nothing is left to save, so nothing is "Not saved"
     expect(save).toHaveBeenCalledTimes(1)
   })
 

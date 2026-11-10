@@ -17,7 +17,9 @@ import type {
 // out one per save, and the header trusts that each save reports through its own):
 //
 //  - a reporter is taken once for each request that is sent, before it is sent, and never when nothing is sent
-//    (an invalid draft, or a draft equal to what is saved);
+//    (an invalid draft, or a draft equal to what is saved), with one exception: an edit queued before the editor
+//    closed that is invalid when it is flushed is reported as a failure for its day (a reporter taken for that);
+//  - the reporter is asked for with the day the save is for;
 //  - each save reports exactly once, through its own reporter, with its own outcome;
 //  - an edit queued behind a save is sent once the save returns, as ONE follow-up that carries every queued edit,
 //    whether the editor is still open, the user stepped to another day, or the editor closed;
@@ -246,7 +248,7 @@ describe.each(LEAVE)('a save with an edit queued behind it when %s', (_label, ho
     expect(second.pairs[1].out.time).toBe('17:30') // the first save's edit is part of what is sent
   })
 
-  it('a queued edit that is invalid sends nothing and takes no reporter', async () => {
+  it('a queued edit that is invalid sends nothing; once the editor is gone it is reported as a failure for its day, not dropped silently', async () => {
     const view = renderEditor()
     const first = await saveInFlight()
     enter('editor-pair-1-in', '7:3x') // not a time
@@ -257,8 +259,15 @@ describe.each(LEAVE)('a save with an edit queued behind it when %s', (_label, ho
     await settle()
 
     expect(save).toHaveBeenCalledTimes(1)
-    expect(onSaveStart).toHaveBeenCalledTimes(1)
     expect(reporters[0].mock.calls).toEqual([[false]])
+    if (how === 'stayOpen') {
+      // The field error is on screen, so the header is left alone and no reporter is taken.
+      expect(onSaveStart).toHaveBeenCalledTimes(1)
+    } else {
+      expect(onSaveStart).toHaveBeenCalledTimes(2)
+      expect(onSaveStart).toHaveBeenLastCalledWith({ employeeId: 'emp-36', date: DATE })
+      expect(reporters[1].mock.calls).toEqual([[true]])
+    }
   })
 
   it('a queued edit that puts the day back to what was just saved sends nothing', async () => {

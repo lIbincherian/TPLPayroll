@@ -230,7 +230,8 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
   const [search, setSearch] = useState('')
   const [openCell, setOpenCell] = useState<DayTarget | null>(null)
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => new Set())
-  const [saveFailed, setSaveFailed] = useState(false)
+  // The days whose last save failed, by day key (employee, date and mode). See beginSave.
+  const [failedDays, setFailedDays] = useState<ReadonlySet<string>>(() => new Set())
   const [approveOpen, setApproveOpen] = useState(false)
   const [reopenOpen, setReopenOpen] = useState(false)
   const [changedDays, setChangedDays] = useState<number | null>(null)
@@ -317,7 +318,6 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
   const closeEditor = useCallback(() => {
     setOpenCell(null)
     setPinnedIds(new Set())
-    setSaveFailed(false)
     if (isDesktop) focusCell(lastFocusKey.current)
   }, [focusCell, isDesktop])
 
@@ -327,25 +327,47 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
     openCellRef.current = openCell
   }, [openCell])
 
+  // The header's "Not saved" is kept per day. A day is in the set from a failed save until a later save of that
+  // same day succeeds (or the day leaves the review), so a failure is never hidden by a success on another day.
+  const modeKey = mode.kind === 'CORRECTION' ? `CORRECTION:${mode.payrollRunId}` : 'LIVE'
+  const dayKey = useCallback((target: DayTarget) => `${target.employeeId}|${target.date}|${modeKey}`, [modeKey])
+  const setDayFailed = useCallback((key: string, failed: boolean) => {
+    setFailedDays((current) => {
+      if (current.has(key) === failed) return current
+      const next = new Set(current)
+      if (failed) next.add(key)
+      else next.delete(key)
+      return next
+    })
+  }, [])
+
   // The editor's save was refused because the day moved on: reload the review and hand back the latest view,
-  // null if the reload failed, or 'gone' (after closing the editor) if the employee left the review. The editor
-  // is closed and the user told only when it still shows that employee and day; if the user has stepped to or
-  // opened another day meanwhile, that editor and its draft are left alone, the review data is just updated,
-  // and null tells the old save it has nothing to show (so it counts as not saved).
+  // null if the reload failed or the user has moved on to a day that still exists, or 'gone' if the day left the
+  // review and the grid closed the editor. The editor the user has open NOW decides: if its employee or day is no
+  // longer in the new review (whichever day it shows) there is nothing left to show, so it is closed and the user
+  // told; if it shows something that still exists it, and its draft, are left alone and only the review data is
+  // updated. Returning null makes the old save count as not saved.
   const reloadDay = useCallback(
     async (employeeId: string, date: ISODate): Promise<DayReload> => {
       const res = await getPunchReviewAction(weekId, mode)
       if (!res.ok) return null
       setReview(res.data)
-      const day = res.data.employees.find((e) => e.employeeId === employeeId)?.days.find((d) => d.date === date) ?? null
-      if (day) return day
+      const dayOf = (target: DayTarget) =>
+        res.data.employees.find((e) => e.employeeId === target.employeeId)?.days.find((d) => d.date === target.date) ?? null
+      const day = dayOf({ employeeId, date })
       const shown = openCellRef.current
-      if (!shown || shown.employeeId !== employeeId || shown.date !== date) return null
-      closeEditor()
-      toast.error("That employee is no longer in this week's review.")
+      const shownGone = shown !== null && dayOf(shown) === null
+      if (shownGone) {
+        closeEditor()
+        toast.error("That employee is no longer in this week's review.")
+        setDayFailed(dayKey(shown), false) // nothing is left to save on it
+      }
+      if (day) return day
+      if (!shownGone) return null
+      setDayFailed(dayKey({ employeeId, date }), false)
       return 'gone'
     },
-    [weekId, mode, closeEditor],
+    [weekId, mode, closeEditor, dayKey, setDayFailed],
   )
 
   function stepEditor(direction: 'previous' | 'next') {
@@ -364,24 +386,26 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
   }, [openCell])
 
   function handleSaved(employeeId: string, date: ISODate, result: SavePunchEditResult) {
-    setReview((current) => applySaveResult(current, employeeId, date, result))
+    setReview((current) => {
+      const next = applySaveResult(current, employeeId, date, result)
+      // "Saved <time>" is the latest success, even when a slower, older save lands after a newer one.
+      return current.lastSavedAt && next.lastSavedAt && current.lastSavedAt > next.lastSavedAt
+        ? { ...next, lastSavedAt: current.lastSavedAt }
+        : next
+    })
     refreshChangedDays(600)
   }
 
-  // The header's "Saved" / "Not saved" belongs to the newest save only. Saves are numbered as they start, and a
-  // save may set the header only if no newer save has reported yet. A late answer from an old day (the user
-  // stepped on or closed the editor while it was in flight) therefore never overwrites a newer failure, while a
-  // newer success still clears an older failure.
-  const savesStarted = useRef(0)
-  const newestReportedSave = useRef(0)
-  const beginSave = useCallback((): SaveReport => {
-    const token = ++savesStarted.current
-    return (failed) => {
-      if (token < newestReportedSave.current) return
-      newestReportedSave.current = token
-      setSaveFailed(failed)
-    }
-  }, [])
+  // Each save reports how it ended through its own reporter, for the day it was made on: a failure puts the day
+  // in the set, and a later successful save of the same day takes it out. The header says "Not saved" while any
+  // day is in the set, and "Saved <time>" otherwise.
+  const beginSave = useCallback(
+    (target: DayTarget): SaveReport => {
+      const key = dayKey(target)
+      return (failed) => setDayFailed(key, failed)
+    },
+    [dayKey, setDayFailed],
+  )
 
   // ── Approve and reopen ──────────────────────────────────────────────────────
 
@@ -451,7 +475,7 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
     </button>
   )
 
-  const savedText = saveFailed ? (
+  const savedText = failedDays.size > 0 ? (
     <span className="text-xs text-rose-600" data-testid="saved-status">
       Not saved
     </span>
