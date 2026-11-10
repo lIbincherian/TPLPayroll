@@ -254,12 +254,13 @@ describe('approveRevision: a stale preview cannot be approved', () => {
     expect(tx.attendanceRecord.deleteMany).not.toHaveBeenCalled()
   })
 
-  it('a legacy draft with no session approves without locking or reading punches', async () => {
+  it('a legacy draft with no session approves under the week lock (found by start date), without reading punches', async () => {
     setup({ before: null })
 
     await expect(approveRevision(DRAFT_ID)).resolves.toMatchObject({ status: 'APPROVED' })
 
-    expect(lockWeekRow).not.toHaveBeenCalled()
+    expect(lockWeekRow).toHaveBeenCalledTimes(1)
+    expect(lockWeekRow).toHaveBeenCalledWith(tx, { weekStart: WEEK_START })
     expect(tx.payrollCorrectionSession.findUnique).not.toHaveBeenCalled()
     expect(tx.payrollCorrectionSession.update).not.toHaveBeenCalled()
     expect(tx.attendancePunch.count).not.toHaveBeenCalled()

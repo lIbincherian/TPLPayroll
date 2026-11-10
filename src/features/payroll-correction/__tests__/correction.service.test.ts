@@ -10,6 +10,7 @@ vi.mock('@/lib/prisma', () => ({
     },
     payrollRevision: {
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
@@ -300,6 +301,8 @@ describe('recalculateAndCreateRevision', () => {
       ...run,
       revisions: [revision],
     } as never)
+    // The current revision is read again inside the transaction, once the week is locked.
+    vi.mocked(prisma.payrollRevision.findFirst).mockResolvedValue(revision as never)
 
     vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue({
       id: 'upload-uuid-1',

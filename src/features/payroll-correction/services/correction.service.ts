@@ -565,11 +565,12 @@ async function loadCorrectionHours(
  * current and the PayrollRun is untouched until `approveRevision`. Recalculating again
  * replaces the draft.
  *
- * The calculation and the writes are one transaction that first locks the week's row, and the
- * punches are read inside it, so the draft always matches the punches at commit. A punch edit
- * that lands after it clears the session's draft pointer (savePunchEdit takes the same lock);
- * one that landed before it is included. Adjustment changes are written in the same
- * transaction, so a failed draft leaves them as they were.
+ * The calculation and the writes are one transaction that first locks the week's row (with or
+ * without a correction session), and the punches and the current revision are read inside it, so
+ * the draft always matches the punches at commit and is numbered and diffed against the revision
+ * that is current at that moment. A punch edit that lands after it clears the session's draft
+ * pointer (savePunchEdit takes the same lock); one that landed before it is included. Adjustment
+ * changes are written in the same transaction, so a failed draft leaves them as they were.
  */
 export async function recalculateAndCreateRevision(
   input: CreateRevisionInput,
@@ -592,8 +593,8 @@ export async function recalculateAndCreateRevision(
     throw new CorrectionServiceError('NO_CORRECTION_TYPE_SELECTED', 'At least one correction type must be selected')
   }
 
-  const currentRevision = run.revisions[0]
-  if (!currentRevision) {
+  // Fast fail only: the current revision is read again under the lock, and that one is used.
+  if (!run.revisions[0]) {
     throw new CorrectionServiceError('REVISION_NOT_FOUND', 'No current revision found')
   }
 
@@ -613,6 +614,7 @@ export async function recalculateAndCreateRevision(
 
   return prisma.$transaction(
     async (tx) => {
+      // Every draft takes the week lock first, with a session or without one.
       if (session) {
         await lockWeekRow(tx, { id: session.attendanceUploadId })
         // The session was read before the lock; it may have been abandoned or applied since.
@@ -620,6 +622,15 @@ export async function recalculateAndCreateRevision(
         if (!current || current.status !== 'IN_PROGRESS' || current.payrollRunId !== run.id) {
           throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'This correction is no longer in progress')
         }
+      } else {
+        // Without a session the week is found by its start date. No active row for it is not an error.
+        await lockWeekRow(tx, { weekStart })
+      }
+
+      // A revision may have been approved since the read above; draft against the one that is current now.
+      const currentRevision = await tx.payrollRevision.findFirst({ where: { payrollRunId: run.id, isCurrent: true } })
+      if (!currentRevision) {
+        throw new CorrectionServiceError('REVISION_NOT_FOUND', 'No current revision found')
       }
 
       const editsPunches = session
@@ -956,6 +967,10 @@ export async function approveRevision(
             decisions.map((d) => ({ employeeId: d.employeeId, decision: d.decision as 'APPROVED' | 'REJECTED' })),
           )
         }
+      } else {
+        // A draft made without a session still promotes under the week lock, so it cannot interleave
+        // with a draft being written or with another promotion.
+        await lockWeekRow(tx, { weekStart: run.payrollWeekStartDate })
       }
 
       // Only one caller can promote the draft (guards a double approve).

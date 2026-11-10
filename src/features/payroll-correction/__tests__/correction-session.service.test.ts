@@ -190,7 +190,7 @@ function makeTx() {
   const m = () => vi.fn()
   const tx = {
     payrollRun: { findUnique: m(), update: m() },
-    payrollRevision: { updateMany: m(), deleteMany: m(), create: m() },
+    payrollRevision: { findFirst: m(), updateMany: m(), deleteMany: m(), create: m() },
     payrollRunEmployee: { findMany: m(), deleteMany: m(), createMany: m() },
     payrollCorrectionSession: { create: m(), update: m(), findUnique: m(), findFirst: m() },
     payrollAdjustmentApplication: { findMany: m(), updateMany: m() },
@@ -203,6 +203,8 @@ function makeTx() {
   }
   // Every writer reads its session again under the week lock; unless a test says otherwise it is still in progress.
   tx.payrollCorrectionSession.findUnique.mockResolvedValue(makeSession())
+  // recalculateAndCreateRevision reads the current revision again under the lock.
+  tx.payrollRevision.findFirst.mockResolvedValue(makeRevision())
   return tx
 }
 type Tx = ReturnType<typeof makeTx>

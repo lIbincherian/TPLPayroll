@@ -171,7 +171,7 @@ function makeTx() {
   const m = () => vi.fn()
   const tx = {
     payrollRun: { findUnique: m(), update: m() },
-    payrollRevision: { updateMany: m(), deleteMany: m(), create: m() },
+    payrollRevision: { findFirst: m(), updateMany: m(), deleteMany: m(), create: m() },
     payrollRunEmployee: { findMany: m(), deleteMany: m(), createMany: m() },
     payrollCorrectionSession: { create: m(), update: m(), findUnique: m(), findFirst: m() },
     payrollAdjustmentApplication: { findMany: m(), updateMany: m() },
@@ -183,6 +183,8 @@ function makeTx() {
     auditLog: { create: m() },
   }
   tx.payrollCorrectionSession.findUnique.mockResolvedValue(makeSession())
+  // recalculateAndCreateRevision reads the current revision again under the lock.
+  tx.payrollRevision.findFirst.mockResolvedValue(makeRevision())
   return tx
 }
 type Tx = ReturnType<typeof makeTx>
@@ -1102,7 +1104,7 @@ describe('item 3: the draft is calculated and written in one transaction under t
     expect(prisma.payrollCorrectionSession.update).not.toHaveBeenCalled()
   })
 
-  it('without a session (an adjustments-only or legacy draft): no lock, no session read, no punch count, still one transaction, no pointer', async () => {
+  it('without a session (an adjustments-only or legacy draft): locked by week start, no session read, no punch count, still one transaction, no pointer', async () => {
     const tx = setup()
     tx.attendanceUpload.findFirst.mockResolvedValue({ id: UPLOAD_ID })
     tx.attendanceRecord.findMany.mockResolvedValue([
@@ -1117,7 +1119,8 @@ describe('item 3: the draft is calculated and written in one transaction under t
     })
 
     expect(result).toMatchObject({ payrollRunId: RUN_ID, revisionNumber: 2, employeeCount: 1 })
-    expect(lockWeekRow).not.toHaveBeenCalled()
+    expect(lockWeekRow).toHaveBeenCalledTimes(1)
+    expect(lockWeekRow).toHaveBeenCalledWith(tx, { weekStart: WEEK_START })
     expect(prisma.payrollCorrectionSession.findUnique).not.toHaveBeenCalled()
     expect(tx.payrollCorrectionSession.findUnique).not.toHaveBeenCalled()
     expect(tx.attendancePunch.count).not.toHaveBeenCalled()
