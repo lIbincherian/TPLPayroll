@@ -86,6 +86,17 @@ export async function weekHasEditsOrDecisions(
   return { hasEdits: edited.length > 0, editedDays: days.size, decisions, edits }
 }
 
+/**
+ * Thrown inside the replace transaction of a SCHEDULED pull when the locked read finds edits or
+ * decisions that the pre-fetch check did not see. Never leaves syncWeek: it rolls the transaction
+ * back and is turned into the SKIPPED_HAS_EDITS outcome.
+ */
+class ScheduledSkip extends Error {
+  constructor(readonly edits: EditsAndDecisions) {
+    super('Scheduled sync: the week has edits or decisions')
+  }
+}
+
 export async function getPullWarning(
   weekStart: ISODate,
 ): Promise<{ hasData: boolean; editedDays: number; decisions: number }> {
@@ -185,6 +196,8 @@ export async function syncWeek(input: {
     return { outcome: 'SKIPPED_PAYROLL_APPROVED' }
   }
 
+  // A scheduled pull leaves a week with edits or decisions alone. This check runs without the week
+  // lock and saves the API call in the common case; the replace transaction repeats it under the lock.
   if (trigger === 'SCHEDULED') {
     const edits = await weekHasEditsOrDecisions(row.id)
     const hasEditsOrDecisions = edits.hasEdits || edits.decisions > 0
@@ -273,6 +286,14 @@ export async function syncWeek(input: {
 
           // What is about to be thrown away, read after the lock so it matches what is deleted.
           const discard = await weekHasEditsOrDecisions(row.id, tx)
+          // The pre-fetch check ran without the lock; an edit may have landed while the API call ran.
+          // A scheduled pull never replaces edits (a manual one has been confirmed by the user).
+          if (
+            trigger === 'SCHEDULED' &&
+            !shouldScheduledSyncReplace({ hasEditsOrDecisions: discard.hasEdits || discard.decisions > 0, status: 'REVIEW' })
+          ) {
+            throw new ScheduledSkip(discard)
+          }
           discarded =
             discard.editedDays > 0 || discard.decisions > 0
               ? {
@@ -336,6 +357,15 @@ export async function syncWeek(input: {
       )
       lockReleased = true
     } catch (error) {
+      if (error instanceof ScheduledSkip) {
+        await prisma.attendanceUpload.update({ where: { id: row.id }, data: { staleNoticeAt: now, syncLockedAt: null } })
+        lockReleased = true
+        await recordScheduledSkip(row.id, week, 'SKIPPED_HAS_EDITS', 'Scheduled sync skipped: week has edits', {
+          editedDays: error.edits.editedDays,
+          decisions: error.edits.decisions,
+        })
+        return { outcome: 'SKIPPED_HAS_EDITS' }
+      }
       if (error instanceof AttendanceSyncError && error.code === 'WEEK_APPROVED') {
         return await recordFailure('WEEK_CHANGED', SYNC_FAILURE_COPY.WEEK_CHANGED)
       }
