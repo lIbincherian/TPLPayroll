@@ -4,6 +4,7 @@ import {
   initiateCorrection,
   reverseAdjustmentApplication,
   approveSkippedAdjustment,
+  approveAdjustmentInCorrection,
   recalculateAndCreateRevision,
   approveRevision,
   getRevisionHistory,
@@ -25,6 +26,7 @@ import type {
   AbandonCorrectionResult,
 } from '@/features/payroll-correction/types/correction.types'
 import { AttendanceSyncError } from '@/features/attendance-sync/types/attendance-sync.types'
+import { AdjustmentServiceError } from '@/features/payroll-adjustments/types/adjustment.types'
 import { redirect } from 'next/navigation'
 
 // ─── Action result wrapper ────────────────────────────────────────────────────
@@ -42,6 +44,7 @@ function err(error: string, code?: string): ActionResult<never> {
 function handleError(e: unknown): ActionResult<never> {
   if (e instanceof CorrectionServiceError) return err(e.message, e.code)
   if (e instanceof AttendanceSyncError) return err(e.message, e.code)
+  if (e instanceof AdjustmentServiceError) return err(e.message, e.code)
   console.error('[CorrectionAction]', e)
   return err('An unexpected error occurred')
 }
@@ -132,6 +135,19 @@ export async function approveSkippedAdjustmentAction(
 ): Promise<ActionResult<{ applicationId: string; approvalStatus: 'APPROVED' }>> {
   try {
     const result = await approveSkippedAdjustment(applicationId)
+    return ok(result)
+  } catch (e) {
+    return handleError(e)
+  }
+}
+
+// ─── approveAdjustmentInCorrectionAction ──────────────────────────────────────
+
+export async function approveAdjustmentInCorrectionAction(
+  applicationId: string,
+): Promise<ActionResult<{ applicationId: string; approvalStatus: 'APPROVED' }>> {
+  try {
+    const result = await approveAdjustmentInCorrection(applicationId)
     return ok(result)
   } catch (e) {
     return handleError(e)

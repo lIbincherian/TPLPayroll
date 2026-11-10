@@ -582,7 +582,9 @@ describe('startAttendanceCorrection', () => {
       where: { id: SESSION_ID },
       data: { correctionReason: 'Bonus fix', correctionTypesJson: ['ADJUSTMENTS'] },
     })
-    expect(tx.attendancePunch.count).not.toHaveBeenCalled()
+    // The only punch read is the check for a copy made earlier (Attendance may have been unticked since).
+    expect(tx.attendancePunch.count).toHaveBeenCalledTimes(1)
+    expect(tx.attendancePunch.count).toHaveBeenCalledWith({ where: { correctionId: SESSION_ID } })
     expect(tx.attendancePunch.findMany).not.toHaveBeenCalled()
     expect(tx.attendancePunch.createMany).not.toHaveBeenCalled()
   })
@@ -835,7 +837,11 @@ describe('approveRevision for an attendance correction', () => {
     opts: { clonedPunches?: number; session?: ReturnType<typeof makeSession> | null; review?: ReturnType<typeof correctedReview> } = {},
   ) {
     withInteractiveTransaction(tx)
-    const session = opts.session === undefined ? makeSession({ draftRevisionId: 'revision-uuid-2' }) : opts.session
+    // An attendance correction: its copied punches are promoted only because Attendance is selected.
+    const session =
+      opts.session === undefined
+        ? makeSession({ draftRevisionId: 'revision-uuid-2', correctionTypesJson: ['ATTENDANCE'] })
+        : opts.session
     vi.mocked(prisma.payrollRevision.findUnique).mockResolvedValue(makeDraft() as never)
     // The session is found before the transaction, and read again inside it (after the week row is locked).
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(session as never)
@@ -1199,15 +1205,15 @@ describe('abandonCorrection', () => {
       payrollRunId: RUN_ID,
       weekStart: '2025-03-06',
     })
-    const edits = (entry.details as { edits: Array<Record<string, unknown>> }).edits
+    const edits = (entry.details as { discarded: { edits: Array<Record<string, unknown>> } }).discarded.edits
     expect(edits).toEqual([
       { punchId: 'c-1', employeeCode: 'EMP-001', date: '2025-03-06', position: 'OUT', original: '17:47', current: '18:00', note: 'Late scan' },
       { punchId: 'c-3', employeeCode: 'EMP-001', date: '2025-03-06', position: 'IN', original: null, current: '09:00', note: null },
       { punchId: 'c-5', employeeCode: 'EMP-001', date: '2025-03-06', position: 'OUT', original: '16:00', current: null, note: null },
       { punchId: 'p-6', employeeCode: 'EMP-001', date: '2025-03-06', position: 'IN', original: '12:00', current: null, note: null },
     ])
-    // The same list is under `discarded.edits` for the audit viewer.
-    expect((entry.details as { discarded: { edits: unknown[] } }).discarded.edits).toEqual(edits)
+    // The list is kept once, under `discarded.edits` (the shape the sync path uses), not repeated at the top level.
+    expect(entry.details).not.toHaveProperty('edits')
   })
 
   it('keeps earlier audit entries: it never updates or deletes an audit row', async () => {
@@ -1235,8 +1241,8 @@ describe('abandonCorrection', () => {
     const result = await abandonCorrection(RUN_ID)
 
     expect(result.discardedEdits).toBe(600)
-    const details = vi.mocked(auditEntry).mock.calls[0][0].details as { edits: unknown[]; summary: string }
-    expect(details.edits).toHaveLength(500)
+    const details = vi.mocked(auditEntry).mock.calls[0][0].details as { discarded: { edits: unknown[] }; summary: string }
+    expect(details.discarded.edits).toHaveLength(500)
     expect(details.summary).toBe('Discarded correction: 600 punch edit(s)')
   })
 

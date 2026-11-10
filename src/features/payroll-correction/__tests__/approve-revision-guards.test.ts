@@ -49,6 +49,9 @@ const session = (overrides: Record<string, unknown> = {}) => ({
   attendanceUploadId: UPLOAD_ID,
   status: 'IN_PROGRESS',
   draftRevisionId: DRAFT_ID,
+  // An attendance correction: its copied punches are promoted only because Attendance is selected.
+  correctionTypesJson: ['ATTENDANCE'],
+  adjustmentSnapshotJson: [],
   attendanceUpload: { id: UPLOAD_ID, payrollWeekStartDate: WEEK_START },
   ...overrides,
 })
@@ -378,8 +381,8 @@ describe('approveRevision carries forward the adjustments of employees the revis
     await approveRevision(DRAFT_ID)
 
     expect(skipAdjustmentApplication).toHaveBeenCalledTimes(2)
-    expect(skipAdjustmentApplication).toHaveBeenNthCalledWith(1, 'app-pending', tx)
-    expect(skipAdjustmentApplication).toHaveBeenNthCalledWith(2, 'app-approved', tx)
+    expect(skipAdjustmentApplication).toHaveBeenNthCalledWith(1, 'app-pending', tx, { originalStatus: undefined })
+    expect(skipAdjustmentApplication).toHaveBeenNthCalledWith(2, 'app-approved', tx, { originalStatus: undefined })
   })
 
   it('does the skipping after the run is updated and before the applications are re-pointed to the new revision', async () => {
@@ -438,7 +441,7 @@ describe('approveRevision carries forward the adjustments of employees the revis
 
     await approveRevision(DRAFT_ID)
 
-    expect(skipAdjustmentApplication).toHaveBeenCalledWith('app-legacy', tx)
+    expect(skipAdjustmentApplication).toHaveBeenCalledWith('app-legacy', tx, { originalStatus: undefined })
   })
 
   it('runs for an attendance correction that deletes every punch of an employee', async () => {
@@ -449,7 +452,7 @@ describe('approveRevision carries forward the adjustments of employees the revis
     await approveRevision(DRAFT_ID)
 
     expect(tx.payrollAdjustmentApplication.findMany.mock.calls[0][0].where.employeeId).toEqual({ notIn: ['emp-2'] })
-    expect(skipAdjustmentApplication).toHaveBeenCalledWith('emp-1-deduction', tx)
+    expect(skipAdjustmentApplication).toHaveBeenCalledWith('emp-1-deduction', tx, { originalStatus: undefined })
     // The corrected attendance still replaces the live one.
     expect(tx.attendanceRecord.deleteMany).toHaveBeenCalled()
   })

@@ -616,7 +616,9 @@ describe('item 14: startAttendanceCorrection copies the punches under the week l
       where: { id: SESSION_ID },
       data: { correctionReason: 'Reverse a deduction', correctionTypesJson: ['ADJUSTMENTS'] },
     })
-    expect(tx.attendancePunch.count).not.toHaveBeenCalled()
+    // The only punch read is the check for a copy made earlier (Attendance may have been unticked since).
+    expect(tx.attendancePunch.count).toHaveBeenCalledTimes(1)
+    expect(tx.attendancePunch.count).toHaveBeenCalledWith({ where: { correctionId: SESSION_ID } })
     expect(tx.attendancePunch.findMany).not.toHaveBeenCalled()
     expect(tx.attendancePunch.createMany).not.toHaveBeenCalled()
   })
@@ -797,7 +799,7 @@ describe('item 15: abandonCorrection discards under the week lock', () => {
     const [entry, client] = vi.mocked(auditEntry).mock.calls[0]
     expect(client).toBe(tx)
     expect(entry).toMatchObject({ actionType: 'DISCARD', entityType: 'ATTENDANCE_WEEK', entityId: UPLOAD_ID })
-    const edits = (entry.details as { edits: Array<Record<string, unknown>> }).edits
+    const edits = (entry.details as { discarded: { edits: Array<Record<string, unknown>> } }).discarded.edits
     expect(edits).toEqual([
       { punchId: 'c-late', employeeCode: 'EMP-001', date: '2025-03-06', position: 'OUT', original: '17:47', current: '19:00', note: 'Late save' },
     ])

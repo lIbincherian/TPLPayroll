@@ -221,7 +221,16 @@ export async function getAdjustmentDetail(id: string): Promise<AdjustmentDetailR
 
 // ─── approveAdjustmentApplication ────────────────────────────────────────────
 
-export async function approveAdjustmentApplication(applicationId: string) {
+/**
+ * Approve an application. `alreadyApplied` is for a correction that puts back an application its
+ * original approval had already applied: the adjustment's balance, next instalment and completion
+ * were handled then, so only the application itself changes (and keeps the amount it was applied at).
+ */
+export async function approveAdjustmentApplication(
+  applicationId: string,
+  options: { alreadyApplied?: boolean } = {},
+) {
+  const alreadyApplied = options.alreadyApplied === true
   const app = await prisma.payrollAdjustmentApplication.findUnique({
     where: { id: applicationId },
     include: { payrollAdjustment: true },
@@ -279,10 +288,19 @@ export async function approveAdjustmentApplication(applicationId: string) {
     data: {
       approvalStatus: 'APPROVED',
       appliedAt: now,
-      appliedAmount,
+      ...(alreadyApplied ? {} : { appliedAmount }),
       carriedForwardToPayrollWeekStartDate: null,
     },
   })
+
+  if (alreadyApplied) {
+    return {
+      ...updated,
+      appliedAmount: Number(updated.appliedAmount),
+      approvalStatus: updated.approvalStatus as 'APPROVED',
+      appliedAt: updated.appliedAt,
+    }
+  }
 
   // ── TOTAL_BALANCE: update remaining balance and possibly complete ─────────
   if (isTotalBalance) {
@@ -413,10 +431,15 @@ export async function approveAdjustmentApplication(applicationId: string) {
  * Skip an application and carry it to the next payroll week. Pass a transaction client
  * as `db` to run the writes inside the caller's transaction (payroll approval does this
  * so a left-out employee's carry-forward commits or rolls back with the approval).
+ *
+ * Skipping an approved application undoes what its approval did to the adjustment. A correction
+ * resets approved applications to PENDING and remembers how they were, so when it carries one
+ * forward it passes `originalStatus: 'APPROVED'` to get that undo for the application it reset.
  */
 export async function skipAdjustmentApplication(
   applicationId: string,
   db: Pick<Prisma.TransactionClient, 'payrollAdjustmentApplication' | 'payrollAdjustment'> = prisma,
+  options: { originalStatus?: 'PENDING' | 'APPROVED' } = {},
 ) {
   const app = await db.payrollAdjustmentApplication.findUnique({
     where: { id: applicationId },
@@ -440,7 +463,7 @@ export async function skipAdjustmentApplication(
   let restoredRemainingBalance: number | null = null
   let revertStatusToActive = false
 
-  if (app.approvalStatus === 'APPROVED') {
+  if ((options.originalStatus ?? app.approvalStatus) === 'APPROVED') {
     const isTotalBalance = adj.recurrenceEndType === 'TOTAL_BALANCE'
     const isFixedWeeks = adj.recurrenceEndType === 'FIXED_WEEKS'
     const appliedAmount = Number(app.appliedAmount)

@@ -20,7 +20,10 @@ import {
   calculateOvertimePay,
   calculateNetPayable,
 } from '@/features/payroll-generation/services/payroll.service'
-import { skipAdjustmentApplication } from '@/features/payroll-adjustments/services/adjustment.service'
+import {
+  approveAdjustmentApplication,
+  skipAdjustmentApplication,
+} from '@/features/payroll-adjustments/services/adjustment.service'
 import { auditEntry } from '@/features/attendance-sync/services/attendance-audit.service'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
 import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
@@ -279,7 +282,8 @@ export async function getActiveCorrection(payrollRunId: string): Promise<Correct
 /**
  * Save the reason and types, and copy the week's approved punches so they can be edited
  * apart from the live set. The live punches and attendance records stay untouched until
- * the revision is approved. Excel-era runs have no punches to copy.
+ * the revision is approved. Excel-era runs have no punches to copy. Saving types without
+ * Attendance deletes a copy made earlier (see `dropPunchCopy`).
  *
  * The transaction locks the week's row first and then checks whether the copy exists, so two
  * concurrent calls cannot both copy (the clone set would hold every punch twice).
@@ -313,9 +317,23 @@ export async function startAttendanceCorrection(
         throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'This correction is no longer in progress.')
       }
 
+      // Attendance unticked after its punches were copied: the copy, its edits and any draft built
+      // from them go (the edits stay in the audit log), so they can never be promoted by mistake.
+      let droppedCopy = false
+      if (!wantsAttendance) {
+        droppedCopy = (
+          await dropPunchCopy(tx, session, upload.payrollWeekStartDate, 'Discarded punch edits (Attendance unticked)')
+        ).hadCopy
+        if (droppedCopy) await deleteDraftRevisions(tx, payrollRunId)
+      }
+
       await tx.payrollCorrectionSession.update({
         where: { id: session.id },
-        data: { correctionReason: input.reason, correctionTypesJson: types },
+        data: {
+          correctionReason: input.reason,
+          correctionTypesJson: types,
+          ...(droppedCopy ? { draftRevisionId: null } : {}),
+        },
       })
       if (!wantsAttendance) return
 
@@ -506,6 +524,41 @@ export async function approveSkippedAdjustment(
   return { applicationId, approvalStatus: 'APPROVED' }
 }
 
+// ─── approveAdjustmentInCorrection ────────────────────────────────────────────
+
+/**
+ * Approve one adjustment application while a correction is open. The reset at the start of the
+ * correction put the week's approved applications back to PENDING but left what their original
+ * approval did to the adjustment (balance taken, completion). An application that was approved then
+ * is put back as it was, without taking the balance a second time or re-capping its amount at what
+ * is left; any other application is approved the usual way.
+ */
+export async function approveAdjustmentInCorrection(
+  applicationId: string,
+): Promise<{ applicationId: string; approvalStatus: 'APPROVED' }> {
+  const app = await prisma.payrollAdjustmentApplication.findUnique({
+    where: { id: applicationId },
+    select: { payrollRunId: true },
+  })
+  if (!app) {
+    throw new CorrectionServiceError('APPLICATION_NOT_FOUND', `Application "${applicationId}" not found`)
+  }
+
+  const session = app.payrollRunId
+    ? await prisma.payrollCorrectionSession.findFirst({
+        where: { payrollRunId: app.payrollRunId, status: 'IN_PROGRESS' },
+        orderBy: { createdAt: 'desc' },
+        select: { adjustmentSnapshotJson: true },
+      })
+    : null
+  const alreadyApplied = parseAdjustmentSnapshot(session?.adjustmentSnapshotJson).some(
+    (entry) => entry.applicationId === applicationId && entry.approvalStatus === 'APPROVED',
+  )
+
+  await approveAdjustmentApplication(applicationId, { alreadyApplied })
+  return { applicationId, approvalStatus: 'APPROVED' }
+}
+
 // ─── recalculateAndCreateRevision ─────────────────────────────────────────────
 
 /**
@@ -563,7 +616,8 @@ async function loadCorrectionHours(
 /**
  * Work out the corrected payroll and save it as a DRAFT revision. The current revision stays
  * current and the PayrollRun is untouched until `approveRevision`. Recalculating again
- * replaces the draft.
+ * replaces the draft. The hours come from the session's copied punches only when its types
+ * include Attendance; otherwise from the approved attendance records.
  *
  * The calculation and the writes are one transaction that first locks the week's row (with or
  * without a correction session), and the punches and the current revision are read inside it, so
@@ -633,9 +687,16 @@ export async function recalculateAndCreateRevision(
         throw new CorrectionServiceError('REVISION_NOT_FOUND', 'No current revision found')
       }
 
-      const editsPunches = session
-        ? (await tx.attendancePunch.count({ where: { correctionId: session.id } })) > 0
-        : false
+      // Punches count only when Attendance is part of this correction. A copy left over from before it
+      // was unticked is thrown away (its edits stay in the audit log), not used for the hours.
+      const wantsAttendance = input.correctionTypes.includes('ATTENDANCE')
+      if (session && !wantsAttendance) {
+        await dropPunchCopy(tx, { id: session.id, attendanceUploadId: session.attendanceUploadId, payrollRunId: run.id }, weekStart, 'Discarded punch edits (Attendance unticked)')
+      }
+      const editsPunches =
+        session && wantsAttendance
+          ? (await tx.attendancePunch.count({ where: { correctionId: session.id } })) > 0
+          : false
 
       // Hours come from the correction's edited punches when it has them, otherwise from the
       // approved attendance records.
@@ -936,6 +997,8 @@ export async function approveRevision(
       // Corrected punches and records, read inside the transaction once the week is locked.
       let clonedPunches = 0
       let correctedRecords: Prisma.AttendanceRecordCreateManyInput[] = []
+      // How the week's adjustment applications looked before the correction reset them.
+      let snapshot: AdjustmentSnapshotEntry[] = []
       if (session) {
         await lockWeekRow(tx, { id: session.attendanceUploadId })
 
@@ -944,8 +1007,15 @@ export async function approveRevision(
           throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'This correction is no longer in progress.')
         }
         if (current.draftRevisionId !== revisionId) throw staleRevisionError()
+        snapshot = parseAdjustmentSnapshot(current.adjustmentSnapshotJson)
 
         clonedPunches = await tx.attendancePunch.count({ where: { correctionId: session.id } })
+        // The copied punches are promoted only when Attendance is part of this correction. A copy
+        // that is still there without it (the types changed after the copy) is thrown away instead.
+        if (clonedPunches > 0 && !parseCorrectionTypes(current.correctionTypesJson).includes('ATTENDANCE')) {
+          await dropPunchCopy(tx, session, run.payrollWeekStartDate, 'Discarded punch edits (Attendance not selected)')
+          clonedPunches = 0
+        }
         if (clonedPunches > 0) {
           const review = await getPunchReview(
             toISODate(session.attendanceUpload.payrollWeekStartDate),
@@ -1018,7 +1088,15 @@ export async function approveRevision(
         },
         select: { id: true },
       })
-      for (const application of leftOut) await skipAdjustmentApplication(application.id, tx)
+      // The correction reset an application its original approval had applied to PENDING, but that
+      // approval's effect on the adjustment (balance taken, completion) is still in place. Carrying
+      // the application forward has to undo it, exactly as skipping an approved application does.
+      const appliedBefore = new Set(snapshot.filter((e) => e.approvalStatus === 'APPROVED').map((e) => e.applicationId))
+      for (const application of leftOut) {
+        await skipAdjustmentApplication(application.id, tx, {
+          originalStatus: appliedBefore.has(application.id) ? 'APPROVED' : undefined,
+        })
+      }
 
       // Update adjustment applications to point to the new revision ID.
       // Also link any newly approved applications that weren't previously attached.
@@ -1152,6 +1230,58 @@ async function findDiscardedEdits(
   return edits
 }
 
+/** The DISCARD audit entry that keeps a correction's punch edits once the copy is gone. */
+async function auditDiscardedEdits(
+  tx: Prisma.TransactionClient,
+  session: { id: string; attendanceUploadId: string; payrollRunId: string },
+  weekStart: Date,
+  summary: string,
+  edits: DiscardedEdit[],
+): Promise<void> {
+  await auditEntry(
+    {
+      actionType: 'DISCARD',
+      entityType: 'ATTENDANCE_WEEK',
+      entityId: session.attendanceUploadId,
+      details: {
+        summary,
+        correctionId: session.id,
+        payrollRunId: session.payrollRunId,
+        weekStart: toISODate(weekStart),
+        discarded: { edits: edits.slice(0, MAX_AUDITED_EDITS) },
+      },
+    },
+    tx,
+  )
+}
+
+/**
+ * Delete the session's copied punches and write the DISCARD audit entry that keeps their edits
+ * (the same entry abandoning writes). Returns whether there was a copy; with none it writes nothing.
+ * Runs in the caller's transaction, after the caller took the week's row lock.
+ */
+async function dropPunchCopy(
+  tx: Prisma.TransactionClient,
+  session: { id: string; attendanceUploadId: string; payrollRunId: string },
+  weekStart: Date,
+  summaryPrefix: string,
+): Promise<{ hadCopy: boolean }> {
+  // Read after the lock, so it matches what is deleted.
+  const hadCopy = (await tx.attendancePunch.count({ where: { correctionId: session.id } })) > 0
+  if (!hadCopy) return { hadCopy }
+
+  const edits = await findDiscardedEdits(session.attendanceUploadId, session.id, tx)
+  await tx.attendancePunch.deleteMany({ where: { correctionId: session.id } })
+  await auditDiscardedEdits(tx, session, weekStart, `${summaryPrefix}: ${edits.length} punch edit(s)`, edits)
+  return { hadCopy }
+}
+
+/** Delete the run's draft revision and its employee rows. */
+async function deleteDraftRevisions(tx: Prisma.TransactionClient, payrollRunId: string): Promise<void> {
+  await tx.payrollRunEmployee.deleteMany({ where: { payrollRunId, payrollRevision: { status: 'DRAFT' } } })
+  await tx.payrollRevision.deleteMany({ where: { payrollRunId, status: 'DRAFT' } })
+}
+
 /**
  * Throw the correction away: delete its copied punches and its draft revision, and put the
  * adjustment applications back as they were. The approved hours and the current revision are
@@ -1180,11 +1310,7 @@ export async function abandonCorrection(payrollRunId: string): Promise<AbandonCo
       const snapshot = parseAdjustmentSnapshot(current.adjustmentSnapshotJson)
 
       await tx.attendancePunch.deleteMany({ where: { correctionId: session.id } })
-
-      await tx.payrollRunEmployee.deleteMany({
-        where: { payrollRunId, payrollRevision: { status: 'DRAFT' } },
-      })
-      await tx.payrollRevision.deleteMany({ where: { payrollRunId, status: 'DRAFT' } })
+      await deleteDraftRevisions(tx, payrollRunId)
 
       for (const entry of snapshot) {
         await tx.payrollAdjustmentApplication.updateMany({
@@ -1205,21 +1331,12 @@ export async function abandonCorrection(payrollRunId: string): Promise<AbandonCo
       })
 
       if (hadCopy) {
-        await auditEntry(
-          {
-            actionType: 'DISCARD',
-            entityType: 'ATTENDANCE_WEEK',
-            entityId: session.attendanceUploadId,
-            details: {
-              summary: `Discarded correction: ${edits.length} punch edit(s)`,
-              correctionId: session.id,
-              payrollRunId,
-              weekStart: toISODate(session.attendanceUpload.payrollWeekStartDate),
-              discarded: { edits: edits.slice(0, MAX_AUDITED_EDITS) },
-              edits: edits.slice(0, MAX_AUDITED_EDITS),
-            },
-          },
+        await auditDiscardedEdits(
           tx,
+          session,
+          session.attendanceUpload.payrollWeekStartDate,
+          `Discarded correction: ${edits.length} punch edit(s)`,
+          edits,
         )
       }
 
