@@ -8,12 +8,32 @@ test.beforeAll(async () => {
   await seedAdjustmentTestData()
 })
 
+// ─── Readiness of the /adjustments list ──────────────────────────────────────
+
+// The list is client-rendered, so "the heading is visible" and "a <tr> is visible" prove nothing:
+//  - the server HTML already holds ten skeleton rows (<tr class="animate-pulse">) that have no click handler,
+//    and the page's buttons and rows only react once it has hydrated;
+//  - real rows exist only after hydration and the server action has answered;
+//  - the table re-queries once, about 300 ms after mount (the debounced search effect), which swaps the rows
+//    for skeletons and back again.
+// A skeleton has no text, so a row carrying the seeded employee's name is a real row. Once its 300 ms
+// fade-in has finished (opacity 1) it is the final incarnation, past that re-query, so clicking it is safe.
+async function openAdjustmentsList(page: Page) {
+  await page.goto('/adjustments')
+  await expect(page.locator('h1:has-text("Payroll Adjustments")')).toBeVisible()
+
+  const firstRow = page.locator('tbody tr', { hasText: 'Adjustment Test Employee' }).first()
+  await expect(firstRow).toBeVisible({ timeout: 10000 })
+  await expect(firstRow).toHaveCSS('opacity', '1')
+  return firstRow
+}
+
 // ─── E2E-01: Create a one-time deduction ─────────────────────────────────────
 
 test.describe('E2E-01: Create one-time deduction', () => {
   test('creates a one-time deduction and shows it in the list', async ({ page }) => {
-    await page.goto('/adjustments')
-    await expect(page.locator('h1:has-text("Payroll Adjustments")')).toBeVisible()
+    // The button's handler is attached by hydration; a click before that does nothing.
+    await openAdjustmentsList(page)
 
     // Click "New Adjustment"
     await page.click('button:has-text("New Adjustment")')
@@ -145,17 +165,14 @@ test.describe('E2E-03: Create recurring deduction with total balance', () => {
 
 test.describe('E2E-07: View all adjustments', () => {
   test('navigating to an adjustment row opens the detail page', async ({ page }) => {
-    await page.goto('/adjustments')
-    await expect(page.locator('h1:has-text("Payroll Adjustments")')).toBeVisible()
-
-    // Wait for table to load — seed creates 3 adjustments, E2E-01 and E2E-02 each create 1 more,
-    // and E2E-03 creates another. By this point there should be 6 total.
-    await expect(page.locator('tbody tr').first()).toBeVisible({ timeout: 10000 })
+    // Wait for the real rows (not the skeleton rows the server renders) — seed creates 3 adjustments,
+    // E2E-01 and E2E-02 each create 1 more, and E2E-03 creates another. By this point there should be 6 total.
+    const firstRow = await openAdjustmentsList(page)
     const rowCount = await page.locator('tbody tr').count()
     expect(rowCount).toBeGreaterThanOrEqual(3)
 
     // Click first row
-    await page.click('tbody tr:first-child')
+    await firstRow.click()
 
     // Should navigate to detail page
     await expect(page).toHaveURL(/\/adjustments\/[a-z0-9-]+/, { timeout: 5000 })
@@ -164,8 +181,8 @@ test.describe('E2E-07: View all adjustments', () => {
   })
 
   test('filter by type shows only deductions', async ({ page }) => {
-    await page.goto('/adjustments')
-    await expect(page.locator('h1:has-text("Payroll Adjustments")')).toBeVisible()
+    // The filter's change handler is attached by hydration; wait for it before choosing.
+    await openAdjustmentsList(page)
 
     // Filter by Deduction
     await page.selectOption('select', { label: 'Deduction' })
