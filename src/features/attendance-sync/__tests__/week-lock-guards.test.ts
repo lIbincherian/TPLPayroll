@@ -18,6 +18,7 @@ import { SYNC_LOCK_TTL_MS } from '@/features/attendance-sync/lib/constants'
 import type { SavePair } from '@/features/attendance-sync/types/attendance-sync.types'
 import {
   auditRows,
+  baseSignatureOf,
   dayPunches,
   freezeClock,
   installPunchStore,
@@ -277,7 +278,14 @@ describe('savePunchEdit in live mode under the week lock', () => {
     pair(1, { punchId: 'p-2', time: '13:56' }, { punchId: 'p-3', time: '17:47' }),
   ]
   const save = (pairs: SavePair[]) =>
-    savePunchEdit({ weekId: WEEK_ID, employeeId: 'emp-36', date: '2026-11-05', mode: { kind: 'LIVE' }, pairs })
+    savePunchEdit({
+      weekId: WEEK_ID,
+      employeeId: 'emp-36',
+      date: '2026-11-05',
+      mode: { kind: 'LIVE' },
+      baseSignature: baseSignatureOf(store, 'emp-36', '2026-11-05'),
+      pairs,
+    })
 
   it('writes inside one interactive transaction that starts with the row lock (lock < update < audit)', async () => {
     await save(changed())

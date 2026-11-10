@@ -3,6 +3,7 @@ import {
   UNUSUAL_DAY_MIN_HOURS,
   UNUSUAL_SINGLE_PAIR_MAX_HOURS,
 } from './constants'
+import { punchSetSignature } from './day-signature'
 import { diffMinutes, normalizeTimeInput, round2, toMinutes } from './time'
 import type {
   DayChange,
@@ -233,5 +234,6 @@ export function buildDayView(date: ISODate, rows: StoredPunchRow[]): DayView {
     isUnusual: unusual.unusual,
     unusualReason: unusual.reason,
     changes: describeChanges(rows),
+    signature: punchSetSignature(rows),
   }
 }

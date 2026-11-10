@@ -88,6 +88,7 @@ const validEdit: SavePunchEditInput = {
   employeeId: 'emp-36',
   date: '2026-11-05',
   mode: { kind: 'LIVE' },
+  baseSignature: '4.1abc2def3',
   pairs: [{ pairIndex: 0, in: { punchId: 'p-0', time: '07:40' }, out: { punchId: 'p-1', time: '13:04' } }],
 }
 

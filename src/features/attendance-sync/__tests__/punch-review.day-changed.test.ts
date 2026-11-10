@@ -17,6 +17,7 @@ import {
 } from '@/features/attendance-sync/types/attendance-sync.types'
 import {
   auditRows,
+  baseSignatureOf,
   dayPunches,
   freezeClock,
   installPunchStore,
@@ -49,7 +50,7 @@ const FULL_DAY = ['07:40', '13:04', '13:56', '17:47']
 const LIVE: ReviewMode = { kind: 'LIVE' }
 const CORRECTION: ReviewMode = { kind: 'CORRECTION', payrollRunId: 'run-1', correctionId: 'session-1', revisionNumber: 2 }
 const DAY_CHANGED_MESSAGE =
-  'This day changed since you opened it (another save or a pull). Close the editor, reopen the day and try again.'
+  'This day was changed somewhere else (another tab or a pull) after you opened it. Nothing was saved. Reload the day and try again.'
 const NOT_IN_REVIEW_MESSAGE = "That employee isn't in this week's review."
 
 const asha = makeEmployee({ id: 'emp-36', employeeId: 'TPLGOAHLP036', employeeName: 'Asha Rao' })
@@ -71,8 +72,12 @@ function ashaPairs(lastOut = '17:47', prefix = 'p'): SavePair[] {
   ]
 }
 
+/** Save as an editor that opened the day just now: its `baseSignature` is the day as stored when this is called. */
 function save(pairs: SavePair[], over: Partial<Parameters<typeof savePunchEdit>[0]> = {}) {
-  return savePunchEdit({ weekId: WEEK_ID, employeeId: 'emp-36', date: DAY, mode: LIVE, pairs, ...over })
+  const employeeId = over.employeeId ?? 'emp-36'
+  const mode = over.mode ?? LIVE
+  const baseSignature = baseSignatureOf(store, employeeId, DAY, mode.kind === 'CORRECTION' ? mode.correctionId : null)
+  return savePunchEdit({ weekId: WEEK_ID, employeeId: 'emp-36', date: DAY, mode: LIVE, baseSignature, pairs, ...over })
 }
 
 function seed(rows: ReturnType<typeof dayPunches>, employees = [asha, ravi]) {
@@ -137,8 +142,9 @@ describe('punchSetSignature', () => {
   })
   const other = row({ id: 'b', position: 'OUT', originalTime: '13:04', currentTime: '13:04' })
 
-  it('is the empty string for an empty set', () => {
-    expect(punchSetSignature([])).toBe('')
+  it('is a non-empty token for an empty set, so an empty day can be told from a missing one', () => {
+    expect(punchSetSignature([])).not.toBe('')
+    expect(punchSetSignature([])).not.toBe(punchSetSignature([row()]))
   })
 
   it('does not depend on the order of the rows', () => {
@@ -186,11 +192,10 @@ describe('punchSetSignature', () => {
     expect(punchSetSignature([{ ...row(), mergedScansJson: null }])).toBe(plain)
   })
 
-  it('treats a missing time or note as empty: null and the empty string are the same value', () => {
-    // The service never stores '' (cleanNote turns a blank note into null), so this collision cannot hide a real edit.
-    expect(punchSetSignature([row({ note: null })])).toBe(punchSetSignature([row({ note: '' })]))
-    expect(punchSetSignature([row({ currentTime: null })])).toBe(punchSetSignature([row({ currentTime: '' as never })]))
-    expect(punchSetSignature([row({ originalTime: null })])).toBe(punchSetSignature([row({ originalTime: '' as never })]))
+  it('tells a missing time or note from an empty one: null and the empty string differ', () => {
+    expect(punchSetSignature([row({ note: null })])).not.toBe(punchSetSignature([row({ note: '' })]))
+    expect(punchSetSignature([row({ currentTime: null })])).not.toBe(punchSetSignature([row({ currentTime: '' as never })]))
+    expect(punchSetSignature([row({ originalTime: null })])).not.toBe(punchSetSignature([row({ originalTime: '' as never })]))
   })
 
   it('still tells a missing time from a present one (a cleared punch is a change)', () => {

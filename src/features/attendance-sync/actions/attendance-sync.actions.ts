@@ -82,6 +82,7 @@ const savePunchEditSchema = z.object({
   employeeId: id,
   date: isoDate,
   mode: reviewModeSchema,
+  baseSignature: z.string().min(1).max(64),
   pairs: z
     .array(z.object({ pairIndex: z.number().int().min(0).max(1000), in: punchSideSchema, out: punchSideSchema }))
     .max(100),

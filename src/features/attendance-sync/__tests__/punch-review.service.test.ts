@@ -10,6 +10,7 @@ import { getPunchReview, loadReviewContext, savePunchEdit } from '@/features/att
 import { AttendanceSyncError, type ReviewMode, type SavePair } from '@/features/attendance-sync/types/attendance-sync.types'
 import {
   auditRows,
+  baseSignatureOf,
   dayPunches,
   freezeClock,
   installPunchStore,
@@ -66,8 +67,13 @@ function fullDayPairs(lastOut = '17:47'): SavePair[] {
   ]
 }
 
+/** Save as an editor that opened the day just now: `baseSignature` defaults to the day as stored when this is called. */
 function save(pairs: SavePair[], over: Partial<Parameters<typeof savePunchEdit>[0]> = {}) {
-  return savePunchEdit({ weekId: WEEK_ID, employeeId: 'emp-36', date: '2026-11-05', mode: LIVE, pairs, ...over })
+  const input = { weekId: WEEK_ID, employeeId: 'emp-36', date: '2026-11-05', mode: LIVE, pairs, ...over }
+  const baseSignature =
+    over.baseSignature ??
+    baseSignatureOf(store, input.employeeId, input.date, input.mode.kind === 'CORRECTION' ? input.mode.correctionId : null)
+  return savePunchEdit({ ...input, baseSignature })
 }
 
 function expectNoWrites() {

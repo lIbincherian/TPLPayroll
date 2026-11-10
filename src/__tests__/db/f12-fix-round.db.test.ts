@@ -20,6 +20,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { Client } from 'pg'
 import type { PrismaClient } from '@prisma/client'
+import { punchSetSignature } from '@/features/attendance-sync/lib/day-signature'
 
 vi.mock('@/features/attendance-sync/services/etimeoffice.client', () => ({ fetchPunchData: vi.fn() }))
 
@@ -119,6 +120,17 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
       },
     })
     return upload
+  }
+
+  /** The `baseSignature` an editor opened on this employee-day holds: the signature of the stored rows right now. */
+  async function baseSignatureOf(weekStart: string, employeeId: string, date: string, correctionId: string | null = null) {
+    const upload = await prisma.attendanceUpload.findFirstOrThrow({
+      where: { payrollWeekStartDate: utc(weekStart), isActiveForPayrollWeek: true },
+    })
+    const rows = await prisma.attendancePunch.findMany({
+      where: { attendanceUploadId: upload.id, correctionId, employeeId, punchDate: utc(date) },
+    })
+    return punchSetSignature(rows as never)
   }
 
   async function seedPunches(uploadId: string, weekStart: string, employees = [empA, empB]) {
@@ -513,7 +525,14 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
 
       await expect(approveWeek(W.syncGuard)).rejects.toMatchObject({ code: 'SYNC_IN_PROGRESS' })
       await expect(
-        savePunchEdit({ weekId: W.syncGuard, mode: { kind: 'LIVE' }, employeeId: empA.id, date: W.syncGuard, pairs }),
+        savePunchEdit({
+          weekId: W.syncGuard,
+          mode: { kind: 'LIVE' },
+          employeeId: empA.id,
+          date: W.syncGuard,
+          baseSignature: await baseSignatureOf(W.syncGuard, empA.id, W.syncGuard),
+          pairs,
+        }),
       ).rejects.toMatchObject({ code: 'SYNC_IN_PROGRESS' })
 
       const after = await prisma.attendanceUpload.findUniqueOrThrow({ where: { id: uploadId } })
@@ -536,7 +555,14 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
     it('a stale lock (older than 5 minutes) no longer blocks: the edit saves, then the week approves', async () => {
       await prisma.attendanceUpload.update({ where: { id: uploadId }, data: { syncLockedAt: new Date(Date.now() - 6 * 60 * 1000) } })
 
-      const saved = await savePunchEdit({ weekId: W.syncGuard, mode: { kind: 'LIVE' }, employeeId: empA.id, date: W.syncGuard, pairs })
+      const saved = await savePunchEdit({
+        weekId: W.syncGuard,
+        mode: { kind: 'LIVE' },
+        employeeId: empA.id,
+        date: W.syncGuard,
+        baseSignature: await baseSignatureOf(W.syncGuard, empA.id, W.syncGuard),
+        pairs,
+      })
       expect(saved.day.date).toBe(W.syncGuard)
 
       const approved = await approveWeek(W.syncGuard)
@@ -551,7 +577,14 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
 
     it('an edit of an approved week is WEEK_LOCKED', async () => {
       await expect(
-        savePunchEdit({ weekId: W.syncGuard, mode: { kind: 'LIVE' }, employeeId: empA.id, date: W.syncGuard, pairs }),
+        savePunchEdit({
+          weekId: W.syncGuard,
+          mode: { kind: 'LIVE' },
+          employeeId: empA.id,
+          date: W.syncGuard,
+          baseSignature: await baseSignatureOf(W.syncGuard, empA.id, W.syncGuard),
+          pairs,
+        }),
       ).rejects.toMatchObject({ code: 'WEEK_LOCKED' })
     })
   })
@@ -620,12 +653,13 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
     const end = addDays(week, 6)
     let summary: Awaited<ReturnType<typeof calculatePayroll>>
 
-    const clearDay = (date: string, employeeId: string, mode: { kind: 'CORRECTION'; payrollRunId: string; correctionId: string; revisionNumber: number }) =>
+    const clearDay = async (date: string, employeeId: string, mode: { kind: 'CORRECTION'; payrollRunId: string; correctionId: string; revisionNumber: number }) =>
       savePunchEdit({
         weekId: week,
         mode,
         employeeId,
         date,
+        baseSignature: await baseSignatureOf(week, employeeId, date, mode.correctionId),
         pairs: [
           { pairIndex: 0, in: { time: null }, out: { time: null } },
           { pairIndex: 1, in: { time: null }, out: { time: null } },
@@ -684,9 +718,10 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
       await correction.startAttendanceCorrection(runId, { types: ['ATTENDANCE'], reason: 'f12 db' } as never)
       const session = await activeSession(runId)
       const mode = { kind: 'CORRECTION' as const, payrollRunId: runId, correctionId: session.id, revisionNumber: 1 }
-      const edit = (out: string) =>
+      const edit = async (out: string) =>
         savePunchEdit({
           weekId: week, mode, employeeId: empA.id, date: week,
+          baseSignature: await baseSignatureOf(week, empA.id, week, session.id),
           pairs: [
             { pairIndex: 0, in: { time: '08:00' }, out: { time: '12:00' } },
             { pairIndex: 1, in: { time: '13:00' }, out: { time: out } },
@@ -749,6 +784,7 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
       await expect(
         savePunchEdit({
           weekId: week, mode, employeeId: empB.id, date: week,
+          baseSignature: await baseSignatureOf(week, empB.id, week, session.id),
           pairs: [
             { pairIndex: 0, in: { time: '08:30' }, out: { time: '12:00' } },
             { pairIndex: 1, in: { time: '13:00' }, out: { time: '17:00' } },
@@ -1428,7 +1464,9 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
     })
 
     it('started together they leave exactly one IN and one OUT; every refusal is DAY_CHANGED, never an unexpected error', async (ctx) => {
-      const save = () => savePunchEdit({ weekId: week, mode: { kind: 'LIVE' }, employeeId: empB.id, date: week, pairs })
+      // Both editors opened the same empty day, so they carry the same version.
+      const baseSignature = await baseSignatureOf(week, empB.id, week)
+      const save = () => savePunchEdit({ weekId: week, mode: { kind: 'LIVE' }, employeeId: empB.id, date: week, baseSignature, pairs })
 
       const results = await Promise.allSettled([save(), save()])
       if (interleaved(results)) return ctx.skip('local database interleaved two connections; not exercised')
@@ -1446,7 +1484,8 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
 
     it('replaying the same save once the day holds the pair is a no-change save: no new rows, no error', async () => {
       // The day now holds the MANUAL pair created above. Saving the same times again changes nothing.
-      const saved = await savePunchEdit({ weekId: week, mode: { kind: 'LIVE' }, employeeId: empB.id, date: week, pairs })
+      const baseSignature = await baseSignatureOf(week, empB.id, week)
+      const saved = await savePunchEdit({ weekId: week, mode: { kind: 'LIVE' }, employeeId: empB.id, date: week, baseSignature, pairs })
 
       expect(saved.day.date).toBe(week)
       const count2 = await prisma.attendancePunch.count({ where: { employeeId: empB.id, punchDate: utc(week) } })
@@ -1478,9 +1517,10 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
       rows.map((r) => [r.employeeId, Number(r.regularHours), Number(r.overtimeHours)])
     const liveSnapshot = async () =>
       JSON.stringify(await prisma.attendancePunch.findMany({ where: { attendanceUploadId: uploadId, correctionId: null }, orderBy: { id: 'asc' }, select: { id: true, currentTime: true } }))
-    const editDay0 = (mode: { kind: 'CORRECTION'; payrollRunId: string; correctionId: string; revisionNumber: number }, out: string) =>
+    const editDay0 = async (mode: { kind: 'CORRECTION'; payrollRunId: string; correctionId: string; revisionNumber: number }, out: string) =>
       savePunchEdit({
         weekId: week, mode, employeeId: empA.id, date: week,
+        baseSignature: await baseSignatureOf(week, empA.id, week, mode.correctionId),
         pairs: [
           { pairIndex: 0, in: { time: '08:00' }, out: { time: '12:00' } },
           { pairIndex: 1, in: { time: '13:00' }, out: { time: out } },
@@ -1567,6 +1607,7 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
       // Clear the OUT of pair 1: an IN with no OUT is an incomplete pair. The save also clears the draft pointer.
       await savePunchEdit({
         weekId: week, mode, employeeId: empA.id, date: week,
+        baseSignature: await baseSignatureOf(week, empA.id, week, session.id),
         pairs: [
           { pairIndex: 0, in: { time: '08:00' }, out: { time: '12:00' } },
           { pairIndex: 1, in: { time: '13:00' }, out: { time: null } },

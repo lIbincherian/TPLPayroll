@@ -41,6 +41,7 @@ import type {
   ActionResult,
   ApprovalSummary,
   CorrectionReview,
+  DayView,
   ISODate,
   LiveReview,
   PunchReview,
@@ -320,6 +321,22 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
     setSaveFailed(false)
     if (isDesktop) focusCell(lastFocusKey.current)
   }, [focusCell, isDesktop])
+
+  // The editor's save was refused because the day moved on: reload the review and hand back the latest view.
+  const reloadDay = useCallback(
+    async (employeeId: string, date: ISODate): Promise<DayView | null> => {
+      const res = await getPunchReviewAction(weekId, mode)
+      if (!res.ok) return null
+      setReview(res.data)
+      const day = res.data.employees.find((e) => e.employeeId === employeeId)?.days.find((d) => d.date === date) ?? null
+      if (!day) {
+        closeEditor()
+        toast.error("That employee is no longer in this week's review.")
+      }
+      return day
+    },
+    [weekId, mode, closeEditor],
+  )
 
   function stepEditor(direction: 'previous' | 'next') {
     if (!openCell) return
@@ -626,6 +643,7 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
         onStep={stepEditor}
         onSaved={handleSaved}
         onSaveFailed={setSaveFailed}
+        onDayChanged={reloadDay}
       />
 
       <ApproveWeekDialog

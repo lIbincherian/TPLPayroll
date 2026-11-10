@@ -164,6 +164,8 @@ export interface DayView {
   isUnusual: boolean
   unusualReason: string | null
   changes: DayChange[]
+  /** Version of the stored punches this view was built from; sent back with a save. */
+  signature: string
 }
 
 export interface GridEmployee {
@@ -327,6 +329,8 @@ export interface SavePunchEditInput {
   employeeId: string
   date: ISODate
   mode: ReviewMode
+  /** The `DayView.signature` the editor was opened on. A save is refused (DAY_CHANGED) if the day has moved on. */
+  baseSignature: string
   pairs: SavePair[]
 }
 

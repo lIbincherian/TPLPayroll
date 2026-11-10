@@ -7,6 +7,7 @@
  */
 import { vi } from 'vitest'
 import type { AttendanceUpload, PayrollCorrectionSession, PayrollRun } from '@prisma/client'
+import { punchSetSignature } from '../lib/day-signature'
 import type { LockedWeekRow } from '../services/week-lock.service'
 import type { EmployeeLite, HHmm, ISODate } from '../types/attendance-sync.types'
 
@@ -356,6 +357,16 @@ export interface PunchStore {
   rows: PunchRow[]
   /** Rows in the live set (correctionId null) for one employee-day. */
   day(employeeId: string, date: ISODate, correctionId?: string | null): PunchRow[]
+}
+
+/** The `baseSignature` an editor opened on this employee-day holds: the signature of its stored rows right now. */
+export function baseSignatureOf(
+  store: PunchStore,
+  employeeId: string,
+  date: ISODate,
+  correctionId: string | null = null,
+): string {
+  return punchSetSignature(store.day(employeeId, date, correctionId))
 }
 
 /**

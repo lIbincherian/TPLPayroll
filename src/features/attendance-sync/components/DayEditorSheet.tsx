@@ -43,6 +43,7 @@ type SaveState =
   | { kind: 'saving' }
   | { kind: 'saved'; at: string }
   | { kind: 'invalid' }
+  | { kind: 'reloaded' }
   | { kind: 'failed'; message: string }
 
 const LABEL = 'text-xs font-medium uppercase tracking-wider text-zinc-500'
@@ -128,6 +129,8 @@ interface EditorBodyProps {
   onSaved: (result: SavePunchEditResult) => void
   /** Tells the grid header whether the last save worked. */
   onSaveFailed: (failed: boolean) => void
+  /** The day was changed elsewhere: reload it and return the latest view, or null if that failed. */
+  onDayChanged: () => Promise<DayView | null>
 }
 
 function EditorBody({
@@ -143,6 +146,7 @@ function EditorBody({
   onClose,
   onSaved,
   onSaveFailed,
+  onDayChanged,
 }: EditorBodyProps) {
   const [draft, setDraftState] = useState<DraftPair[]>(() => draftFromDay(day))
   const [notes, setNotesState] = useState<Record<string, string>>({})
@@ -153,6 +157,10 @@ function EditorBody({
   const draftRef = useRef(draft)
   const notesRef = useRef(notes)
   const savedDayRef = useRef(day)
+  // The version of the day the draft was built on. It follows the draft, not the `day` prop: the grid can
+  // reload `day` underneath an editor whose draft is still the old one. It changes only after a successful
+  // save and after a DAY_CHANGED reset.
+  const baseSignatureRef = useRef(day.signature)
   const savingRef = useRef(false)
   const rerunRef = useRef(false)
 
@@ -200,11 +208,13 @@ function EditorBody({
         employeeId: employee.employeeId,
         date: day.date,
         mode,
+        baseSignature: baseSignatureRef.current,
         pairs: toSavePairs(normalized, notesRef.current),
       })
 
       if (res.ok) {
         savedDayRef.current = res.data.day
+        baseSignatureRef.current = res.data.day.signature
         setDraft(reconcileDraft(res.data.day, draftRef.current, normalized))
         setSaveState({ kind: 'saved', at: res.data.savedAt })
         onSaveFailed(false)
@@ -212,6 +222,21 @@ function EditorBody({
       } else if (res.validation && !res.validation.valid) {
         setError({ pairIndex: res.validation.pairIndex, field: res.validation.field, message: res.validation.message })
         setSaveState({ kind: 'invalid' })
+      } else if (res.code === 'DAY_CHANGED') {
+        const fresh = await onDayChanged()
+        rerunRef.current = false // what was typed against the stale day is dropped
+        if (fresh) {
+          savedDayRef.current = fresh
+          baseSignatureRef.current = fresh.signature
+          setDraft(draftFromDay(fresh))
+          setNotes({})
+          setError(null)
+          setSaveState({ kind: 'reloaded' })
+          onSaveFailed(false)
+        } else {
+          setSaveState({ kind: 'failed', message: res.error })
+          onSaveFailed(true)
+        }
       } else {
         setSaveState({ kind: 'failed', message: res.error })
         onSaveFailed(true)
@@ -226,7 +251,7 @@ function EditorBody({
         void commit()
       }
     }
-  }, [readOnly, weekId, employee.employeeId, day.date, mode, onSaved, onSaveFailed, setDraft])
+  }, [readOnly, weekId, employee.employeeId, day.date, mode, onSaved, onSaveFailed, onDayChanged, setDraft, setNotes])
 
   function updateField(pairIndex: number, field: Field, value: string) {
     setDraft(
@@ -534,6 +559,12 @@ function EditorBody({
       <div className="mt-auto pt-6" role="status" aria-live="polite" data-testid="editor-save-status">
         {saveState.kind === 'saving' && <p className="text-xs text-zinc-500">Saving…</p>}
         {saveState.kind === 'saved' && <p className="text-xs text-zinc-500">Saved {lastSavedText}</p>}
+        {saveState.kind === 'reloaded' && (
+          <p className="text-xs text-amber-700" data-testid="editor-day-changed">
+            This day was changed in another tab or by a pull, so your change was not saved. It now shows the latest
+            times. Enter your change again.
+          </p>
+        )}
         {saveState.kind === 'failed' && (
           <p className="flex flex-wrap items-center gap-2 text-xs text-rose-600">
             {saveState.message || "Couldn't save. Your last saved times are unchanged."}
@@ -563,6 +594,8 @@ interface DayEditorSheetProps {
   onStep: (direction: 'previous' | 'next') => void
   onSaved: (employeeId: string, date: ISODate, result: SavePunchEditResult) => void
   onSaveFailed: (failed: boolean) => void
+  /** Reloads the review after a DAY_CHANGED refusal and returns the latest view of the day, or null if that failed. */
+  onDayChanged: (employeeId: string, date: ISODate) => Promise<DayView | null>
 }
 
 /**
@@ -582,6 +615,7 @@ export function DayEditorSheet({
   onStep,
   onSaved,
   onSaveFailed,
+  onDayChanged,
 }: DayEditorSheetProps) {
   const isDesktop = useMediaQuery('(min-width: 768px)')
   const firstFieldRef = useRef<HTMLInputElement>(null)
@@ -618,6 +652,7 @@ export function DayEditorSheet({
             onClose={onClose}
             onSaved={(result) => onSaved(employee.employeeId, day.date, result)}
             onSaveFailed={onSaveFailed}
+            onDayChanged={() => onDayChanged(employee.employeeId, day.date)}
           />
         )}
       </SheetContent>

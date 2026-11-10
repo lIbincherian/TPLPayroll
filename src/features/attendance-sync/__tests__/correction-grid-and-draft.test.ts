@@ -13,6 +13,7 @@ import {
 } from '@/features/attendance-sync/services/punch-review.service'
 import type { ReviewMode, SavePair } from '@/features/attendance-sync/types/attendance-sync.types'
 import {
+  baseSignatureOf,
   dayPunches,
   freezeClock,
   installPunchStore,
@@ -329,7 +330,14 @@ describe('savePunchEdit: who may be edited', () => {
   const cloneEdit = (): SavePair[] => [pair(0, { punchId: 'c-0', time: '08:00' }, { punchId: 'c-1', time: '13:00' })]
 
   const save = (mode: ReviewMode, pairs = cloneEdit(), employeeId = 'emp-2') =>
-    savePunchEdit({ weekId: WEEK_ID, employeeId, date: '2026-11-05', mode, pairs })
+    savePunchEdit({
+      weekId: WEEK_ID,
+      employeeId,
+      date: '2026-11-05',
+      mode,
+      baseSignature: baseSignatureOf(store, employeeId, '2026-11-05', mode.kind === 'CORRECTION' ? mode.correctionId : null),
+      pairs,
+    })
 
   beforeEach(() => {
     serveUpload(db, makeUpload({ id: 'upload-1', status: 'APPROVED' }))
@@ -402,7 +410,14 @@ describe('savePunchEdit in a correction clears the draft revision pointer', () =
     pair(1, { punchId: 'c-2', time: '13:56' }, { punchId: 'c-3', time: '17:47' }),
   ]
   const save = (pairs: SavePair[]) =>
-    savePunchEdit({ weekId: WEEK_ID, employeeId: 'emp-36', date: '2026-11-05', mode: CORRECTION, pairs })
+    savePunchEdit({
+      weekId: WEEK_ID,
+      employeeId: 'emp-36',
+      date: '2026-11-05',
+      mode: CORRECTION,
+      baseSignature: baseSignatureOf(store, 'emp-36', '2026-11-05', 'session-1'),
+      pairs,
+    })
 
   const serveSession = (before: ReturnType<typeof makeSession> | null, inside = before) => {
     db.payrollCorrectionSession.findUnique.mockResolvedValue(before)
@@ -415,7 +430,7 @@ describe('savePunchEdit in a correction clears the draft revision pointer', () =
     db.employee.findMany.mockResolvedValue([asha])
     serveEmployeeLookup(db, [asha])
     serveSession(makeSession({ draftRevisionId: 'draft-1' }))
-    installPunchStore(db, cloneRows())
+    store = installPunchStore(db, cloneRows())
   })
 
   it('sets draftRevisionId to null on the session, in the same transaction, after the punch writes', async () => {

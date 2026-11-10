@@ -11,6 +11,7 @@ import { approveWeek, getApprovalSummary, reopenWeek } from '@/features/attendan
 import type { SavePair } from '@/features/attendance-sync/types/attendance-sync.types'
 import {
   auditRows,
+  baseSignatureOf,
   dayPunches,
   freezeClock,
   installPunchStore,
@@ -416,7 +417,14 @@ describe('approve, then reopen, edit and approve again', () => {
       { pairIndex: 1, in: { punchId: 'p-2', time: '13:56' }, out: { punchId: 'p-3', time } },
     ]
     const edit = (time: string) =>
-      savePunchEdit({ weekId: WEEK_ID, employeeId: 'emp-36', date: '2026-11-05', mode: { kind: 'LIVE' }, pairs: lastOut(time) })
+      savePunchEdit({
+        weekId: WEEK_ID,
+        employeeId: 'emp-36',
+        date: '2026-11-05',
+        mode: { kind: 'LIVE' },
+        baseSignature: baseSignatureOf(store, 'emp-36', '2026-11-05'),
+        pairs: lastOut(time),
+      })
 
     await approveWeek(WEEK_ID)
     expect(upload.status).toBe('APPROVED')

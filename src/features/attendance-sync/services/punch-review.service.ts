@@ -347,38 +347,45 @@ function codeFor(employeeCode: string): string {
 
 type WriteOp = (db: Prisma.TransactionClient) => Promise<unknown>
 
+/** Shown when the day moved on after the editor opened it; the editor reloads the day. */
+export const DAY_CHANGED_MESSAGE =
+  'This day was changed somewhere else (another tab or a pull) after you opened it. Nothing was saved. Reload the day and try again.'
+
 /**
- * Membership re-check under the lock: the employee must still be in this review's grid (the
- * decision or the employee's status may have changed since the snapshot was read).
+ * The employee, if they are in this review's grid; otherwise EMPLOYEE_NOT_FOUND. Three single-row
+ * reads, one after another. Called once before the lock (with `prisma`) and once under it (with
+ * `tx`), since the decision or the employee's status may change in between.
  */
-async function assertStillInGrid(
-  tx: Prisma.TransactionClient,
+async function requireGridEmployee(
+  db: Prisma.TransactionClient,
   upload: AttendanceUpload,
   week: WeekRange,
   employeeId: string,
   mode: ReviewMode,
-): Promise<void> {
-  const employee = (await tx.employee.findUnique({
+): Promise<EmployeeLite> {
+  const employee = (await db.employee.findUnique({
     where: { id: employeeId },
     select: EMPLOYEE_LITE_SELECT,
   })) as EmployeeLite | null
-  const decisionRow = await tx.attendanceEmployeeDecision.findUnique({
+  const decisionRow = await db.attendanceEmployeeDecision.findUnique({
     where: { attendanceUploadId_employeeId: { attendanceUploadId: upload.id, employeeId } },
     select: { decision: true },
   })
+  // A correction keeps everyone with approved records in the grid, even if deactivated since.
   const hasApprovedRecords =
     mode.kind === 'CORRECTION' &&
-    (await tx.attendanceRecord.count({ where: { attendanceUploadId: upload.id, employeeId } })) > 0
+    (await db.attendanceRecord.count({ where: { attendanceUploadId: upload.id, employeeId } })) > 0
 
-  const inGrid = employee
+  const listed = employee
     ? getReviewGridEmployees(
         [employee],
         decisionRow ? [{ employeeId, decision: decisionRow.decision as EmployeeDecisionValue }] : [],
         week,
         hasApprovedRecords ? new Set([employeeId]) : undefined,
-      ).length > 0
-    : false
-  if (!inGrid) throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', "That employee isn't in this week's review.")
+      )[0]
+    : undefined
+  if (!listed) throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', "That employee isn't in this week's review.")
+  return listed
 }
 
 /**
@@ -387,10 +394,12 @@ async function assertStillInGrid(
  * Validation failures write nothing and no audit entry.
  *
  * The writes run in one interactive transaction that first locks the week's row, so an
- * edit cannot interleave with an approve, a reopen, a pull or a revision approval. The writes
- * are built from a snapshot read before the lock, so the transaction re-reads the day and the
- * employee's place in the grid under the lock; if either changed (another save, a pull) it
- * throws DAY_CHANGED or EMPLOYEE_NOT_FOUND instead of applying stale operations. In a
+ * edit cannot interleave with an approve, a reopen, a pull or a revision approval. The caller
+ * passes `baseSignature`, the version of the day the editor was opened on; a save against any
+ * other version of the day (another tab's save, a pull) throws DAY_CHANGED and writes nothing.
+ * The writes are built from a snapshot read before the lock, so the transaction re-reads the day
+ * and the employee's place in the grid under the lock; if either changed it throws DAY_CHANGED
+ * or EMPLOYEE_NOT_FOUND instead of applying stale operations. In a
  * correction, a saved change also clears the session's draft revision: the preview built
  * from the earlier punches is then stale and can no longer be approved.
  */
@@ -408,28 +417,8 @@ export async function savePunchEdit(input: SavePunchEditInput): Promise<SavePunc
     throw new AttendanceSyncError('VALIDATION_ERROR', 'That date is not in this payroll week.')
   }
 
-  const [employees, decisions] = await Promise.all([
-    prisma.employee.findMany({ select: EMPLOYEE_LITE_SELECT }) as Promise<EmployeeLite[]>,
-    prisma.attendanceEmployeeDecision.findMany({
-      where: { attendanceUploadId: upload.id },
-      select: { employeeId: true, decision: true },
-    }),
-  ])
-  // A correction keeps everyone with approved records in the grid, even if deactivated since.
-  const hasApprovedRecords =
-    mode.kind === 'CORRECTION' &&
-    (await prisma.attendanceRecord.count({
-      where: { attendanceUploadId: upload.id, employeeId: input.employeeId },
-    })) > 0
-  const employee = getReviewGridEmployees(
-    employees,
-    decisions.map((d) => ({ employeeId: d.employeeId, decision: d.decision as EmployeeDecisionValue })),
-    week,
-    hasApprovedRecords ? new Set([input.employeeId]) : undefined,
-  ).find((e) => e.id === input.employeeId)
-  if (!employee) {
-    throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', "That employee isn't in this week's review.")
-  }
+  // Fast fail before the lock; checked again under it.
+  const employee = await requireGridEmployee(prisma, upload, week, input.employeeId, mode)
 
   const correctionId = mode.kind === 'CORRECTION' ? mode.correctionId : null
   const punchDate = toUtcDate(input.date)
@@ -437,6 +426,13 @@ export async function savePunchEdit(input: SavePunchEditInput): Promise<SavePunc
     where: { attendanceUploadId: upload.id, correctionId, employeeId: input.employeeId, punchDate },
     select: PUNCH_SELECT,
   })) as PunchRecord[]
+
+  // The editor sends the version of the day it was opened on. Anything else (another tab's save, a
+  // pull, a stale punch id) means the submitted pairs were built against a different day, and
+  // applying them would delete or overwrite punches the editor never saw.
+  if (punchSetSignature(stored) !== input.baseSignature) {
+    throw new AttendanceSyncError('DAY_CHANGED', DAY_CHANGED_MESSAGE)
+  }
 
   const slots = resolveSlots(input.pairs, stored)
 
@@ -574,18 +570,15 @@ export async function savePunchEdit(input: SavePunchEditInput): Promise<SavePunc
         }
 
         // The ops were built from a snapshot taken before the lock. Another save or a pull may have
-        // changed the day since; apply the ops only to the day they were built for.
+        // changed the day since; apply the ops only to the day the editor was opened on.
         const current = (await tx.attendancePunch.findMany({
           where: { attendanceUploadId: upload.id, correctionId, employeeId: input.employeeId, punchDate },
           select: PUNCH_SELECT,
         })) as PunchRecord[]
-        if (punchSetSignature(current) !== punchSetSignature(stored)) {
-          throw new AttendanceSyncError(
-            'DAY_CHANGED',
-            'This day changed since you opened it (another save or a pull). Close the editor, reopen the day and try again.',
-          )
+        if (punchSetSignature(current) !== input.baseSignature) {
+          throw new AttendanceSyncError('DAY_CHANGED', DAY_CHANGED_MESSAGE)
         }
-        await assertStillInGrid(tx, upload, week, input.employeeId, mode)
+        await requireGridEmployee(tx, upload, week, input.employeeId, mode)
 
         for (const op of ops) await op(tx)
 

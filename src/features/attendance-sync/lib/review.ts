@@ -272,14 +272,4 @@ export function getAttendanceWeekStatus(upload: { source: string; status: string
   return 'SYNC_FAILED'
 }
 
-/**
- * Order-independent fingerprint of one employee-day's stored punches: equal exactly when the rows
- * are the same, with the same times, notes and slots. `updatedAt` and `mergedScansJson` are left
- * out, since neither changes what an edit is built against.
- */
-export function punchSetSignature(rows: ReadonlyArray<StoredPunchRow>): string {
-  return rows
-    .map((r) => [r.id, r.pairIndex, r.position, r.source, r.originalTime ?? '', r.currentTime ?? '', r.note ?? ''].join('|'))
-    .sort()
-    .join('\n')
-}
+export { punchSetSignature } from './day-signature'
