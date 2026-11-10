@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import {
   PayrollServiceError,
@@ -316,8 +317,13 @@ export async function calculatePayroll(
  * summary was calculated earlier, so if the week was reopened (and approved again, possibly with
  * different hours) in the meantime the approval must not go through: the summary carries the
  * attendance's approval time, and it must still match.
+ *
+ * One approved run per week is guaranteed twice: the transaction looks for a run again once it
+ * holds the lock (a second approval that waited on the lock finds the first one's run), and
+ * PayrollRun.approvedWeekStart is unique, so the database refuses a second one regardless.
  */
 export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePayrollResult> {
+  // Fast fail without the week lock; the transaction below repeats it once the lock is held.
   const existing = await prisma.payrollRun.findFirst({
     where: {
       payrollWeekStartDate: summary.weekStart,
@@ -337,101 +343,121 @@ export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePa
   const revisionId = randomUUID()
   const includedIds = employees.map((emp) => emp.employeeId)
 
-  await prisma.$transaction(
-    async (tx) => {
-      // The attendance must still be the approved eTimeOffice week the summary was built from.
-      // Reopening the week changes its status back to REVIEW and removes its records; approving
-      // it again stamps a new approval time.
-      const upload = await lockWeekRow(tx, { weekStart })
-      if (!upload || upload.source !== 'ETIMEOFFICE' || upload.status !== 'APPROVED') {
-        throw new PayrollServiceError('ATTENDANCE_NOT_APPROVED', "Attendance for this week isn't approved yet")
-      }
-      if (!upload.approvedAt || upload.approvedAt.getTime() !== new Date(summary.attendanceApprovedAt).getTime()) {
-        throw new PayrollServiceError(
-          'ATTENDANCE_CHANGED',
-          'Attendance for this week changed after this summary was calculated. Go back and recalculate.',
-        )
-      }
+  try {
+    await prisma.$transaction(
+      async (tx) => {
+        // The attendance must still be the approved eTimeOffice week the summary was built from.
+        // Reopening the week changes its status back to REVIEW and removes its records; approving
+        // it again stamps a new approval time.
+        const upload = await lockWeekRow(tx, { weekStart })
 
-      // Carry forward first. Skipping moves a left-out employee's pending or approved
-      // application to the next week, so the link step below can never attach it to this run.
-      const leftOutApplications = await tx.payrollAdjustmentApplication.findMany({
-        where: {
-          payrollWeekStartDate: weekStart,
-          payrollRunId: null,
-          approvalStatus: { in: ['PENDING', 'APPROVED'] },
-          employeeId: { notIn: includedIds },
-          payrollAdjustment: { status: { not: 'CANCELLED' } },
-        },
-        select: { id: true },
-      })
-      for (const application of leftOutApplications) {
-        await skipAdjustmentApplication(application.id, tx)
-      }
+        // The pre-check above ran without the lock. Another approval may have committed since; now
+        // that the week row is held nothing can interleave, so this read is final.
+        const racedRun = await tx.payrollRun.findFirst({
+          where: { payrollWeekStartDate: weekStart, payrollWeekEndDate: weekEnd, status: { in: ['APPROVED', 'REVISED'] } },
+          select: { id: true },
+        })
+        if (racedRun) {
+          throw new PayrollServiceError('PAYROLL_ALREADY_EXISTS', 'Payroll for this week is already approved')
+        }
 
-      await tx.payrollRun.create({
-        data: {
-          id: runId,
-          payrollWeekStartDate: weekStart,
-          payrollWeekEndDate: weekEnd,
-          status: 'APPROVED',
-          currentRevisionNumber: 1,
-          totalRegularPay: totals.totalRegularPay,
-          totalOvertimePay: totals.totalOvertimePay,
-          totalAdditions: totals.totalAdditions,
-          totalDeductions: totals.totalDeductions,
-          totalNetPayable: totals.totalNetPayable,
-          approvedAt: now,
-        },
-      })
+        if (!upload || upload.source !== 'ETIMEOFFICE' || upload.status !== 'APPROVED') {
+          throw new PayrollServiceError('ATTENDANCE_NOT_APPROVED', "Attendance for this week isn't approved yet")
+        }
+        if (!upload.approvedAt || upload.approvedAt.getTime() !== new Date(summary.attendanceApprovedAt).getTime()) {
+          throw new PayrollServiceError(
+            'ATTENDANCE_CHANGED',
+            'Attendance for this week changed after this summary was calculated. Go back and recalculate.',
+          )
+        }
 
-      await tx.payrollRevision.create({
-        data: {
-          id: revisionId,
-          payrollRunId: runId,
-          revisionNumber: 1,
-          status: 'APPROVED',
-          isCurrent: true,
-          totalRegularPay: totals.totalRegularPay,
-          totalOvertimePay: totals.totalOvertimePay,
-          totalAdditions: totals.totalAdditions,
-          totalDeductions: totals.totalDeductions,
-          totalNetPayable: totals.totalNetPayable,
-          approvedAt: now,
-        },
-      })
+        // Carry forward first. Skipping moves a left-out employee's pending or approved
+        // application to the next week, so the link step below can never attach it to this run.
+        const leftOutApplications = await tx.payrollAdjustmentApplication.findMany({
+          where: {
+            payrollWeekStartDate: weekStart,
+            payrollRunId: null,
+            approvalStatus: { in: ['PENDING', 'APPROVED'] },
+            employeeId: { notIn: includedIds },
+            payrollAdjustment: { status: { not: 'CANCELLED' } },
+          },
+          select: { id: true },
+        })
+        for (const application of leftOutApplications) {
+          await skipAdjustmentApplication(application.id, tx)
+        }
 
-      await tx.payrollRunEmployee.createMany({
-        data: employees.map((emp) => ({
-          payrollRunId: runId,
-          payrollRevisionId: revisionId,
-          employeeId: emp.employeeId,
-          weeklySalaryUsed: emp.weeklySalaryUsed,
-          hourlyRateUsed: emp.hourlyRateUsed,
-          regularHours: emp.regularHours,
-          overtimeHours: emp.overtimeHours,
-          regularPay: emp.regularPay,
-          overtimePay: emp.overtimePay,
-          additions: emp.additions,
-          deductions: emp.deductions,
-          netPayable: emp.netPayable,
-        })),
-      })
+        await tx.payrollRun.create({
+          data: {
+            id: runId,
+            payrollWeekStartDate: weekStart,
+            payrollWeekEndDate: weekEnd,
+            status: 'APPROVED',
+            currentRevisionNumber: 1,
+            totalRegularPay: totals.totalRegularPay,
+            totalOvertimePay: totals.totalOvertimePay,
+            totalAdditions: totals.totalAdditions,
+            totalDeductions: totals.totalDeductions,
+            totalNetPayable: totals.totalNetPayable,
+            approvedAt: now,
+            approvedWeekStart: weekStart,
+          },
+        })
 
-      await tx.payrollAdjustmentApplication.updateMany({
-        where: {
-          payrollWeekStartDate: weekStart,
-          approvalStatus: 'APPROVED',
-          payrollRunId: null,
-        },
-        data: {
-          payrollRunId: runId,
-          payrollRevisionId: revisionId,
-        },
-      })
-    },
-    { timeout: 30000 },
-  )
+        await tx.payrollRevision.create({
+          data: {
+            id: revisionId,
+            payrollRunId: runId,
+            revisionNumber: 1,
+            status: 'APPROVED',
+            isCurrent: true,
+            totalRegularPay: totals.totalRegularPay,
+            totalOvertimePay: totals.totalOvertimePay,
+            totalAdditions: totals.totalAdditions,
+            totalDeductions: totals.totalDeductions,
+            totalNetPayable: totals.totalNetPayable,
+            approvedAt: now,
+          },
+        })
+
+        await tx.payrollRunEmployee.createMany({
+          data: employees.map((emp) => ({
+            payrollRunId: runId,
+            payrollRevisionId: revisionId,
+            employeeId: emp.employeeId,
+            weeklySalaryUsed: emp.weeklySalaryUsed,
+            hourlyRateUsed: emp.hourlyRateUsed,
+            regularHours: emp.regularHours,
+            overtimeHours: emp.overtimeHours,
+            regularPay: emp.regularPay,
+            overtimePay: emp.overtimePay,
+            additions: emp.additions,
+            deductions: emp.deductions,
+            netPayable: emp.netPayable,
+          })),
+        })
+
+        await tx.payrollAdjustmentApplication.updateMany({
+          where: {
+            payrollWeekStartDate: weekStart,
+            approvalStatus: 'APPROVED',
+            payrollRunId: null,
+          },
+          data: {
+            payrollRunId: runId,
+            payrollRevisionId: revisionId,
+          },
+        })
+      },
+      { timeout: 30000 },
+    )
+  } catch (error) {
+    // Unique approvedWeekStart: a second approval slipped past every check (it cannot, but the key is the floor).
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      throw new PayrollServiceError('PAYROLL_ALREADY_EXISTS', 'Payroll for this week is already approved')
+    }
+    throw error
+  }
 
   return {
     payrollRunId: runId,

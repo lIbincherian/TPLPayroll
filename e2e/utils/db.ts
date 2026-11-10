@@ -825,6 +825,7 @@ export async function seedApprovedPayrollData(
       totalDeductions:  500,
       totalNetPayable:  6950,
       approvedAt,
+      approvedWeekStart: weekStart,
     },
   });
 
@@ -1052,8 +1053,9 @@ export async function seedApprovedPayrollForCorrection(): Promise<{
   // emp2: reg=56×75=4200, ot=0 → net=4200
   await client.query(
     `INSERT INTO "PayrollRun" (id, "payrollWeekStartDate", "payrollWeekEndDate", status, "currentRevisionNumber",
-     "totalRegularPay", "totalOvertimePay", "totalAdditions", "totalDeductions", "totalNetPayable", "approvedAt", "generatedAt")
-     VALUES ($1, $2, $3, 'APPROVED', 1, 7075.00, 375.00, 0.00, 500.00, 6950.00, $4, NOW())`,
+     "totalRegularPay", "totalOvertimePay", "totalAdditions", "totalDeductions", "totalNetPayable", "approvedAt", "generatedAt",
+     "approvedWeekStart")
+     VALUES ($1, $2, $3, 'APPROVED', 1, 7075.00, 375.00, 0.00, 500.00, 6950.00, $4, NOW(), $2)`,
     [runId, weekStart, weekEnd, approvedAt]
   )
 

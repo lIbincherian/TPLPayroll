@@ -146,6 +146,7 @@ function makePayrollRun(overrides: Partial<PayrollRun> = {}): PayrollRun {
     generatedAt: new Date('2025-03-14'),
     approvedAt: new Date('2025-03-14'),
     invoicesGeneratedAt: null,
+    approvedWeekStart: null,
     ...overrides,
   }
 }
@@ -924,6 +925,8 @@ describe('approvePayroll', () => {
 
     expect(capturedRunData?.totalNetPayable).toBe(44000)
     expect(capturedRunData?.status).toBe('APPROVED')
+    // The run carries the unique approved-week key.
+    expect((capturedRunData as Record<string, unknown> | null)?.approvedWeekStart).toEqual(WEEK_START)
     expect(result.totalNetPayable).toBe(44000)
     expect(result.employeeCount).toBe(15)
   })
