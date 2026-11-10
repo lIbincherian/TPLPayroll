@@ -264,10 +264,14 @@ describe('a unique-key violation from the transaction (P2002)', () => {
     expect(tx.payrollRunEmployee.createMany).not.toHaveBeenCalled()
   })
 
-  it('(pinned deviation) any P2002 in the transaction maps to PAYROLL_ALREADY_EXISTS, not only one on approvedWeekStart', async () => {
-    tx.payrollRevision.create.mockRejectedValue(p2002('some_other_unique_index'))
+  it('a P2002 on some other unique index is rethrown unchanged (same object), not mapped to PAYROLL_ALREADY_EXISTS', async () => {
+    const other = p2002('some_other_unique_index')
+    tx.payrollRevision.create.mockRejectedValue(other)
 
-    await expect(approvePayroll(summary())).rejects.toMatchObject({ code: 'PAYROLL_ALREADY_EXISTS', message: ALREADY })
+    const error = await approvePayroll(summary()).catch((e) => e)
+
+    expect(error).toBe(other)
+    expect(error).not.toBeInstanceOf(PayrollServiceError)
   })
 
   it('also maps when the violation is raised by the commit of the transaction call itself', async () => {

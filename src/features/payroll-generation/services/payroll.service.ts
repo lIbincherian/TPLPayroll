@@ -309,6 +309,25 @@ export async function calculatePayroll(
 // ─── approvePayroll ───────────────────────────────────────────────────────────
 
 /**
+ * True when a P2002 is the one-approved-run-per-week key. Reads both the classic shape
+ * (`meta.target`) and the driver-adapter shape (`meta.driverAdapterError.cause`), where Prisma 7
+ * with adapter-pg sets no `target` and names the key in `constraint.fields` and `originalMessage`.
+ */
+export function isApprovedWeekConflict(error: Prisma.PrismaClientKnownRequestError): boolean {
+  const meta = error.meta as
+    | {
+        target?: unknown
+        driverAdapterError?: { cause?: { constraint?: { fields?: unknown; index?: unknown }; originalMessage?: unknown } }
+      }
+    | undefined
+  const cause = meta?.driverAdapterError?.cause
+  const names = [meta?.target, cause?.constraint?.fields, cause?.constraint?.index, cause?.originalMessage]
+    .flatMap((v) => (Array.isArray(v) ? v : [v]))
+    .filter((v): v is string => typeof v === 'string')
+  return names.some((name) => name.includes('approvedWeekStart'))
+}
+
+/**
  * Approve the payroll: create the run, revision 1 and the employee rows, link the week's
  * approved adjustments, and carry forward the adjustments of employees who were left out
  * of this payroll. All of it is one transaction, so a carry-forward can never be applied
@@ -454,7 +473,8 @@ export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePa
     )
   } catch (error) {
     // Unique approvedWeekStart: a second approval slipped past every check (it cannot, but the key is the floor).
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+    // Any other unique violation is a different problem and is rethrown as it is.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002' && isApprovedWeekConflict(error)) {
       throw new PayrollServiceError('PAYROLL_ALREADY_EXISTS', 'Payroll for this week is already approved')
     }
     throw error
