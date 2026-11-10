@@ -387,6 +387,8 @@ describe('employee check refuses while a pull is running', () => {
     db.employee.findMany.mockResolvedValue([asha, makeEmployee({ ...inactive })])
     db.employee.findUnique.mockResolvedValue({ ...inactive, id: 'emp-36' })
     db.attendancePunch.count.mockResolvedValue(4)
+    // The transaction repeats the count under the week lock (unresolved punches of the code, or the employee's punches).
+    db.tx.attendancePunch.count.mockResolvedValue(4)
     db.tx.attendanceCodeException.findUnique.mockResolvedValue(null)
     db.tx.attendanceCodeException.upsert.mockResolvedValue({ id: 'exception-1' })
     db.tx.attendancePunch.findMany.mockResolvedValue([])

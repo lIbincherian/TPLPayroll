@@ -267,18 +267,31 @@ describe('getEmployeeCheckIssues', () => {
 describe('rematchWeekCodes', () => {
   const newEmployee = makeEmployee({ id: 'emp-999', employeeId: 'TPLGOAHLP999', employeeName: 'New Hire' })
 
-  /** `tx.attendancePunch.findMany` answers the two lookups linkCodeToEmployee makes. */
-  function stubLinkLookups(opts: { codeRows: Array<{ id: string; punchDate: Date; pairIndex: number }>; existing?: Array<{ punchDate: Date; pairIndex: number }> }) {
-    db.tx.attendancePunch.findMany.mockImplementation(async ({ where }: { where: { empCode?: string; employeeId?: string } }) =>
-      where.empCode ? opts.codeRows : (opts.existing ?? []),
+  /**
+   * rematchWeekCodes reads and writes inside its one transaction, so db.tx serves everything: the
+   * unresolved codes (the `distinct` query), the employees, the saved exceptions, and the two lookups
+   * linkCodeToEmployee makes (the code's rows, then the employee's existing pairs).
+   */
+  function serveRematch(opts: {
+    unresolved: Array<{ empCode: string; matchStatus: string }>
+    employees?: Array<ReturnType<typeof makeEmployee>>
+    exceptions?: Array<{ empCode: string; kind: string; employeeId: string | null }>
+    codeRows?: Array<{ id: string; punchDate: Date; pairIndex: number }>
+    existing?: Array<{ punchDate: Date; pairIndex: number }>
+  }) {
+    db.tx.employee.findMany.mockResolvedValue(opts.employees ?? [asha, sevenA, sevenB, inactive, resigned, resigningDuringWeek])
+    db.tx.attendanceCodeException.findMany.mockResolvedValue(opts.exceptions ?? [])
+    db.tx.attendancePunch.findMany.mockImplementation(
+      async ({ where, distinct }: { where: { empCode?: string }; distinct?: string[] }) =>
+        distinct ? opts.unresolved : where.empCode ? (opts.codeRows ?? []) : (opts.existing ?? []),
     )
-    db.tx.attendancePunch.updateMany.mockResolvedValue({ count: opts.codeRows.length })
+    db.tx.attendancePunch.updateMany.mockResolvedValue({ count: opts.codeRows?.length ?? 0 })
   }
 
   it('links the punches of a code to an employee created after the fix, and says which codes matched', async () => {
-    db.employee.findMany.mockResolvedValue([asha, newEmployee])
-    db.attendancePunch.findMany.mockResolvedValue([{ empCode: '0999', matchStatus: 'UNKNOWN' }])
-    stubLinkLookups({
+    serveRematch({
+      employees: [asha, newEmployee],
+      unresolved: [{ empCode: '0999', matchStatus: 'UNKNOWN' }],
       codeRows: [
         { id: 'u1-0', punchDate: utc('2026-11-05'), pairIndex: 0 },
         { id: 'u1-1', punchDate: utc('2026-11-05'), pairIndex: 0 },
@@ -291,6 +304,10 @@ describe('rematchWeekCodes', () => {
       matched: [{ empCode: '0999', employeeId: 'emp-999', employeeCode: 'TPLGOAHLP999' }],
       stillUnresolved: [],
     })
+    // Reads, writes and the audit row all happen in the one transaction.
+    expect(db.$transaction).toHaveBeenCalledTimes(1)
+    expect(db.attendancePunch.updateMany).not.toHaveBeenCalled()
+    expect(db.auditLog.create).not.toHaveBeenCalled()
     expect(db.tx.attendancePunch.updateMany).toHaveBeenCalledWith({
       where: { id: { in: ['u1-0', 'u1-1'] } },
       data: { employeeId: 'emp-999', matchStatus: 'MATCHED' },
@@ -307,11 +324,11 @@ describe('rematchWeekCodes', () => {
   })
 
   it('looks only at unresolved codes in the live set', async () => {
-    db.attendancePunch.findMany.mockResolvedValue([])
+    serveRematch({ unresolved: [] })
 
     await rematchWeekCodes(WEEK_ID)
 
-    expect(db.attendancePunch.findMany).toHaveBeenCalledWith({
+    expect(db.tx.attendancePunch.findMany).toHaveBeenCalledWith({
       where: { attendanceUploadId: 'upload-1', correctionId: null, matchStatus: { in: ['UNKNOWN', 'DUPLICATE'] } },
       select: { empCode: true, matchStatus: true },
       distinct: ['empCode'],
@@ -319,32 +336,35 @@ describe('rematchWeekCodes', () => {
   })
 
   it('leaves a code that still matches nothing in the unresolved list and writes nothing', async () => {
-    db.attendancePunch.findMany.mockResolvedValue([{ empCode: '0999', matchStatus: 'UNKNOWN' }])
+    serveRematch({ unresolved: [{ empCode: '0999', matchStatus: 'UNKNOWN' }] })
 
     const result = await rematchWeekCodes(WEEK_ID)
 
     expect(result).toEqual({ matched: [], stillUnresolved: ['0999'] })
-    expect(db.$transaction).not.toHaveBeenCalled()
+    expect(db.tx.attendancePunch.updateMany).not.toHaveBeenCalled()
+    expect(db.tx.auditLog.create).not.toHaveBeenCalled()
     expect(db.attendancePunch.updateMany).not.toHaveBeenCalled()
     expect(db.auditLog.create).not.toHaveBeenCalled()
   })
 
   it('does not guess: a code that now matches two employees stays unresolved as DUPLICATE', async () => {
-    db.attendancePunch.findMany.mockResolvedValue([{ empCode: '0007', matchStatus: 'UNKNOWN' }])
+    serveRematch({ unresolved: [{ empCode: '0007', matchStatus: 'UNKNOWN' }] })
 
     const result = await rematchWeekCodes(WEEK_ID)
 
     expect(result).toEqual({ matched: [], stillUnresolved: ['0007'] })
-    expect(db.attendancePunch.updateMany).toHaveBeenCalledWith({
+    expect(db.tx.attendancePunch.updateMany).toHaveBeenCalledWith({
       where: { attendanceUploadId: 'upload-1', correctionId: null, empCode: '0007', matchStatus: { in: ['UNKNOWN', 'DUPLICATE'] } },
       data: { matchStatus: 'DUPLICATE' },
     })
   })
 
   it('turns a duplicate whose second ID was edited into a match for the remaining employee', async () => {
-    db.employee.findMany.mockResolvedValue([sevenA, { ...sevenB, employeeId: 'TPLGOASUP070' }])
-    db.attendancePunch.findMany.mockResolvedValue([{ empCode: '0007', matchStatus: 'DUPLICATE' }])
-    stubLinkLookups({ codeRows: [{ id: 'd1-0', punchDate: utc('2026-11-05'), pairIndex: 0 }] })
+    serveRematch({
+      employees: [sevenA, { ...sevenB, employeeId: 'TPLGOASUP070' }],
+      unresolved: [{ empCode: '0007', matchStatus: 'DUPLICATE' }],
+      codeRows: [{ id: 'd1-0', punchDate: utc('2026-11-05'), pairIndex: 0 }],
+    })
 
     const result = await rematchWeekCodes(WEEK_ID)
 
@@ -352,21 +372,20 @@ describe('rematchWeekCodes', () => {
   })
 
   it('turns a duplicate whose second ID was edited into UNKNOWN when neither matches any more', async () => {
-    db.employee.findMany.mockResolvedValue([asha])
-    db.attendancePunch.findMany.mockResolvedValue([{ empCode: '0007', matchStatus: 'DUPLICATE' }])
+    serveRematch({ employees: [asha], unresolved: [{ empCode: '0007', matchStatus: 'DUPLICATE' }] })
 
     const result = await rematchWeekCodes(WEEK_ID)
 
     expect(result).toEqual({ matched: [], stillUnresolved: ['0007'] })
-    expect(db.attendancePunch.updateMany).toHaveBeenCalledWith(
+    expect(db.tx.attendancePunch.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: { matchStatus: 'UNKNOWN' } }),
     )
   })
 
   it('appends the code\'s pairs after an employee\'s existing pairs on the same day and never re-pairs existing punches', async () => {
-    db.employee.findMany.mockResolvedValue([asha, newEmployee])
-    db.attendancePunch.findMany.mockResolvedValue([{ empCode: '0999', matchStatus: 'UNKNOWN' }])
-    stubLinkLookups({
+    serveRematch({
+      employees: [asha, newEmployee],
+      unresolved: [{ empCode: '0999', matchStatus: 'UNKNOWN' }],
       codeRows: [
         { id: 'c-0', punchDate: utc('2026-11-05'), pairIndex: 0 }, // same day as an existing pair 0 and 1
         { id: 'c-1', punchDate: utc('2026-11-05'), pairIndex: 0 },
@@ -396,24 +415,31 @@ describe('rematchWeekCodes', () => {
   })
 
   it('applies a saved IGNORE exception to a code that is still unresolved', async () => {
-    db.attendanceCodeException.findMany.mockResolvedValue([{ empCode: '0999', kind: 'IGNORE', employeeId: null }])
-    db.attendancePunch.findMany.mockResolvedValue([{ empCode: '0999', matchStatus: 'UNKNOWN' }])
+    serveRematch({
+      exceptions: [{ empCode: '0999', kind: 'IGNORE', employeeId: null }],
+      unresolved: [{ empCode: '0999', matchStatus: 'UNKNOWN' }],
+    })
 
     const result = await rematchWeekCodes(WEEK_ID)
 
     expect(result).toEqual({ matched: [], stillUnresolved: [] })
-    expect(db.attendancePunch.updateMany).toHaveBeenCalledWith({
+    expect(db.tx.attendancePunch.updateMany).toHaveBeenCalledWith({
       where: { attendanceUploadId: 'upload-1', correctionId: null, empCode: '0999', matchStatus: { in: ['UNKNOWN', 'DUPLICATE'] } },
       data: { employeeId: null, matchStatus: 'IGNORED' },
     })
-    expect(auditRows(db)[0]).toMatchObject({ actionType: 'UPDATE', entityType: 'ATTENDANCE_CODE' })
-    expect(auditRows(db)[0].detailsJson).toMatchObject({ summary: 'Code 0999 ignored' })
+    // The write and its audit row are in the same transaction, not on the plain client.
+    expect(db.attendancePunch.updateMany).not.toHaveBeenCalled()
+    expect(auditRows(db)).toHaveLength(0)
+    expect(auditRows(db.tx)[0]).toMatchObject({ actionType: 'UPDATE', entityType: 'ATTENDANCE_CODE' })
+    expect(auditRows(db.tx)[0].detailsJson).toMatchObject({ summary: 'Code 0999 ignored' })
   })
 
   it('applies a saved MATCH exception even when the number matches nothing (C3, E2E-36)', async () => {
-    db.attendanceCodeException.findMany.mockResolvedValue([{ empCode: '0999', kind: 'MATCH', employeeId: 'emp-36' }])
-    db.attendancePunch.findMany.mockResolvedValue([{ empCode: '0999', matchStatus: 'UNKNOWN' }])
-    stubLinkLookups({ codeRows: [{ id: 'u1-0', punchDate: utc('2026-11-05'), pairIndex: 0 }] })
+    serveRematch({
+      exceptions: [{ empCode: '0999', kind: 'MATCH', employeeId: 'emp-36' }],
+      unresolved: [{ empCode: '0999', matchStatus: 'UNKNOWN' }],
+      codeRows: [{ id: 'u1-0', punchDate: utc('2026-11-05'), pairIndex: 0 }],
+    })
 
     const result = await rematchWeekCodes(WEEK_ID)
 
@@ -434,6 +460,7 @@ describe('rematchWeekCodes', () => {
 describe('matchCodeToEmployee', () => {
   beforeEach(() => {
     db.attendancePunch.count.mockResolvedValue(4)
+    db.tx.attendancePunch.count.mockResolvedValue(4) // the same check, repeated under the week lock
     db.employee.findUnique.mockResolvedValue({ id: 'emp-36', employeeId: 'TPLGOAHLP036', employeeName: 'Asha Rao' })
     db.tx.attendanceCodeException.findUnique.mockResolvedValue(null)
     db.tx.attendanceCodeException.upsert.mockResolvedValue({ id: 'exception-1' })
@@ -531,6 +558,7 @@ describe('matchCodeToEmployee', () => {
 describe('ignoreCode', () => {
   beforeEach(() => {
     db.attendancePunch.count.mockResolvedValue(4)
+    db.tx.attendancePunch.count.mockResolvedValue(4) // the same check, repeated under the week lock
     db.tx.attendanceCodeException.findUnique.mockResolvedValue(null)
     db.tx.attendanceCodeException.upsert.mockResolvedValue({ id: 'exception-9' })
     db.tx.attendancePunch.updateMany.mockResolvedValue({ count: 4 })
@@ -590,6 +618,7 @@ describe('setEmployeeDecision', () => {
   beforeEach(() => {
     db.employee.findUnique.mockResolvedValue(inactiveLite)
     db.attendancePunch.count.mockResolvedValue(4)
+    db.tx.attendancePunch.count.mockResolvedValue(4) // the same count, repeated under the week lock
     db.tx.attendanceEmployeeDecision.findUnique.mockResolvedValue(null)
     db.tx.attendanceEmployeeDecision.create.mockResolvedValue({ id: 'decision-1' })
   })

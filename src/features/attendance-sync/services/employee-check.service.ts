@@ -1,4 +1,4 @@
-import type { AttendanceUpload, Prisma } from '@prisma/client'
+import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { buildDayView } from '../lib/hours'
 import { matchEmployeeCode, needsEmployeeDecision } from '../lib/matching'
@@ -15,7 +15,9 @@ import {
 } from '../types/attendance-sync.types'
 import { auditEntry } from './attendance-audit.service'
 import { requireApiWeek } from './week-list.service'
-import { isSyncing } from './week-lock.service'
+import { assertNotSyncing, lockWeekRow } from './week-lock.service'
+
+const TRANSACTION_TIMEOUT_MS = 30000
 
 const EMPLOYEE_LITE_SELECT = {
   id: true,
@@ -57,32 +59,43 @@ async function loadLivePunches(uploadId: string): Promise<LivePunch[]> {
   })) as LivePunch[]
 }
 
-async function loadEmployees(): Promise<EmployeeLite[]> {
-  return prisma.employee.findMany({ select: EMPLOYEE_LITE_SELECT }) as Promise<EmployeeLite[]>
+async function loadEmployees(db: Prisma.TransactionClient = prisma): Promise<EmployeeLite[]> {
+  return db.employee.findMany({ select: EMPLOYEE_LITE_SELECT }) as Promise<EmployeeLite[]>
 }
 
-async function loadExceptions(): Promise<CodeExceptionLite[]> {
-  return (await prisma.attendanceCodeException.findMany({
+async function loadExceptions(db: Prisma.TransactionClient = prisma): Promise<CodeExceptionLite[]> {
+  return (await db.attendanceCodeException.findMany({
     select: { empCode: true, kind: true, employeeId: true },
   })) as CodeExceptionLite[]
 }
 
-function syncInProgress(): AttendanceSyncError {
-  return new AttendanceSyncError(
-    'SYNC_IN_PROGRESS',
-    'A pull is running for this week. Wait for it to finish, then try again.',
-  )
-}
+type WeekState = { status: string; syncLockedAt: Date | null }
 
 /**
- * The week's codes and decisions can change while it is in review, but not once approved
- * and not while a pull is replacing the punches (the pull would discard the change).
+ * Codes change while the week is in review or failed, never once approved, never while a pull
+ * holds it (the pull would discard the change). Called on the week row read before a transaction
+ * (fast fail) and again on the locked row inside it.
  */
-function assertEditable(upload: AttendanceUpload): void {
-  if (upload.status === 'APPROVED') {
+function assertCodesEditable(row: WeekState, now = new Date()): void {
+  if (row.status === 'APPROVED') {
     throw new AttendanceSyncError('WEEK_LOCKED', 'This week is approved. Reopen it to change codes or decisions.')
   }
-  if (isSyncing(upload)) throw syncInProgress()
+  assertNotSyncing(row, now)
+}
+
+/** Decisions change only while the week is in review, and not while a pull holds it. */
+function assertDecisionsEditable(row: WeekState, now = new Date()): void {
+  if (row.status !== 'REVIEW') {
+    throw new AttendanceSyncError('WEEK_LOCKED', 'This week is locked. Reopen it to change decisions.')
+  }
+  assertNotSyncing(row, now)
+}
+
+/** The first statement of every writer's transaction: take the week row, then check its state. */
+async function lockWeek(tx: Prisma.TransactionClient, uploadId: string) {
+  const locked = await lockWeekRow(tx, { id: uploadId })
+  if (!locked) throw new AttendanceSyncError('WEEK_NOT_READY', 'No attendance has been loaded for this week.')
+  return locked
 }
 
 // ─── getEmployeeCheck ─────────────────────────────────────────────────────────
@@ -203,16 +216,14 @@ async function linkCodeToEmployee(
   empCode: string,
   employeeId: string,
 ): Promise<number> {
-  const [codeRows, existing] = await Promise.all([
-    tx.attendancePunch.findMany({
-      where: { attendanceUploadId: uploadId, correctionId: null, empCode, matchStatus: { in: UNRESOLVED } },
-      select: { id: true, punchDate: true, pairIndex: true },
-    }),
-    tx.attendancePunch.findMany({
-      where: { attendanceUploadId: uploadId, correctionId: null, employeeId },
-      select: { punchDate: true, pairIndex: true },
-    }),
-  ])
+  const codeRows = await tx.attendancePunch.findMany({
+    where: { attendanceUploadId: uploadId, correctionId: null, empCode, matchStatus: { in: UNRESOLVED } },
+    select: { id: true, punchDate: true, pairIndex: true },
+  })
+  const existing = await tx.attendancePunch.findMany({
+    where: { attendanceUploadId: uploadId, correctionId: null, employeeId },
+    select: { punchDate: true, pairIndex: true },
+  })
 
   const nextIndexByDay = new Map<string, number>()
   for (const row of existing) {
@@ -244,85 +255,94 @@ async function linkCodeToEmployee(
 
 /**
  * Re-run matching for the week's unresolved codes with the current employees and saved
- * exceptions. Call after the user adds or edits an employee.
+ * exceptions. Call after the user adds or edits an employee. All of it runs in one transaction
+ * that first locks the week's row, so a pull or an approval cannot land in the middle.
  */
 export async function rematchWeekCodes(
   weekId: string,
 ): Promise<{ matched: Array<{ empCode: string; employeeId: string; employeeCode: string }>; stillUnresolved: string[] }> {
   const { upload, week } = await requireApiWeek(weekId)
-  assertEditable(upload)
+  assertCodesEditable(upload)
 
-  const [unresolved, employees, exceptions] = await Promise.all([
-    prisma.attendancePunch.findMany({
-      where: { attendanceUploadId: upload.id, correctionId: null, matchStatus: { in: UNRESOLVED } },
-      select: { empCode: true, matchStatus: true },
-      distinct: ['empCode'],
-    }),
-    loadEmployees(),
-    loadExceptions(),
-  ])
+  return prisma.$transaction(
+    async (tx) => {
+      assertCodesEditable(await lockWeek(tx, upload.id))
 
-  const matched: Array<{ empCode: string; employeeId: string; employeeCode: string }> = []
-  const stillUnresolved: string[] = []
-  const unresolvedWhere = (empCode: string) => ({
-    attendanceUploadId: upload.id,
-    correctionId: null,
-    empCode,
-    matchStatus: { in: UNRESOLVED },
-  })
-
-  for (const { empCode, matchStatus } of unresolved) {
-    const match = matchEmployeeCode(empCode, employees, exceptions)
-
-    if (match.status === 'MATCHED') {
-      await prisma.$transaction(async (tx) => {
-        const linkedPunches = await linkCodeToEmployee(tx, upload.id, empCode, match.employee.id)
-        await auditEntry(
-          {
-            actionType: 'UPDATE',
-            entityType: 'ATTENDANCE_CODE',
-            entityId: upload.id,
-            details: {
-              summary: `Code ${empCode} linked to ${match.employee.employeeId}`,
-              weekStart: week.start,
-              empCode,
-              employeeId: match.employee.id,
-              employeeCode: match.employee.employeeId,
-              via: match.via,
-              linkedPunches,
-            },
-          },
-          tx,
-        )
+      const unresolved = await tx.attendancePunch.findMany({
+        where: { attendanceUploadId: upload.id, correctionId: null, matchStatus: { in: UNRESOLVED } },
+        select: { empCode: true, matchStatus: true },
+        distinct: ['empCode'],
       })
-      matched.push({ empCode, employeeId: match.employee.id, employeeCode: match.employee.employeeId })
-    } else if (match.status === 'IGNORED') {
-      await prisma.$transaction([
-        prisma.attendancePunch.updateMany({
-          where: unresolvedWhere(empCode),
-          data: { employeeId: null, matchStatus: 'IGNORED' },
-        }),
-        auditEntry({
-          actionType: 'UPDATE',
-          entityType: 'ATTENDANCE_CODE',
-          entityId: upload.id,
-          details: { summary: `Code ${empCode} ignored`, weekStart: week.start, empCode },
-        }),
-      ])
-    } else {
-      // A duplicate whose second ID was edited becomes unknown (and the reverse).
-      if (match.status !== matchStatus) {
-        await prisma.attendancePunch.updateMany({ where: unresolvedWhere(empCode), data: { matchStatus: match.status } })
-      }
-      stillUnresolved.push(empCode)
-    }
-  }
+      const employees = await loadEmployees(tx)
+      const exceptions = await loadExceptions(tx)
 
-  return { matched, stillUnresolved }
+      const matched: Array<{ empCode: string; employeeId: string; employeeCode: string }> = []
+      const stillUnresolved: string[] = []
+      const unresolvedWhere = (empCode: string) => ({
+        attendanceUploadId: upload.id,
+        correctionId: null,
+        empCode,
+        matchStatus: { in: UNRESOLVED },
+      })
+
+      for (const { empCode, matchStatus } of unresolved) {
+        const match = matchEmployeeCode(empCode, employees, exceptions)
+
+        if (match.status === 'MATCHED') {
+          const linkedPunches = await linkCodeToEmployee(tx, upload.id, empCode, match.employee.id)
+          await auditEntry(
+            {
+              actionType: 'UPDATE',
+              entityType: 'ATTENDANCE_CODE',
+              entityId: upload.id,
+              details: {
+                summary: `Code ${empCode} linked to ${match.employee.employeeId}`,
+                weekStart: week.start,
+                empCode,
+                employeeId: match.employee.id,
+                employeeCode: match.employee.employeeId,
+                via: match.via,
+                linkedPunches,
+              },
+            },
+            tx,
+          )
+          matched.push({ empCode, employeeId: match.employee.id, employeeCode: match.employee.employeeId })
+        } else if (match.status === 'IGNORED') {
+          await tx.attendancePunch.updateMany({
+            where: unresolvedWhere(empCode),
+            data: { employeeId: null, matchStatus: 'IGNORED' },
+          })
+          await auditEntry(
+            {
+              actionType: 'UPDATE',
+              entityType: 'ATTENDANCE_CODE',
+              entityId: upload.id,
+              details: { summary: `Code ${empCode} ignored`, weekStart: week.start, empCode },
+            },
+            tx,
+          )
+        } else {
+          // A duplicate whose second ID was edited becomes unknown (and the reverse).
+          if (match.status !== matchStatus) {
+            await tx.attendancePunch.updateMany({ where: unresolvedWhere(empCode), data: { matchStatus: match.status } })
+          }
+          stillUnresolved.push(empCode)
+        }
+      }
+
+      return { matched, stillUnresolved }
+    },
+    { timeout: TRANSACTION_TIMEOUT_MS },
+  )
 }
 
-async function requireUnresolvedCode(uploadId: string, empCode: string): Promise<void> {
-  const count = await prisma.attendancePunch.count({
+async function requireUnresolvedCode(
+  uploadId: string,
+  empCode: string,
+  db: Prisma.TransactionClient = prisma,
+): Promise<void> {
+  const count = await db.attendancePunch.count({
     where: { attendanceUploadId: uploadId, correctionId: null, empCode, matchStatus: { in: UNRESOLVED } },
   })
   if (count === 0) throw new AttendanceSyncError('CODE_NOT_FOUND', "That code doesn't need fixing in this week.")
@@ -338,7 +358,7 @@ export async function matchCodeToEmployee(
   employeeId: string,
 ): Promise<{ linkedPunches: number }> {
   const { upload, week } = await requireApiWeek(weekId)
-  assertEditable(upload)
+  assertCodesEditable(upload)
   await requireUnresolvedCode(upload.id, empCode)
 
   const employee = await prisma.employee.findUnique({
@@ -347,71 +367,85 @@ export async function matchCodeToEmployee(
   })
   if (!employee) throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', 'That employee no longer exists.')
 
-  return prisma.$transaction(async (tx) => {
-    const previous = await tx.attendanceCodeException.findUnique({ where: { empCode }, select: { id: true } })
-    const exception = await tx.attendanceCodeException.upsert({
-      where: { empCode },
-      create: { empCode, kind: 'MATCH', employeeId: employee.id },
-      update: { kind: 'MATCH', employeeId: employee.id },
-    })
-    const linkedPunches = await linkCodeToEmployee(tx, upload.id, empCode, employee.id)
+  return prisma.$transaction(
+    async (tx) => {
+      assertCodesEditable(await lockWeek(tx, upload.id))
+      // A pull or another match may have resolved the code since the check above.
+      await requireUnresolvedCode(upload.id, empCode, tx)
 
-    await auditEntry(
-      {
-        actionType: previous ? 'UPDATE' : 'CREATE',
-        entityType: 'ATTENDANCE_CODE',
-        entityId: exception.id,
-        details: {
-          summary: `Code ${empCode} matched to ${employee.employeeName} (${employee.employeeId})`,
-          weekStart: week.start,
-          empCode,
-          kind: 'MATCH',
-          employeeId: employee.id,
-          employeeCode: employee.employeeId,
-          linkedPunches,
+      const previous = await tx.attendanceCodeException.findUnique({ where: { empCode }, select: { id: true } })
+      const exception = await tx.attendanceCodeException.upsert({
+        where: { empCode },
+        create: { empCode, kind: 'MATCH', employeeId: employee.id },
+        update: { kind: 'MATCH', employeeId: employee.id },
+      })
+      const linkedPunches = await linkCodeToEmployee(tx, upload.id, empCode, employee.id)
+
+      await auditEntry(
+        {
+          actionType: previous ? 'UPDATE' : 'CREATE',
+          entityType: 'ATTENDANCE_CODE',
+          entityId: exception.id,
+          details: {
+            summary: `Code ${empCode} matched to ${employee.employeeName} (${employee.employeeId})`,
+            weekStart: week.start,
+            empCode,
+            kind: 'MATCH',
+            employeeId: employee.id,
+            employeeCode: employee.employeeId,
+            linkedPunches,
+          },
         },
-      },
-      tx,
-    )
-    return { linkedPunches }
-  })
+        tx,
+      )
+      return { linkedPunches }
+    },
+    { timeout: TRANSACTION_TIMEOUT_MS },
+  )
 }
 
 /** Leave a code out of the review and payroll. Saved, so it carries over to later pulls. */
 export async function ignoreCode(weekId: string, empCode: string): Promise<{ ignoredPunches: number }> {
   const { upload, week } = await requireApiWeek(weekId)
-  assertEditable(upload)
+  assertCodesEditable(upload)
   await requireUnresolvedCode(upload.id, empCode)
 
-  return prisma.$transaction(async (tx) => {
-    const previous = await tx.attendanceCodeException.findUnique({ where: { empCode }, select: { id: true } })
-    const exception = await tx.attendanceCodeException.upsert({
-      where: { empCode },
-      create: { empCode, kind: 'IGNORE', employeeId: null },
-      update: { kind: 'IGNORE', employeeId: null },
-    })
-    const updated = await tx.attendancePunch.updateMany({
-      where: { attendanceUploadId: upload.id, correctionId: null, empCode, matchStatus: { in: UNRESOLVED } },
-      data: { matchStatus: 'IGNORED', employeeId: null },
-    })
+  return prisma.$transaction(
+    async (tx) => {
+      assertCodesEditable(await lockWeek(tx, upload.id))
+      // A pull or a match may have resolved the code since the check above.
+      await requireUnresolvedCode(upload.id, empCode, tx)
 
-    await auditEntry(
-      {
-        actionType: previous ? 'UPDATE' : 'CREATE',
-        entityType: 'ATTENDANCE_CODE',
-        entityId: exception.id,
-        details: {
-          summary: `Code ${empCode} ignored`,
-          weekStart: week.start,
-          empCode,
-          kind: 'IGNORE',
-          ignoredPunches: updated.count,
+      const previous = await tx.attendanceCodeException.findUnique({ where: { empCode }, select: { id: true } })
+      const exception = await tx.attendanceCodeException.upsert({
+        where: { empCode },
+        create: { empCode, kind: 'IGNORE', employeeId: null },
+        update: { kind: 'IGNORE', employeeId: null },
+      })
+      const updated = await tx.attendancePunch.updateMany({
+        where: { attendanceUploadId: upload.id, correctionId: null, empCode, matchStatus: { in: UNRESOLVED } },
+        data: { matchStatus: 'IGNORED', employeeId: null },
+      })
+
+      await auditEntry(
+        {
+          actionType: previous ? 'UPDATE' : 'CREATE',
+          entityType: 'ATTENDANCE_CODE',
+          entityId: exception.id,
+          details: {
+            summary: `Code ${empCode} ignored`,
+            weekStart: week.start,
+            empCode,
+            kind: 'IGNORE',
+            ignoredPunches: updated.count,
+          },
         },
-      },
-      tx,
-    )
-    return { ignoredPunches: updated.count }
-  })
+        tx,
+      )
+      return { ignoredPunches: updated.count }
+    },
+    { timeout: TRANSACTION_TIMEOUT_MS },
+  )
 }
 
 // ─── Decisions ────────────────────────────────────────────────────────────────
@@ -423,10 +457,7 @@ export async function setEmployeeDecision(
   decision: EmployeeDecisionValue,
 ): Promise<{ decision: EmployeeDecisionValue }> {
   const { upload, week } = await requireApiWeek(weekId)
-  if (upload.status !== 'REVIEW') {
-    throw new AttendanceSyncError('WEEK_LOCKED', 'This week is locked. Reopen it to change decisions.')
-  }
-  if (isSyncing(upload)) throw syncInProgress()
+  assertDecisionsEditable(upload)
 
   const employee = await prisma.employee.findUnique({ where: { id: employeeId }, select: EMPLOYEE_LITE_SELECT })
   if (!employee) throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', 'That employee no longer exists.')
@@ -439,36 +470,49 @@ export async function setEmployeeDecision(
     throw new AttendanceSyncError('VALIDATION_ERROR', 'This employee does not need a decision for this week.')
   }
 
-  await prisma.$transaction(async (tx) => {
-    const key = { attendanceUploadId_employeeId: { attendanceUploadId: upload.id, employeeId } }
-    const existing = await tx.attendanceEmployeeDecision.findUnique({ where: key })
-    const saved = existing
-      ? await tx.attendanceEmployeeDecision.update({ where: key, data: { decision, reason: needed.reason } })
-      : await tx.attendanceEmployeeDecision.create({
-          data: { attendanceUploadId: upload.id, employeeId, reason: needed.reason, decision },
-        })
+  await prisma.$transaction(
+    async (tx) => {
+      assertDecisionsEditable(await lockWeek(tx, upload.id))
+      // A pull may have removed the employee's punches since the count above: a decision exists
+      // only while it is needed.
+      const lockedCount = await tx.attendancePunch.count({
+        where: { attendanceUploadId: upload.id, correctionId: null, employeeId },
+      })
+      if (!needsEmployeeDecision(employee, lockedCount, week).needed) {
+        throw new AttendanceSyncError('VALIDATION_ERROR', 'This employee does not need a decision for this week.')
+      }
 
-    await auditEntry(
-      {
-        actionType: existing ? 'UPDATE' : 'CREATE',
-        entityType: 'ATTENDANCE_DECISION',
-        entityId: saved.id,
-        details: {
-          summary: `${decision === 'APPROVED' ? 'Approved' : 'Rejected'} ${employee.employeeName} (${employee.employeeId}): ${
-            needed.reason === 'INACTIVE' ? 'inactive' : 'resigned before the week'
-          }`,
-          weekStart: week.start,
-          employeeId,
-          employeeCode: employee.employeeId,
-          employeeName: employee.employeeName,
-          reason: needed.reason,
-          old: existing ? { decision: existing.decision } : null,
-          new: { decision },
+      const key = { attendanceUploadId_employeeId: { attendanceUploadId: upload.id, employeeId } }
+      const existing = await tx.attendanceEmployeeDecision.findUnique({ where: key })
+      const saved = existing
+        ? await tx.attendanceEmployeeDecision.update({ where: key, data: { decision, reason: needed.reason } })
+        : await tx.attendanceEmployeeDecision.create({
+            data: { attendanceUploadId: upload.id, employeeId, reason: needed.reason, decision },
+          })
+
+      await auditEntry(
+        {
+          actionType: existing ? 'UPDATE' : 'CREATE',
+          entityType: 'ATTENDANCE_DECISION',
+          entityId: saved.id,
+          details: {
+            summary: `${decision === 'APPROVED' ? 'Approved' : 'Rejected'} ${employee.employeeName} (${employee.employeeId}): ${
+              needed.reason === 'INACTIVE' ? 'inactive' : 'resigned before the week'
+            }`,
+            weekStart: week.start,
+            employeeId,
+            employeeCode: employee.employeeId,
+            employeeName: employee.employeeName,
+            reason: needed.reason,
+            old: existing ? { decision: existing.decision } : null,
+            new: { decision },
+          },
         },
-      },
-      tx,
-    )
-  })
+        tx,
+      )
+    },
+    { timeout: TRANSACTION_TIMEOUT_MS },
+  )
 
   return { decision }
 }
