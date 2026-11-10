@@ -361,7 +361,9 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
   // ── Approve and reopen ──────────────────────────────────────────────────────
 
   async function confirmApprove(): Promise<ApproveResult | undefined> {
-    if (mode.kind === 'CORRECTION' && correction) {
+    if (mode.kind === 'CORRECTION') {
+      // A correction review never falls through to the live approval, even if the actions are missing.
+      if (!correction) return { ok: false, error: "This correction can't be approved from this page. Reload and try again." }
       // On success the action redirects to the revised preview, so nothing comes back.
       const res = await correction.onApprove(mode.payrollRunId)
       if (!res) return undefined
