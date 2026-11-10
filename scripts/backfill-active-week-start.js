@@ -77,7 +77,7 @@ async function run() {
         WHERE u2."isActiveForPayrollWeek" = true
       ) ranked
       WHERE u.id = ranked.id AND ranked.position > 1
-      RETURNING u.id, u."payrollWeekStartDate", u.status
+      RETURNING u.id, u."payrollWeekStartDate"::date::text AS "weekStart", u.status
     `)
 
     const filled = await client.query(`
@@ -89,7 +89,7 @@ async function run() {
     await client.query('COMMIT')
     console.log(`Stale keys cleared on inactive rows: ${staleKeys.rowCount}`)
     for (const row of deactivated.rows) {
-      console.log(`  deactivated: week ${new Date(row.payrollWeekStartDate).toISOString().slice(0, 10)}, ${row.id}, ${row.status}`)
+      console.log(`  deactivated: week ${row.weekStart}, ${row.id}, ${row.status}`)
     }
     console.log(`Duplicate active rows deactivated: ${deactivated.rowCount}`)
     console.log(`activeWeekStart filled: ${filled.rowCount}`)

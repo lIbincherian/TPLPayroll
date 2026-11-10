@@ -53,7 +53,7 @@ async function run() {
     await client.query('BEGIN')
 
     const duplicates = await client.query(`
-      SELECT "payrollWeekStartDate", array_agg(id ORDER BY "approvedAt") AS runs
+      SELECT "payrollWeekStartDate"::date::text AS "weekStart", array_agg(id ORDER BY "approvedAt") AS runs
       FROM "PayrollRun"
       WHERE status IN ('APPROVED', 'REVISED')
       GROUP BY 1
@@ -63,7 +63,7 @@ async function run() {
       await client.query('ROLLBACK')
       console.error('These weeks have more than one APPROVED/REVISED payroll run:')
       for (const row of duplicates.rows) {
-        console.error(`  ${new Date(row.payrollWeekStartDate).toISOString().slice(0, 10)}: ${row.runs.join(', ')}`)
+        console.error(`  ${row.weekStart}: ${row.runs.join(', ')}`)
       }
       console.error('Resolve by hand: exactly one APPROVED/REVISED run per week must remain. Nothing was changed.')
       process.exitCode = 1

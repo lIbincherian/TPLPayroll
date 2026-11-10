@@ -165,7 +165,7 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
 
         {step === 2 && (
           summaryError ? (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+            <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
               {summaryError}
             </div>
           ) : summary == null ? (
@@ -176,7 +176,7 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
           ) : (
             <>
               {approvalError && (
-                <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                <div role="alert" className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
                   {approvalError}
                 </div>
               )}
