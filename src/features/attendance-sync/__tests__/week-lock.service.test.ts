@@ -335,3 +335,78 @@ describe('isSyncing with a null lock (item 11)', () => {
     expect(source).toMatch(/syncLockedAt\s*===\s*undefined/)
   })
 })
+
+// ─── Fix round 4, item 8: a row without syncLockedAt (a partial select, a test double) ─────────────
+
+describe('isSyncing and assertNotSyncing with a row that has no syncLockedAt (round 4, item 8)', () => {
+  const NOW = new Date('2026-11-12T08:00:00Z')
+
+  it('an empty row is not syncing and does not throw', () => {
+    expect(() => isSyncing({}, NOW)).not.toThrow()
+    expect(isSyncing({}, NOW)).toBe(false)
+  })
+
+  it('an explicit undefined is not syncing and does not throw', () => {
+    expect(() => isSyncing({ syncLockedAt: undefined }, NOW)).not.toThrow()
+    expect(isSyncing({ syncLockedAt: undefined }, NOW)).toBe(false)
+  })
+
+  it('it works without a clock argument too', () => {
+    expect(isSyncing({})).toBe(false)
+    expect(isSyncing({ syncLockedAt: undefined })).toBe(false)
+    expect(isSyncing({ syncLockedAt: null })).toBe(false)
+  })
+
+  it('a row cut down by a partial select (other columns only) is not syncing', () => {
+    const partial = { id: 'upload-1', status: 'REVIEW' } as { syncLockedAt?: Date | null }
+
+    expect(isSyncing(partial, NOW)).toBe(false)
+    expect(() => assertNotSyncing(partial, NOW)).not.toThrow()
+  })
+
+  it('assertNotSyncing does not throw for an empty row, for undefined, or for null', () => {
+    expect(() => assertNotSyncing({}, NOW)).not.toThrow()
+    expect(() => assertNotSyncing({ syncLockedAt: undefined }, NOW)).not.toThrow()
+    expect(() => assertNotSyncing({ syncLockedAt: null }, NOW)).not.toThrow()
+  })
+
+  it('a fresh lock still throws SYNC_IN_PROGRESS with the shared message (the strict check did not loosen it)', () => {
+    const fresh = { syncLockedAt: new Date(NOW.getTime() - 1000) }
+
+    expect(isSyncing(fresh, NOW)).toBe(true)
+    let caught: unknown
+    try {
+      assertNotSyncing(fresh, NOW)
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBeInstanceOf(AttendanceSyncError)
+    expect(caught).toMatchObject({ code: 'SYNC_IN_PROGRESS', message: SYNC_IN_PROGRESS_MESSAGE })
+  })
+
+  it('a lock older than the TTL does not block, and exactly the TTL old does not block either', () => {
+    expect(isSyncing({ syncLockedAt: new Date(NOW.getTime() - SYNC_LOCK_TTL_MS - 1) }, NOW)).toBe(false)
+    expect(isSyncing({ syncLockedAt: new Date(NOW.getTime() - SYNC_LOCK_TTL_MS) }, NOW)).toBe(false)
+    expect(isSyncing({ syncLockedAt: new Date(NOW.getTime() - SYNC_LOCK_TTL_MS + 1) }, NOW)).toBe(true)
+  })
+
+  it('a lock dated in the future (a clock skew) still counts as running, not as absent', () => {
+    expect(isSyncing({ syncLockedAt: new Date(NOW.getTime() + 60_000) }, NOW)).toBe(true)
+  })
+
+  it('week-lock.service.ts has no loose `== null` / `!= null` comparison anywhere', () => {
+    const source = readFileSync(path.resolve(__dirname, '../services/week-lock.service.ts'), 'utf8')
+
+    expect(source).not.toMatch(/[^=!<>]==\s*null\b/)
+    expect(source).not.toMatch(/!=\s*null\b/)
+    expect(source).not.toMatch(/[^=!]==\s*undefined\b/)
+    expect(source).not.toMatch(/!=\s*undefined\b/)
+  })
+
+  it('the parameter types accept a row without the column (checked by tsc)', () => {
+    const noColumn: Parameters<typeof isSyncing>[0] = {}
+    const optionalNull: Parameters<typeof assertNotSyncing>[0] = { syncLockedAt: null }
+
+    expect([noColumn, optionalNull]).toHaveLength(2)
+  })
+})

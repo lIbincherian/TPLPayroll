@@ -224,6 +224,58 @@ describe('input validation', () => {
       expect(services.savePunchEdit).not.toHaveBeenCalled()
     })
 
+    // Round 4, item 1: the version of the day the editor was opened on is required, short, and a string.
+    it.each([
+      ['a missing baseSignature', { baseSignature: undefined }],
+      ['a null baseSignature', { baseSignature: null }],
+      ['an empty baseSignature', { baseSignature: '' }],
+      ['a baseSignature of 65 characters', { baseSignature: 'a'.repeat(65) }],
+      ['a numeric baseSignature', { baseSignature: 12345 }],
+      ['an object as the baseSignature', { baseSignature: { token: '4.abc' } }],
+      ['an array as the baseSignature', { baseSignature: ['4.abc'] }],
+    ])('rejects %s with VALIDATION_ERROR and never calls the service', async (_label, override) => {
+      const result = await savePunchEditAction({ ...validEdit, ...override } as unknown as SavePunchEditInput)
+
+      expect(result).toEqual({ ok: false, error: 'The request was not valid.', code: 'VALIDATION_ERROR' })
+      expect(services.savePunchEdit).not.toHaveBeenCalled()
+      expect(revalidate).not.toHaveBeenCalled()
+    })
+
+    it('rejects an input that has no baseSignature key at all (an old client)', async () => {
+      const { baseSignature: omitted, ...withoutKey } = validEdit
+      void omitted
+
+      const result = await savePunchEditAction(withoutKey as unknown as SavePunchEditInput)
+
+      expect(result).toMatchObject({ ok: false, code: 'VALIDATION_ERROR' })
+      expect(services.savePunchEdit).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['one character', 'x'],
+      ['a real token', '4.1abc2def3'],
+      ['the empty-day token', '0.1y2z3w4'],
+      ['exactly 64 characters', 'b'.repeat(64)],
+    ])('accepts %s and hands it to the service unchanged', async (_label, baseSignature) => {
+      services.savePunchEdit.mockResolvedValue({ savedAt: 'now' } as never)
+
+      await expect(savePunchEditAction({ ...validEdit, baseSignature })).resolves.toMatchObject({ ok: true })
+
+      expect(services.savePunchEdit).toHaveBeenCalledTimes(1)
+      expect(services.savePunchEdit.mock.calls[0][0].baseSignature).toBe(baseSignature)
+    })
+
+    it('answers a DAY_CHANGED refusal from the service with its code and message, so the editor can reload', async () => {
+      const message = 'This day was changed somewhere else (another tab or a pull) after you opened it. Nothing was saved. Reload the day and try again.'
+      services.savePunchEdit.mockRejectedValue(new AttendanceSyncError('DAY_CHANGED', message))
+
+      const result = await savePunchEditAction(validEdit)
+
+      expect(result).toEqual({ ok: false, error: message, code: 'DAY_CHANGED' })
+      expect(result).not.toHaveProperty('validation')
+      expect(revalidate).not.toHaveBeenCalled()
+    })
+
     it('passes a valid edit to the service, in correction mode too', async () => {
       services.savePunchEdit.mockResolvedValue({ savedAt: 'now' } as never)
       const correction = { ...validEdit, mode: { kind: 'CORRECTION', payrollRunId: 'run-1', correctionId: 's-1', revisionNumber: 2 } } as SavePunchEditInput

@@ -256,3 +256,109 @@ describe('item 9b: attendance-sync does not import payroll-correction', () => {
     })
   })
 })
+
+// ─── Round 4, item 6: one TRANSACTION_TIMEOUT_MS ──────────────────────────────
+
+describe('round 4, item 6: one TRANSACTION_TIMEOUT_MS for every transaction that holds the week lock', () => {
+  /** Lines that spell a transaction timeout as a number instead of using the shared constant. */
+  function numericTimeouts(source: string): string[] {
+    return source
+      .split('\n')
+      .filter((line) => /=\s*30000\b/.test(line) || /\btimeout\s*:\s*30000\b/.test(line) || /\btimeout\s*:\s*[\d_]+\b/.test(line))
+  }
+
+  /** True when the source imports a payroll-* feature slice, by alias, by relative path or dynamically. */
+  function importsPayrollSlice(source: string): boolean {
+    return (
+      /(?:from|import\s*\()\s*['"][^'"]*features\/payroll-[a-z-]+/.test(source) ||
+      /(?:from|import\s*\()\s*['"](?:\.\.\/)+payroll-[a-z-]+\//.test(source) ||
+      /require\(\s*['"][^'"]*(?:features\/|\.\.\/)payroll-[a-z-]+/.test(source)
+    )
+  }
+
+  const WITH_THE_LOCK = [
+    { file: 'src/features/attendance-sync/services/employee-check.service.ts', from: '../lib/constants' },
+    { file: 'src/features/attendance-sync/services/punch-review.service.ts', from: '../lib/constants' },
+    { file: 'src/features/attendance-sync/services/week-approval.service.ts', from: '../lib/constants' },
+    { file: 'src/features/attendance-sync/services/sync.service.ts', from: '../lib/constants' },
+    { file: 'src/features/payroll-correction/services/correction.service.ts', from: '@/features/attendance-sync/lib/constants' },
+    { file: 'src/features/payroll-generation/services/payroll.service.ts', from: '@/features/attendance-sync/lib/constants' },
+  ]
+  const read = (file: string) => readFileSync(path.join(ROOT, file), 'utf8')
+
+  describe('the scan itself', () => {
+    it('flags a local constant, an inline literal and a literal in a transaction option (planted fixtures)', () => {
+      expect(numericTimeouts('const TRANSACTION_TIMEOUT_MS = 30000')).toHaveLength(1)
+      expect(numericTimeouts('await prisma.$transaction(fn, { timeout: 30000 })')).toHaveLength(1)
+      expect(numericTimeouts('await prisma.$transaction(fn, {timeout:30000})')).toHaveLength(1)
+      expect(numericTimeouts('await prisma.$transaction(fn, { timeout: 30_000 })')).toHaveLength(1)
+      expect(numericTimeouts('await prisma.$transaction(fn, { timeout: 60000 })')).toHaveLength(1)
+      expect(numericTimeouts('const a = 1\nconst LOCAL_TIMEOUT = 30000\nconst b = 2')).toEqual(['const LOCAL_TIMEOUT = 30000'])
+    })
+
+    it('does not flag the shared constant, other numbers, or a longer number that contains 30000', () => {
+      expect(numericTimeouts('await prisma.$transaction(fn, { timeout: TRANSACTION_TIMEOUT_MS })')).toEqual([])
+      expect(numericTimeouts('const SYNC_LOCK_TTL_MS = 300000')).toEqual([])
+      expect(numericTimeouts('const x = 130000')).toEqual([])
+      expect(numericTimeouts("import { TRANSACTION_TIMEOUT_MS } from '../lib/constants'")).toEqual([])
+    })
+
+    it('the import scan flags alias, relative and dynamic imports of a payroll slice, and only those (planted fixtures)', () => {
+      expect(importsPayrollSlice("import { x } from '@/features/payroll-generation/services/payroll.service'")).toBe(true)
+      expect(importsPayrollSlice("import type { x } from '@/features/payroll-adjustments/types/a'")).toBe(true)
+      expect(importsPayrollSlice("export { x } from '../../payroll-reports/services/report.service'")).toBe(true)
+      expect(importsPayrollSlice("const m = await import('@/features/payroll-history/services/h')")).toBe(true)
+      expect(importsPayrollSlice("const m = require('../../payroll-correction/x')")).toBe(true)
+      expect(importsPayrollSlice("import { plural } from '../lib/format'")).toBe(false)
+      expect(importsPayrollSlice("import { x } from '@/features/employee-management/services/employee.service'")).toBe(false)
+      expect(importsPayrollSlice("import { payrollThing } from './payroll-hours'")).toBe(false)
+      expect(importsPayrollSlice("// mentions features/payroll-generation in a comment only")).toBe(false)
+    })
+  })
+
+  describe.each(WITH_THE_LOCK)('$file', ({ file, from }) => {
+    it('has no numeric transaction timeout of its own (no "= 30000", no "timeout: <number>")', () => {
+      expect(numericTimeouts(read(file))).toEqual([])
+    })
+
+    it('imports TRANSACTION_TIMEOUT_MS from the shared module and does not declare it', () => {
+      const source = read(file)
+
+      const escaped = from.replace(/[/@.]/g, (c) => `\\${c}`)
+      expect(source).toMatch(new RegExp(String.raw`import\s*\{[^}]*\bTRANSACTION_TIMEOUT_MS\b[^}]*\}\s*from\s*'${escaped}'`))
+      expect(source).not.toMatch(/\b(?:const|let|var)\s+TRANSACTION_TIMEOUT_MS\b/)
+    })
+
+    it('every transaction option names the shared constant', () => {
+      const source = read(file)
+      const options = source.match(/\btimeout\s*:\s*[^,}\s]+/g) ?? []
+
+      expect(options.length).toBeGreaterThan(0)
+      for (const option of options) expect(option).toMatch(/timeout\s*:\s*TRANSACTION_TIMEOUT_MS$/)
+    })
+  })
+
+  it('the constant is defined once, in the attendance-sync constants, and is 30 seconds', () => {
+    const definitions = walk(SRC, (file) => isSource(file) && !isTest(file))
+      .filter((file) => /\bexport const TRANSACTION_TIMEOUT_MS\b|\bconst TRANSACTION_TIMEOUT_MS\b/.test(readFileSync(file, 'utf8')))
+      .map(rel)
+
+    expect(definitions).toEqual(['src/features/attendance-sync/lib/constants.ts'])
+    expect(read('src/features/attendance-sync/lib/constants.ts')).toMatch(/^export const TRANSACTION_TIMEOUT_MS = 30000\s*$/m)
+  })
+
+  it('no source file of attendance-sync (tests included) imports a payroll-* slice', () => {
+    const offenders = walk(path.join(SRC, 'features/attendance-sync'), isSource)
+      .filter((file) => file !== __filename) // this file quotes imports as scan fixtures
+      .filter((file) => importsPayrollSlice(readFileSync(file, 'utf8')))
+      .map(rel)
+
+    expect(offenders).toEqual([])
+  })
+
+  it('the payroll slices take the constant from attendance-sync, the allowed direction', () => {
+    for (const { file } of WITH_THE_LOCK.filter((f) => f.file.includes('payroll-'))) {
+      expect(read(file)).toContain("from '@/features/attendance-sync/lib/constants'")
+    }
+  })
+})

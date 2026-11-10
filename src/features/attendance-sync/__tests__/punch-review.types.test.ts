@@ -6,6 +6,7 @@ import path from 'node:path'
 vi.mock('@/lib/prisma', async () => ({ default: (await import('./service-fixtures')).buildDb() }))
 vi.mock('@/features/attendance-sync/services/etimeoffice.client', () => ({ fetchPunchData: vi.fn() }))
 
+import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
 import type { CorrectionGridActions, PunchReviewGridProps } from '@/features/attendance-sync/components/PunchReviewGrid'
@@ -202,5 +203,88 @@ describe('the pages that mount the grid', () => {
     expect(livePage).toMatch(/getPunchReview\(weekId, \{ kind: 'LIVE' \}\)/)
     expect(livePage).not.toMatch(/getPunchReviewAction/)
     expect(livePage).not.toMatch(/\bas (CorrectionReview|LiveReview|PunchReview)\b/)
+  })
+})
+
+// ─── Round 4, item 7: getPunchReview overloads ────────────────────────────────
+//
+// `getPunchReview(id)` is a LiveReview. Naming a mode type by hand (`getPunchReview<CorrectionMode>(id)`)
+// used to type-check and return a LIVE review typed as a correction; now an explicit type argument needs
+// the mode value that goes with it. `npx tsc --noEmit` checks the lines below.
+
+/** True only when A and B are the same type (mutual assignability is not enough: `any` would pass). */
+type Exact<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
+
+describe('getPunchReview overloads (compile time)', () => {
+  const correctionMode = { kind: 'CORRECTION', payrollRunId: 'run-1', correctionId: 'session-1', revisionNumber: 2 } as const
+  const liveMode = { kind: 'LIVE' } as const
+
+  it('with no mode the result is exactly Promise<LiveReview>', () => {
+    const call = () => getPunchReview(WEEK_ID)
+    void call // only its type is used below
+    const exact: Exact<ReturnType<typeof call>, Promise<LiveReview>> = true
+    const notCorrection: Extends<Awaited<ReturnType<typeof call>>, CorrectionReview> = false
+
+    expect([exact, notCorrection]).toEqual([true, false])
+  })
+
+  it('with a correction mode the result is a CorrectionReview, and not a LiveReview', () => {
+    const call = () => getPunchReview(WEEK_ID, correctionMode)
+    void call // only its type is used below
+    const isCorrection: Extends<Awaited<ReturnType<typeof call>>, CorrectionReview> = true
+    const isNotLive: Extends<Awaited<ReturnType<typeof call>>, LiveReview> = false
+
+    expect([isCorrection, isNotLive]).toEqual([true, false])
+  })
+
+  it('with a live mode value the result is a LiveReview', () => {
+    const call = () => getPunchReview(WEEK_ID, liveMode)
+    void call // only its type is used below
+    const isLive: Extends<Awaited<ReturnType<typeof call>>, LiveReview> = true
+    const isNotCorrection: Extends<Awaited<ReturnType<typeof call>>, CorrectionReview> = false
+
+    expect([isLive, isNotCorrection]).toEqual([true, false])
+  })
+
+  it('the transaction client is accepted as a third argument, after a mode', () => {
+    const withClient = (tx: Prisma.TransactionClient) => getPunchReview(WEEK_ID, correctionMode, tx)
+    void withClient // only its type is used below
+    const isCorrection: Extends<Awaited<ReturnType<typeof withClient>>, CorrectionReview> = true
+
+    expect(isCorrection).toBe(true)
+  })
+
+  it('naming a mode type without passing the mode is a compile error', () => {
+    // Never called: at runtime this would return a LIVE review typed as a correction, which is the bug.
+    const misuse = () => {
+      // @ts-expect-error an explicit mode type needs the mode value that goes with it
+      getPunchReview<CorrectionMode>(WEEK_ID)
+    }
+    // @ts-expect-error the client cannot be passed without a mode either
+    const clientOnly = (tx: Prisma.TransactionClient) => getPunchReview(WEEK_ID, tx)
+    // @ts-expect-error a mode that is not a review mode
+    const wrongMode = () => getPunchReview(WEEK_ID, { kind: 'ELSEWHERE' })
+
+    expect([misuse, clientOnly, wrongMode]).toHaveLength(3)
+  })
+})
+
+describe('getPunchReview at run time keeps its defaults', () => {
+  it('no mode reads the live set: the review says LIVE and is the shape the live page needs', async () => {
+    serveUpload(db, makeUpload({ id: 'upload-1', status: 'REVIEW' }))
+
+    const review: LiveReview = await getPunchReview(WEEK_ID)
+
+    expect(review.mode).toEqual({ kind: 'LIVE' })
+    expect(review.locked).toBe(false)
+  })
+
+  it('the source declares the two overloads and the implementation default, and no longer a defaulted generic', () => {
+    const source = read('features/attendance-sync/services/punch-review.service.ts')
+
+    expect(source).toMatch(/export function getPunchReview\(weekId: string\): Promise<LiveReview>/)
+    expect(source).toMatch(/export function getPunchReview<M extends ReviewMode>\(\s*weekId: string,\s*mode: M,/)
+    expect(source).not.toMatch(/getPunchReview<M extends ReviewMode = /)
+    expect(source).not.toMatch(/as M\b/)
   })
 })

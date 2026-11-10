@@ -68,6 +68,13 @@ const W = {
   day: '2026-09-24', // DAY_CHANGED
   codes: '2026-10-01', // employee-check writers
   corr: '2026-10-08', // correction writers
+  // Fix round 4 (Thursdays)
+  r4apr: '2026-10-15', // the real approved-week P2002
+  r4apr2: '2026-10-22', // approvePayroll against a leftover key
+  r4mem: '2026-10-29', // a duplicate decision (two-column P2002)
+  r4day: '2026-11-05', // day version and membership
+  r4rematch: '2026-04-09', // rematchWeekCodes per code
+  r4corr: '2026-04-16', // drafts and promotions without a session
 }
 const ALL_WEEKS = Object.values(W).map(utc)
 
@@ -1743,6 +1750,397 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
         expect(await prisma.attendanceRecord.count({ where: { attendanceUploadId: uploadId } })).toBe(records)
       }
       expect((await sessionsOf()).filter((x) => x.status === 'IN_PROGRESS')).toHaveLength(0)
+    })
+  })
+
+  // ─── Round 4 ────────────────────────────────────────────────────────────────
+
+  describe('round 4 item 3: isApprovedWeekConflict on the real P2002', () => {
+    let Prisma: typeof import('@prisma/client').Prisma
+    let isApprovedWeekConflict: typeof import('@/features/payroll-generation/services/payroll.service').isApprovedWeekConflict
+    const wk = W.r4apr
+    const totals = { totalRegularPay: 0, totalOvertimePay: 0, totalAdditions: 0, totalDeductions: 0, totalNetPayable: 0 }
+    const run = (status: string, key: Date | null) =>
+      prisma.payrollRun.create({
+        data: { payrollWeekStartDate: utc(wk), payrollWeekEndDate: utc(addDays(wk, 6)), status, approvedWeekStart: key, ...totals },
+      })
+
+    beforeAll(async () => {
+      ;({ Prisma } = await import('@prisma/client'))
+      ;({ isApprovedWeekConflict } = await import('@/features/payroll-generation/services/payroll.service'))
+    })
+
+    it('the error a second approved run produces is a Prisma P2002 that isApprovedWeekConflict recognises', async () => {
+      await run('APPROVED', utc(wk))
+
+      const error = await run('APPROVED', utc(wk)).catch((e) => e)
+
+      expect(error).toBeInstanceOf(Prisma.PrismaClientKnownRequestError)
+      expect(error).toMatchObject({ code: 'P2002' })
+      console.info(`[db] round 4 item 3 real P2002 meta: ${JSON.stringify(error.meta)}`)
+      expect(isApprovedWeekConflict(error)).toBe(true)
+    })
+
+    it('the P2002 of another unique key (a duplicate Employee ID) is not taken for the approved-week key', async () => {
+      const error = await prisma.employee
+        .create({ data: { employeeId: empA.employeeId, employeeName: 'Duplicate', designation: 'Guard', designationShort: 'G', site: 'Gate' } })
+        .catch((e) => e)
+
+      expect(error).toBeInstanceOf(Prisma.PrismaClientKnownRequestError)
+      expect(error).toMatchObject({ code: 'P2002' })
+      expect(isApprovedWeekConflict(error)).toBe(false)
+    })
+
+    it('the P2002 of a two-column key (one decision per employee per week) is not taken for it either', async () => {
+      const upload = await seedWeek(W.r4mem, 'REVIEW')
+      const decision = { attendanceUploadId: upload.id, employeeId: empA.id, reason: 'INACTIVE', decision: 'APPROVED' }
+      await prisma.attendanceEmployeeDecision.create({ data: decision })
+
+      const error = await prisma.attendanceEmployeeDecision.create({ data: decision }).catch((e) => e)
+
+      expect(error).toMatchObject({ code: 'P2002' })
+      expect(isApprovedWeekConflict(error)).toBe(false)
+      await prisma.attendanceEmployeeDecision.deleteMany({ where: { attendanceUploadId: upload.id } })
+    })
+
+    it('approvePayroll turns the database\'s own refusal into PAYROLL_ALREADY_EXISTS and leaves nothing behind', async () => {
+      // Attendance for the week is approved, and a leftover DRAFT run already holds the week's key: both checks
+      // in front of the insert (they look for APPROVED / REVISED runs) pass, so the unique key is what stops it.
+      const week = W.r4apr2
+      await prisma.employee.update({ where: { id: empB.id }, data: { isActive: true } })
+      const upload = await seedWeek(week, 'REVIEW')
+      await seedPunches(upload.id, week)
+      await approveWeek(week)
+      const summary = await calculatePayroll(utc(week), utc(addDays(week, 6)))
+      await prisma.payrollRun.create({
+        data: { payrollWeekStartDate: utc(week), payrollWeekEndDate: utc(addDays(week, 6)), status: 'DRAFT', approvedWeekStart: utc(week), ...totals },
+      })
+      const before = await prisma.payrollRun.count({ where: { payrollWeekStartDate: utc(week) } })
+
+      const error = await approvePayroll(summary).catch((e) => e)
+
+      expect(error).toMatchObject({ code: 'PAYROLL_ALREADY_EXISTS', message: 'Payroll for this week is already approved' })
+      expect(error).not.toBeInstanceOf(Prisma.PrismaClientKnownRequestError)
+      expect(await prisma.payrollRun.count({ where: { payrollWeekStartDate: utc(week) } })).toBe(before)
+      const runs = await prisma.payrollRun.findMany({ where: { payrollWeekStartDate: utc(week) }, select: { id: true } })
+      expect(await prisma.payrollRevision.count({ where: { payrollRunId: { in: runs.map((r) => r.id) } } })).toBe(0)
+      expect(await prisma.payrollRunEmployee.count({ where: { payrollRunId: { in: runs.map((r) => r.id) } } })).toBe(0)
+    })
+  })
+
+  describe('round 4 items 1 and 10: the day version and the single-row membership check on a real database', () => {
+    const week = W.r4day
+    let uploadId: string
+    let empE: { id: string; employeeId: string }
+
+    const dayRows = (employeeId: string, date = week, correctionId: string | null = null) =>
+      prisma.attendancePunch.findMany({ where: { attendanceUploadId: uploadId, correctionId, employeeId, punchDate: utc(date) }, orderBy: [{ pairIndex: 'asc' }, { position: 'desc' }] })
+    /** The pairs an editor holds for a stored day, with the punch ids it was opened on. */
+    const pairsOf = (rows: Array<{ id: string; pairIndex: number; position: string; currentTime: string | null }>) => {
+      const byIndex = new Map<number, { pairIndex: number; in: { punchId: string; time: string | null }; out: { punchId: string; time: string | null } }>()
+      for (const r of rows) {
+        const pair = byIndex.get(r.pairIndex) ?? { pairIndex: r.pairIndex, in: { punchId: '', time: null }, out: { punchId: '', time: null } }
+        pair[r.position === 'IN' ? 'in' : 'out'] = { punchId: r.id, time: r.currentTime }
+        byIndex.set(r.pairIndex, pair)
+      }
+      return [...byIndex.values()]
+    }
+    const live = { kind: 'LIVE' as const }
+
+    beforeAll(async () => {
+      await prisma.employee.update({ where: { id: empB.id }, data: { isActive: true } })
+      empE = await prisma.employee.create({
+        data: {
+          employeeId: 'TPLF12DB9305', employeeName: 'F12 Echo (inactive)', designation: 'Guard', designationShort: 'G', site: 'Gate', isActive: false,
+          wageHistory: { create: { weeklySalary: 2500, hourlyRate: 62.5, effectiveFrom: utc('2025-01-01'), changeSource: 'SEED' } },
+        },
+      })
+      const upload = await seedWeek(week, 'REVIEW')
+      uploadId = upload.id
+      await seedPunches(uploadId, week, [empA]) // empB has nothing
+    }, 60000)
+
+    it('the signature the review shows for a day equals the signature of its stored rows (for a full day and an empty one)', async () => {
+      const review = await getPunchReview(week)
+
+      const full = review.employees.find((e) => e.employeeId === empA.id)!.days.find((d) => d.date === week)!
+      const empty = review.employees.find((e) => e.employeeId === empB.id)!.days.find((d) => d.date === week)!
+      expect(full.signature).toBe(await baseSignatureOf(week, empA.id, week))
+      expect(empty.signature).toBe(await baseSignatureOf(week, empB.id, week))
+      expect(full.signature).toMatch(/^4\./)
+      expect(empty.signature).toMatch(/^0\./)
+    })
+
+    it('a save with the day\'s own signature goes through, and the result carries the signature of what is now stored', async () => {
+      const rows = await dayRows(empA.id)
+      const base = await baseSignatureOf(week, empA.id, week)
+
+      const result = await savePunchEdit({
+        weekId: week, mode: live, employeeId: empA.id, date: week, baseSignature: base,
+        pairs: pairsOf(rows).map((p) => (p.pairIndex === 1 ? { ...p, out: { ...p.out, time: '17:30' } } : p)),
+      } as never)
+
+      const after = await baseSignatureOf(week, empA.id, week)
+      expect(after).not.toBe(base)
+      expect(result.day.signature).toBe(after)
+      expect((await dayRows(empA.id)).find((r) => r.pairIndex === 1 && r.position === 'OUT')).toMatchObject({ currentTime: '17:30', originalTime: '17:00' })
+    })
+
+    it('a tab opened before another tab added a pair is refused, the pair survives, and no DELETE is audited', async () => {
+      const staleRows = await dayRows(empA.id)
+      const staleBase = await baseSignatureOf(week, empA.id, week)
+      const stalePairs = pairsOf(staleRows) // what tab B holds: the two API pairs
+      // Tab A saves a third, hand-entered pair.
+      await savePunchEdit({
+        weekId: week, mode: live, employeeId: empA.id, date: week, baseSignature: staleBase,
+        pairs: [...stalePairs, { pairIndex: 2, in: { time: '18:00' }, out: { time: '19:00' } }],
+      } as never)
+      const afterA = await dayRows(empA.id)
+      expect(afterA).toHaveLength(6)
+      const deletesBefore = await prisma.auditLog.count({ where: { actionType: 'DELETE', detailsJson: { path: ['weekStart'], equals: week } } })
+
+      // Tab B (opened before) now changes pair 2's OUT.
+      const error = await savePunchEdit({
+        weekId: week, mode: live, employeeId: empA.id, date: week, baseSignature: staleBase,
+        pairs: stalePairs.map((p) => (p.pairIndex === 1 ? { ...p, out: { ...p.out, time: '17:15' } } : p)),
+      } as never).catch((e) => e)
+
+      expect(error).toMatchObject({ code: 'DAY_CHANGED' })
+      const afterB = await dayRows(empA.id)
+      expect(afterB).toHaveLength(6)
+      expect(afterB.filter((r) => r.source === 'MANUAL').map((r) => r.currentTime).sort()).toEqual(['18:00', '19:00'])
+      expect(afterB.find((r) => r.pairIndex === 1 && r.position === 'OUT')!.currentTime).toBe('17:30') // tab A's day, not tab B's edit
+      expect(await prisma.auditLog.count({ where: { actionType: 'DELETE', detailsJson: { path: ['weekStart'], equals: week } } })).toBe(deletesBefore)
+
+      // After the reload tab B holds the new version and the same edit saves.
+      const fresh = await dayRows(empA.id)
+      await expect(
+        savePunchEdit({
+          weekId: week, mode: live, employeeId: empA.id, date: week, baseSignature: await baseSignatureOf(week, empA.id, week),
+          pairs: pairsOf(fresh).map((p) => (p.pairIndex === 1 ? { ...p, out: { ...p.out, time: '17:15' } } : p)),
+        } as never),
+      ).resolves.toMatchObject({ day: { date: week } })
+      expect(await dayRows(empA.id)).toHaveLength(6)
+    })
+
+    it('two editors opened on the same empty day: the second is refused and the day holds one pair', async () => {
+      const base = await baseSignatureOf(week, empB.id, week)
+      const pairs = [{ pairIndex: 0, in: { time: '08:00' }, out: { time: '16:00' } }]
+      expect(base).toMatch(/^0\./)
+
+      await savePunchEdit({ weekId: week, mode: live, employeeId: empB.id, date: week, baseSignature: base, pairs } as never)
+      const error = await savePunchEdit({ weekId: week, mode: live, employeeId: empB.id, date: week, baseSignature: base, pairs: [{ pairIndex: 0, in: { time: '09:30' }, out: { time: '16:00' } }] } as never).catch((e) => e)
+
+      expect(error).toMatchObject({ code: 'DAY_CHANGED' })
+      const rows = await dayRows(empB.id)
+      expect(rows.map((r) => [r.position, r.currentTime])).toEqual([['OUT', '16:00'], ['IN', '08:00']])
+    })
+
+    it('a pull that replaced the rows with new ids and identical times is also a changed day', async () => {
+      const rows = await dayRows(empA.id)
+      const base = await baseSignatureOf(week, empA.id, week)
+      // What a pull does to a day: the same scans come back as brand-new rows.
+      for (const r of rows) {
+        await prisma.$executeRaw`UPDATE "AttendancePunch" SET id = ${`${r.id}-pulled`} WHERE id = ${r.id}`
+      }
+
+      const error = await savePunchEdit({
+        weekId: week, mode: live, employeeId: empA.id, date: week, baseSignature: base,
+        pairs: pairsOf(rows).map((p) => (p.pairIndex === 1 ? { ...p, out: { ...p.out, time: '17:45' } } : p)),
+      } as never).catch((e) => e)
+
+      expect(error).toMatchObject({ code: 'DAY_CHANGED' })
+      expect(error.message).not.toMatch(/unexpected|no longer exists/i)
+      expect((await dayRows(empA.id)).every((r) => r.id.endsWith('-pulled'))).toBe(true)
+    })
+
+    it('item 10: an inactive employee is editable only with an APPROVED decision (the compound-key lookup on the real table)', async () => {
+      const pairs = [{ pairIndex: 0, in: { time: '08:00' }, out: { time: '12:00' } }]
+      const save = async () =>
+        savePunchEdit({ weekId: week, mode: live, employeeId: empE.id, date: week, baseSignature: await baseSignatureOf(week, empE.id, week), pairs } as never)
+
+      await expect(save()).rejects.toMatchObject({ code: 'EMPLOYEE_NOT_FOUND', message: "That employee isn't in this week's review." }) // no decision
+
+      const decision = await prisma.attendanceEmployeeDecision.create({
+        data: { attendanceUploadId: uploadId, employeeId: empE.id, reason: 'INACTIVE', decision: 'REJECTED' },
+      })
+      await expect(save()).rejects.toMatchObject({ code: 'EMPLOYEE_NOT_FOUND' }) // rejected
+      expect(await dayRows(empE.id)).toHaveLength(0)
+
+      await prisma.attendanceEmployeeDecision.update({ where: { id: decision.id }, data: { decision: 'APPROVED' } })
+      await expect(save()).resolves.toMatchObject({ day: { date: week } }) // approved
+      expect(await dayRows(empE.id)).toHaveLength(2)
+    })
+
+    it('item 10: an employee Prisma has never heard of is refused the same way, with nothing written', async () => {
+      const error = await savePunchEdit({
+        weekId: week, mode: live, employeeId: '00000000-0000-4000-8000-000000000000', date: week, baseSignature: 'x',
+        pairs: [{ pairIndex: 0, in: { time: '08:00' }, out: { time: '12:00' } }],
+      } as never).catch((e) => e)
+
+      expect(error).toMatchObject({ code: 'EMPLOYEE_NOT_FOUND' })
+    })
+  })
+
+  describe('round 4 item 5: rematchWeekCodes commits each code on its own, on a real database', () => {
+    const week = W.r4rematch
+    let uploadId: string
+    let empF: { id: string }
+    let empG: { id: string }
+    let ec: typeof import('@/features/attendance-sync/services/employee-check.service')
+
+    const punch = (employeeId: string | null, empCode: string, matchStatus: string, day: number, pairIndex: number, position: string, time: string) => ({
+      attendanceUploadId: uploadId, employeeId, empCode, matchStatus, punchDate: utc(addDays(week, day)),
+      pairIndex, position, source: 'API', originalTime: time, currentTime: time,
+    })
+    const rowsOf = (code: string) =>
+      prisma.attendancePunch.findMany({ where: { attendanceUploadId: uploadId, empCode: code }, orderBy: [{ punchDate: 'asc' }, { pairIndex: 'asc' }, { position: 'desc' }] })
+
+    beforeAll(async () => {
+      ec = await import('@/features/attendance-sync/services/employee-check.service')
+      const mk = (code: string, name: string) =>
+        prisma.employee.create({
+          data: {
+            employeeId: code, employeeName: name, designation: 'Guard', designationShort: 'G', site: 'Gate', isActive: true,
+            wageHistory: { create: { weeklySalary: 2500, hourlyRate: 62.5, effectiveFrom: utc('2025-01-01'), changeSource: 'SEED' } },
+          },
+        })
+      empF = await mk('TPLF12DB9401', 'F12 Foxtrot')
+      empG = await mk('TPLF12DB9402', 'F12 Golf')
+      uploadId = (await seedWeek(week, 'REVIEW')).id
+      await prisma.attendancePunch.createMany({
+        data: [
+          // Foxtrot already has two pairs on day 0; code 9401 (his number) has a pair on day 0 and one on day 1.
+          punch(empF.id, '9401', 'MATCHED', 0, 0, 'IN', '06:00'), punch(empF.id, '9401', 'MATCHED', 0, 0, 'OUT', '06:30'),
+          punch(empF.id, '9401', 'MATCHED', 0, 1, 'IN', '07:00'), punch(empF.id, '9401', 'MATCHED', 0, 1, 'OUT', '07:30'),
+          punch(null, '9401', 'UNKNOWN', 0, 0, 'IN', '13:00'), punch(null, '9401', 'UNKNOWN', 0, 0, 'OUT', '17:00'),
+          punch(null, '9401', 'UNKNOWN', 1, 0, 'IN', '08:00'), punch(null, '9401', 'UNKNOWN', 1, 0, 'OUT', '12:00'),
+          punch(null, '9402', 'UNKNOWN', 2, 0, 'IN', '08:00'), punch(null, '9402', 'UNKNOWN', 2, 0, 'OUT', '12:00'),
+          punch(null, '9402', 'UNKNOWN', 2, 1, 'IN', '13:00'), punch(null, '9402', 'UNKNOWN', 2, 1, 'OUT', '17:00'),
+          punch(null, '9499', 'UNKNOWN', 3, 0, 'IN', '08:00'), punch(null, '9499', 'UNKNOWN', 3, 0, 'OUT', '12:00'),
+        ] as never,
+      })
+    }, 60000)
+
+    it('links every code that now matches, moving a code\'s rows by their offset in one statement per offset', async () => {
+      const result = await ec.rematchWeekCodes(week)
+
+      expect(result.matched).toEqual(
+        expect.arrayContaining([
+          { empCode: '9401', employeeId: empF.id, employeeCode: 'TPLF12DB9401' },
+          { empCode: '9402', employeeId: empG.id, employeeCode: 'TPLF12DB9402' },
+        ]),
+      )
+      expect(result.matched).toHaveLength(2)
+      expect(result.stillUnresolved).toEqual(['9499'])
+      // Day 0 had pairs 0 and 1: the code's pair now sits at index 2. Day 1 had nothing: pair 0 stays pair 0.
+      const nine401 = (await rowsOf('9401')).filter((r) => r.matchStatus === 'MATCHED' && r.originalTime !== null && ['13:00', '17:00', '08:00', '12:00'].includes(r.originalTime))
+      expect(nine401.map((r) => [r.punchDate.toISOString().slice(0, 10), r.pairIndex, r.position, r.employeeId === empF.id])).toEqual([
+        [week, 2, 'OUT', true],
+        [week, 2, 'IN', true],
+        [addDays(week, 1), 0, 'OUT', true],
+        [addDays(week, 1), 0, 'IN', true],
+      ])
+      // The employee's own earlier pairs were not touched.
+      const own = (await rowsOf('9401')).filter((r) => r.punchDate.getTime() === utc(week).getTime() && ['06:00', '06:30', '07:00', '07:30'].includes(r.originalTime ?? ''))
+      expect(own.map((r) => r.pairIndex).sort()).toEqual([0, 0, 1, 1])
+      expect((await rowsOf('9402')).every((r) => r.matchStatus === 'MATCHED' && r.employeeId === empG.id)).toBe(true)
+      expect((await rowsOf('9499')).every((r) => r.matchStatus === 'UNKNOWN' && r.employeeId === null)).toBe(true)
+    })
+
+    it('each linked code has its own audit row with the number of rows it moved', async () => {
+      const audits = await prisma.auditLog.findMany({
+        where: { entityType: 'ATTENDANCE_CODE', entityId: uploadId },
+        orderBy: { createdAt: 'asc' },
+      })
+
+      expect(audits.map((a) => (a.detailsJson as { empCode: string }).empCode).sort()).toEqual(['9401', '9402'])
+      expect(Object.fromEntries(audits.map((a) => [(a.detailsJson as { empCode: string }).empCode, (a.detailsJson as { linkedPunches: number }).linkedPunches]))).toEqual({ '9401': 4, '9402': 4 })
+    })
+
+    it('a second run has nothing left to link, writes nothing more and reports the unmatched code', async () => {
+      const auditsBefore = await prisma.auditLog.count({ where: { entityType: 'ATTENDANCE_CODE', entityId: uploadId } })
+
+      await expect(ec.rematchWeekCodes(week)).resolves.toEqual({ matched: [], stillUnresolved: ['9499'] })
+
+      expect(await prisma.auditLog.count({ where: { entityType: 'ATTENDANCE_CODE', entityId: uploadId } })).toBe(auditsBefore)
+    })
+
+    it('two runs started together link each code once (the second finds nothing left to do)', async (ctx) => {
+      // Fresh unresolved code for Golf's number so there is something to race for.
+      await prisma.attendancePunch.createMany({
+        data: [punch(null, '9402', 'UNKNOWN', 4, 0, 'IN', '08:00'), punch(null, '9402', 'UNKNOWN', 4, 0, 'OUT', '12:00')] as never,
+      })
+      const auditsBefore = await prisma.auditLog.count({ where: { entityType: 'ATTENDANCE_CODE', entityId: uploadId } })
+
+      const results = await Promise.allSettled([ec.rematchWeekCodes(week), ec.rematchWeekCodes(week)])
+      if (interleaved(results)) return ctx.skip('local database interleaved two connections; not exercised')
+
+      expect(results.every((r) => r.status === 'fulfilled'), results.map((r) => (r.status === 'rejected' ? String(r.reason) : 'ok')).join()).toBe(true)
+      const matchedCounts = results.map((r) => (r as PromiseFulfilledResult<{ matched: unknown[] }>).value.matched.length).sort()
+      expect(matchedCounts).toEqual([0, 1])
+      expect(await prisma.auditLog.count({ where: { entityType: 'ATTENDANCE_CODE', entityId: uploadId } })).toBe(auditsBefore + 1)
+      expect((await rowsOf('9402')).every((r) => r.matchStatus === 'MATCHED')).toBe(true)
+    })
+  })
+
+  describe('round 4 item 2: a draft and a promotion without a session take the week lock on a real database', () => {
+    const week = W.r4corr
+    let runId: string
+
+    beforeAll(async () => {
+      await prisma.employee.update({ where: { id: empB.id }, data: { isActive: true } })
+      const upload = await seedWeek(week, 'REVIEW')
+      await seedPunches(upload.id, week)
+      await approveWeek(week)
+      runId = (await approvePayroll(await calculatePayroll(utc(week), utc(addDays(week, 6))))).payrollRunId
+    }, 60000)
+
+    it('recalculateAndCreateRevision with no session numbers the draft after the current revision', async () => {
+      const result = await correction.recalculateAndCreateRevision({
+        payrollRunId: runId, correctionReason: 'f12 db round 4', correctionTypes: ['ADJUSTMENTS'],
+      })
+
+      expect(result).toMatchObject({ payrollRunId: runId, revisionNumber: 2, employeeCount: 2 })
+      expect(await prisma.payrollRevision.findUniqueOrThrow({ where: { id: result.revisionId } })).toMatchObject({ status: 'DRAFT', isCurrent: false, revisionNumber: 2 })
+      expect(await prisma.payrollRun.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({ status: 'APPROVED', currentRevisionNumber: 1 })
+    })
+
+    it('a second draft replaces the first and is still number 2 (the current revision is still revision 1)', async () => {
+      const result = await correction.recalculateAndCreateRevision({
+        payrollRunId: runId, correctionReason: 'f12 db round 4 again', correctionTypes: ['ADJUSTMENTS'],
+      })
+
+      expect(result.revisionNumber).toBe(2)
+      expect(await prisma.payrollRevision.count({ where: { payrollRunId: runId, status: 'DRAFT' } })).toBe(1)
+    })
+
+    it('approveRevision with no session promotes that draft: revision 2 is current, the run is REVISED', async () => {
+      const draft = await prisma.payrollRevision.findFirstOrThrow({ where: { payrollRunId: runId, status: 'DRAFT' } })
+
+      await correction.approveRevision(draft.id)
+
+      expect(await prisma.payrollRun.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({ status: 'REVISED', currentRevisionNumber: 2 })
+      expect(await prisma.payrollRevision.findMany({ where: { payrollRunId: runId }, orderBy: { revisionNumber: 'asc' }, select: { revisionNumber: true, status: true, isCurrent: true } })).toEqual([
+        { revisionNumber: 1, status: 'SUPERSEDED', isCurrent: false },
+        { revisionNumber: 2, status: 'APPROVED', isCurrent: true },
+      ])
+    })
+
+    it('the next draft is numbered after the revision that is current now (3)', async () => {
+      const result = await correction.recalculateAndCreateRevision({
+        payrollRunId: runId, correctionReason: 'f12 db round 4 third', correctionTypes: ['ADJUSTMENTS'],
+      })
+
+      expect(result.revisionNumber).toBe(3)
+    })
+
+    it('promoting the same draft again is REVISION_NOT_DRAFT and changes nothing', async () => {
+      const approved = await prisma.payrollRevision.findFirstOrThrow({ where: { payrollRunId: runId, revisionNumber: 2 } })
+
+      await expect(correction.approveRevision(approved.id)).rejects.toMatchObject({ code: 'REVISION_NOT_DRAFT' })
+
+      expect(await prisma.payrollRun.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({ status: 'REVISED', currentRevisionNumber: 2 })
     })
   })
 })

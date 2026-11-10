@@ -36,7 +36,7 @@ vi.mock('@/features/attendance-sync/services/week-approval.service', () => ({ ge
 
 import prisma from '@/lib/prisma'
 import { skipAdjustmentApplication } from '@/features/payroll-adjustments/services/adjustment.service'
-import { approvePayroll } from '@/features/payroll-generation/services/payroll.service'
+import { approvePayroll, isApprovedWeekConflict } from '@/features/payroll-generation/services/payroll.service'
 import { PayrollServiceError, type PayrollSummary } from '@/features/payroll-generation/types/payroll.types'
 
 const WEEK_START = new Date('2025-03-06T00:00:00.000Z')
@@ -387,5 +387,142 @@ describe('two approvals of one summary', () => {
     const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
     expect(rejected).toHaveLength(1)
     expect(rejected[0].reason).toMatchObject({ code: 'PAYROLL_ALREADY_EXISTS' })
+  })
+})
+
+// ─── Round 4, item 3: only the approved-week key maps to PAYROLL_ALREADY_EXISTS ──────────────────────
+//
+// Prisma 7 with the pg driver adapter sets no `meta.target` on a P2002. The key is named in
+// `meta.driverAdapterError.cause`: `constraint.fields` (with the pg double quotes kept), sometimes
+// `constraint.index`, and `originalMessage`. The classic `meta.target` shape (array or string) still counts.
+
+describe('isApprovedWeekConflict and the P2002 mapping (round 4, item 3)', () => {
+  const p2002Meta = (meta: unknown) =>
+    new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+      code: 'P2002',
+      clientVersion: 'test',
+      meta: meta as Record<string, unknown>,
+    })
+  const adapter = (cause: unknown) => ({ modelName: 'PayrollRun', driverAdapterError: { name: 'DriverAdapterError', cause } })
+  const KEY_MESSAGE = 'duplicate key value violates unique constraint "PayrollRun_approvedWeekStart_key"'
+
+  /** [label, the error the database produced]. */
+  const approvedWeekConflicts: Array<[string, Prisma.PrismaClientKnownRequestError]> = [
+    ['classic meta.target as an array of columns', p2002Meta({ target: ['approvedWeekStart'] })],
+    ['classic meta.target as the constraint name', p2002Meta({ target: 'PayrollRun_approvedWeekStart_key' })],
+    ['classic meta.target as an array holding the constraint name', p2002Meta({ target: ['PayrollRun_approvedWeekStart_key'] })],
+    [
+      'adapter shape with the quoted column in constraint.fields',
+      p2002Meta(adapter({ kind: 'UniqueConstraintViolation', constraint: { fields: ['"approvedWeekStart"'] } })),
+    ],
+    [
+      'adapter shape with the index name in constraint.index',
+      p2002Meta(adapter({ kind: 'UniqueConstraintViolation', constraint: { index: 'PayrollRun_approvedWeekStart_key' } })),
+    ],
+    [
+      'adapter shape with no constraint, only the original message naming the key',
+      p2002Meta(adapter({ kind: 'UniqueConstraintViolation', originalMessage: KEY_MESSAGE })),
+    ],
+    [
+      'adapter shape with a null constraint and the original message',
+      p2002Meta(adapter({ kind: 'UniqueConstraintViolation', constraint: null, originalMessage: KEY_MESSAGE })),
+    ],
+    [
+      'adapter shape as pg really sends it (fields, original code and message)',
+      p2002Meta(
+        adapter({
+          kind: 'UniqueConstraintViolation',
+          constraint: { fields: ['"approvedWeekStart"'] },
+          originalCode: '23505',
+          originalMessage: KEY_MESSAGE,
+        }),
+      ),
+    ],
+  ]
+
+  const otherConflicts: Array<[string, Prisma.PrismaClientKnownRequestError]> = [
+    ['a different unique index in meta.target', p2002Meta({ target: ['some_other_unique_index'] })],
+    ['a different constraint name as a string target', p2002Meta({ target: 'PayrollRevision_payrollRunId_revisionNumber_key' })],
+    ['the run-and-revision columns as the target', p2002Meta({ target: ['payrollRunId', 'revisionNumber'] })],
+    ['an empty meta', p2002Meta({})],
+    ['no meta at all', new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: 'test' })],
+    [
+      'adapter shape for the run-and-revision pair',
+      p2002Meta(adapter({ kind: 'UniqueConstraintViolation', constraint: { fields: ['"payrollRunId"', '"revisionNumber"'] } })),
+    ],
+    [
+      'adapter shape with only another key in the original message',
+      p2002Meta(
+        adapter({
+          kind: 'UniqueConstraintViolation',
+          originalMessage: 'duplicate key value violates unique constraint "PayrollRevision_payrollRunId_revisionNumber_key"',
+        }),
+      ),
+    ],
+    ['adapter shape with no cause', p2002Meta({ driverAdapterError: { name: 'DriverAdapterError' } })],
+    ['adapter shape with an empty cause', p2002Meta(adapter({}))],
+    ['adapter shape with a null cause', p2002Meta({ driverAdapterError: { cause: null } })],
+    ['a null driverAdapterError', p2002Meta({ driverAdapterError: null })],
+    ['a numeric target and numeric fields', p2002Meta({ target: 42, driverAdapterError: { cause: { constraint: { fields: [1, 2] } } } })],
+    ['a cause that is a string', p2002Meta({ driverAdapterError: { cause: 'approvedWeekStart' } })],
+  ]
+
+  describe('isApprovedWeekConflict', () => {
+    it.each(approvedWeekConflicts)('is true for %s', (_label, error) => {
+      expect(isApprovedWeekConflict(error)).toBe(true)
+    })
+
+    it.each(otherConflicts)('is false for %s, and does not throw', (_label, error) => {
+      expect(() => isApprovedWeekConflict(error)).not.toThrow()
+      expect(isApprovedWeekConflict(error)).toBe(false)
+    })
+  })
+
+  describe('approvePayroll', () => {
+    it.each(approvedWeekConflicts)('maps %s to PAYROLL_ALREADY_EXISTS with the same message', async (_label, conflict) => {
+      tx.payrollRun.create.mockRejectedValue(conflict)
+
+      const error = await approvePayroll(summary()).catch((e) => e)
+
+      expect(error).toBeInstanceOf(PayrollServiceError)
+      expect(error).toMatchObject({ code: 'PAYROLL_ALREADY_EXISTS', message: ALREADY })
+      expect(tx.payrollRevision.create).not.toHaveBeenCalled()
+      expect(tx.payrollRunEmployee.createMany).not.toHaveBeenCalled()
+    })
+
+    it.each(otherConflicts)('rethrows %s as the very same object, not as PAYROLL_ALREADY_EXISTS', async (_label, conflict) => {
+      tx.payrollRevision.create.mockRejectedValue(conflict)
+
+      const error = await approvePayroll(summary()).catch((e) => e)
+
+      expect(error).toBe(conflict)
+      expect(error).not.toBeInstanceOf(PayrollServiceError)
+    })
+
+    it('an adapter-shaped conflict raised by the commit of the transaction call itself maps too', async () => {
+      vi.mocked(prisma.$transaction).mockRejectedValue(approvedWeekConflicts[3][1])
+
+      await expect(approvePayroll(summary())).rejects.toMatchObject({ code: 'PAYROLL_ALREADY_EXISTS', message: ALREADY })
+    })
+
+    it('another Prisma error code carrying the approved-week key text is still not mapped (only P2002 is)', async () => {
+      const notUnique = new Prisma.PrismaClientKnownRequestError('boom', {
+        code: 'P2003',
+        clientVersion: 'test',
+        meta: { target: ['approvedWeekStart'] },
+      })
+      tx.payrollRun.create.mockRejectedValue(notUnique)
+
+      const error = await approvePayroll(summary()).catch((e) => e)
+
+      expect(error).toBe(notUnique)
+    })
+
+    it('a plain Error whose message names the key is not mapped either', async () => {
+      const lookalike = new Error(KEY_MESSAGE)
+      tx.payrollRun.create.mockRejectedValue(lookalike)
+
+      await expect(approvePayroll(summary())).rejects.toBe(lookalike)
+    })
   })
 })

@@ -267,6 +267,61 @@ describe('approveRevision: a stale preview cannot be approved', () => {
     expect(getPunchReview).not.toHaveBeenCalled()
   })
 
+  // Round 4, item 2b: every promotion holds the week lock, with a session or without one.
+  it('a draft with no session takes the week lock, by start date, before it promotes anything', async () => {
+    setup({ before: null })
+
+    await approveRevision(DRAFT_ID)
+
+    expect(lockWeekRow).toHaveBeenCalledTimes(1)
+    expect(lockWeekRow).toHaveBeenCalledWith(tx, { weekStart: WEEK_START })
+    expect(order(lockWeekRow)).toBeLessThan(order(tx.payrollRevision.updateMany)) // the claim of the draft
+    expect(order(lockWeekRow)).toBeLessThan(order(tx.payrollRun.update))
+    expect(order(lockWeekRow)).toBeLessThan(order(tx.payrollRunEmployee.findMany))
+  })
+
+  it('a session-less promotion locks on the transaction client and once, never by upload id', async () => {
+    setup({ before: null })
+
+    await approveRevision(DRAFT_ID)
+
+    const [client, where] = vi.mocked(lockWeekRow).mock.calls[0]
+    expect(client).toBe(tx)
+    expect(where).toEqual({ weekStart: WEEK_START })
+    expect(where).not.toHaveProperty('id')
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1)
+  })
+
+  it('with a session the lock is still by upload id and still once (the weekStart branch is for session-less drafts only)', async () => {
+    setup({ clones: 28 })
+
+    await approveRevision(DRAFT_ID)
+
+    expect(lockWeekRow).toHaveBeenCalledTimes(1)
+    expect(lockWeekRow).toHaveBeenCalledWith(tx, { id: UPLOAD_ID })
+    expect(order(lockWeekRow)).toBeLessThan(order(tx.payrollCorrectionSession.findUnique))
+  })
+
+  it('a session-less promotion that loses the claim (a second approve) still took the lock first and writes nothing else', async () => {
+    setup({ before: null })
+    tx.payrollRevision.updateMany.mockResolvedValue({ count: 0 })
+
+    await expect(approveRevision(DRAFT_ID)).rejects.toMatchObject({ code: 'REVISION_NOT_DRAFT' })
+
+    expect(lockWeekRow).toHaveBeenCalledTimes(1)
+    expect(tx.payrollRun.update).not.toHaveBeenCalled()
+    expect(tx.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
+  })
+
+  it('a failing lock query stops a session-less promotion before it writes anything', async () => {
+    setup({ before: null })
+    vi.mocked(lockWeekRow).mockRejectedValue(new Error('could not obtain lock'))
+
+    await expect(approveRevision(DRAFT_ID)).rejects.toThrow('could not obtain lock')
+
+    expectNothingWritten()
+  })
+
   it('a second approval of the same draft is still REVISION_NOT_DRAFT (the claim fails), not REVISION_STALE', async () => {
     setup()
     tx.payrollRevision.updateMany.mockResolvedValue({ count: 0 })

@@ -1,4 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { toast } from 'sonner'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import {
   PunchReviewGrid,
@@ -8,6 +11,7 @@ import {
 import {
   approveWeekAction,
   getApprovalSummaryAction,
+  getPunchReviewAction,
   reopenWeekAction,
 } from '@/features/attendance-sync/actions/attendance-sync.actions'
 import type {
@@ -320,5 +324,114 @@ describe('PunchReviewGrid in a correction: what the injected actions carry', () 
     await waitFor(() => expect(screen.getByTestId('approve-error')).toBeInTheDocument())
     expect(push).not.toHaveBeenCalled()
     expect(approveWeekAction).not.toHaveBeenCalled()
+  })
+})
+
+// ─── Round 4, item 4: a correction review never falls through to the live approval ───────────────
+
+describe('PunchReviewGrid: a correction review with no actions never calls the live approval (round 4, item 4)', () => {
+  const MISSING = "This correction can't be approved from this page. Reload and try again."
+
+  /** The prop union forbids this at compile time; the review state can still turn into a correction at run time. */
+  function renderCorrectionWithoutActions() {
+    const props = { initialReview: CORRECTION, backHref: '/payroll', backLabel: 'Payroll', title: 'Punches' } as unknown as PunchReviewGridProps
+    return render(<PunchReviewGrid {...props} />)
+  }
+
+  it('shows the refusal in the approve dialog, calls no approval, shows no success toast and does not navigate', async () => {
+    renderCorrectionWithoutActions()
+
+    await openApproveDialog()
+    fireEvent.click(screen.getByTestId('approve-confirm'))
+
+    await waitFor(() => expect(screen.getByTestId('approve-error')).toBeInTheDocument())
+    expect(screen.getByTestId('approve-error')).toHaveTextContent(`Couldn't approve. ${MISSING}`)
+    expect(approveWeekAction).not.toHaveBeenCalled()
+    expect(onApproveCorrection).not.toHaveBeenCalled()
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled()
+    expect(push).not.toHaveBeenCalled()
+  })
+
+  it('it is not a blocking error: there is no "Show days" button for it', async () => {
+    renderCorrectionWithoutActions()
+
+    await openApproveDialog()
+    fireEvent.click(screen.getByTestId('approve-confirm'))
+
+    await waitFor(() => expect(screen.getByTestId('approve-error')).toBeInTheDocument())
+    expect(screen.queryByTestId('show-needs-fixing')).not.toBeInTheDocument()
+  })
+
+  it('pressing the button again gives the same refusal and still no live approval', async () => {
+    renderCorrectionWithoutActions()
+    await openApproveDialog()
+
+    fireEvent.click(screen.getByTestId('approve-confirm'))
+    await waitFor(() => expect(screen.getByTestId('approve-error')).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('approve-confirm'))
+
+    await waitFor(() => expect(screen.getByTestId('approve-confirm')).not.toBeDisabled())
+    expect(screen.getByTestId('approve-error')).toHaveTextContent(MISSING)
+    expect(approveWeekAction).not.toHaveBeenCalled()
+  })
+
+  it('does not reload the review either (a refusal that calls nothing reads nothing)', async () => {
+    renderCorrectionWithoutActions()
+
+    await openApproveDialog()
+    fireEvent.click(screen.getByTestId('approve-confirm'))
+    await waitFor(() => expect(screen.getByTestId('approve-error')).toBeInTheDocument())
+
+    expect(getPunchReviewAction).not.toHaveBeenCalled()
+  })
+
+  it('a live grid whose review is replaced by a correction review on reload refuses too, after its one live attempt', async () => {
+    // The live page mounts the grid without actions. "Show days" reloads the review; if that comes back as a
+    // correction review, the grid's mode is CORRECTION while its props still carry no actions.
+    vi.mocked(approveWeekAction).mockResolvedValue({
+      ok: false,
+      error: 'Some days still have a missing time.',
+      code: 'WEEK_NOT_READY',
+    })
+    vi.mocked(getPunchReviewAction).mockResolvedValue({ ok: true, data: CORRECTION })
+    renderLive()
+    expect(screen.getByTestId('punch-review')).toHaveAttribute('data-mode', 'LIVE')
+
+    await openApproveDialog()
+    fireEvent.click(screen.getByTestId('approve-confirm'))
+    await waitFor(() => expect(screen.getByTestId('show-needs-fixing')).toBeInTheDocument())
+    expect(approveWeekAction).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByTestId('show-needs-fixing'))
+    await waitFor(() => expect(screen.getByTestId('punch-review')).toHaveAttribute('data-mode', 'CORRECTION'))
+    await openApproveDialog()
+    fireEvent.click(screen.getByTestId('approve-confirm'))
+
+    await waitFor(() => expect(screen.getByTestId('approve-error')).toHaveTextContent(MISSING))
+    expect(approveWeekAction).toHaveBeenCalledTimes(1) // still only the first, live, attempt
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled()
+  })
+
+  it('with its actions a correction review still approves through them, and the live action stays untouched', async () => {
+    renderCorrection()
+
+    await openApproveDialog()
+    fireEvent.click(screen.getByTestId('approve-confirm'))
+
+    await waitFor(() => expect(onApproveCorrection).toHaveBeenCalledWith('run-1'))
+    expect(approveWeekAction).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('approve-error')).not.toBeInTheDocument()
+  })
+
+  it('the grid source has no path from a correction mode to approveWeekAction', () => {
+    const source = readFileSync(path.resolve(__dirname, '../components/PunchReviewGrid.tsx'), 'utf8')
+    const confirmApprove = /async function confirmApprove[\s\S]*?\n  }\n/.exec(source)?.[0] ?? ''
+
+    expect(confirmApprove).toContain("mode.kind === 'CORRECTION'")
+    // Inside the correction branch every path returns before the live approval is reached.
+    const correctionBranch = /if \(mode\.kind === 'CORRECTION'\) \{[\s\S]*?\n    \}\n/.exec(confirmApprove)?.[0] ?? ''
+    expect(correctionBranch).toContain('if (!correction) return')
+    expect(correctionBranch).not.toContain('approveWeekAction')
+    expect(confirmApprove.indexOf('approveWeekAction')).toBeGreaterThan(confirmApprove.indexOf(correctionBranch) + correctionBranch.length - 1)
   })
 })

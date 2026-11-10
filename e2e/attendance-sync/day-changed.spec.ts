@@ -125,3 +125,67 @@ test.describe('E2E: two tabs save the same empty day', () => {
     await other.close()
   })
 })
+
+test.describe('E2E: a tab opened before another tab saved a different pair', () => {
+  const anitaPunches = async () => {
+    const anita = await prisma.employee.findFirstOrThrow({ where: { employeeId: ANITA } })
+    return prisma.attendancePunch.findMany({
+      where: { employeeId: anita.id, punchDate: new Date(`${dates[0]}T00:00:00Z`) },
+      orderBy: [{ pairIndex: 'asc' }, { position: 'asc' }],
+    })
+  }
+  const summary = (rows: Awaited<ReturnType<typeof anitaPunches>>) =>
+    rows.map((r) => `${r.pairIndex}${r.position}:${r.currentTime}:${r.source}`)
+
+  async function openAnita(page: Page) {
+    await openReview(page, W)
+    await openDay(page, ANITA, dates[0])
+    await expect(page.getByTestId('editor-pair-2-out')).toHaveValue('17:00')
+  }
+
+  test('the stale tab is refused instead of deleting the third pair, reloads to the latest times, and its change saves on the second try', async ({ page, context }) => {
+    const stale = await context.newPage()
+    await openAnita(page)
+    await openAnita(stale) // opened on the day with two pairs, before the third one exists
+
+    // Tab A adds a third pair, 18:00-19:00.
+    await page.getByTestId('editor-add-pair').click()
+    await setPairField(page, 3, 'in', '18:00')
+    await setPairField(page, 3, 'out', '19:00')
+    await settled(page)
+    expect(summary(await anitaPunches())).toEqual([
+      '0IN:08:00:API', '0OUT:12:00:API', '1IN:13:00:API', '1OUT:17:00:API', '2IN:18:00:MANUAL', '2OUT:19:00:MANUAL',
+    ])
+
+    // Tab B still holds two pairs and changes the second OUT.
+    await setPairField(stale, 2, 'out', '17:30', { expectSaved: false })
+    await expect(stale.getByTestId('editor-day-changed')).toBeVisible({ timeout: 10000 })
+    await expect(stale.getByTestId('editor-day-changed')).toHaveText(DAY_CHANGED)
+    await settled(stale)
+
+    // The editor of the stale tab now shows the latest times, including the third pair; its own change was dropped.
+    await expect(stale.getByTestId('editor-pair-3-in')).toHaveValue('18:00')
+    await expect(stale.getByTestId('editor-pair-3-out')).toHaveValue('19:00')
+    await expect(stale.getByTestId('editor-pair-2-out')).toHaveValue('17:00')
+
+    // In the database: both hand-entered punches are still there, nothing was deleted, nothing of tab B was saved.
+    expect(summary(await anitaPunches())).toEqual([
+      '0IN:08:00:API', '0OUT:12:00:API', '1IN:13:00:API', '1OUT:17:00:API', '2IN:18:00:MANUAL', '2OUT:19:00:MANUAL',
+    ])
+    expect(await getAuditRows('ATTENDANCE_PUNCH', 'DELETE')).toHaveLength(0)
+
+    // Entering the change again, on the reloaded day, saves, and the third pair is still there.
+    await setPairField(stale, 2, 'out', '17:30')
+    await settled(stale)
+    const after = await anitaPunches()
+    expect(after).toHaveLength(6)
+    expect(summary(after)).toContain('1OUT:17:30:API')
+    expect(summary(after)).toEqual(expect.arrayContaining(['2IN:18:00:MANUAL', '2OUT:19:00:MANUAL']))
+    expect(await getAuditRows('ATTENDANCE_PUNCH', 'DELETE')).toHaveLength(0)
+
+    // The first tab's grid is not touched by the refusal.
+    await expect(page.getByTestId('editor-day-changed')).toHaveCount(0)
+    await closeEditor(stale)
+    await stale.close()
+  })
+})

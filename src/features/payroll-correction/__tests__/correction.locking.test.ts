@@ -1312,6 +1312,233 @@ describe('item 3: approveCorrectionPunches', () => {
   })
 })
 
+// ─── Round 4, item 2: the draft always locks, and reads the current revision under the lock ──────────
+
+describe('round 4, item 2: recalculateAndCreateRevision locks with or without a session and re-reads the current revision', () => {
+  const REV_2 = makeRevision({ id: 'rev-2', revisionNumber: 2 })
+  const REV_3 = makeRevision({ id: 'rev-3', revisionNumber: 3 })
+  const adjustmentsOnly = { payrollRunId: RUN_ID, correctionReason: 'Reverse a deduction', correctionTypes: ['ADJUSTMENTS' as const] }
+  const withSession = { payrollRunId: RUN_ID, correctionReason: 'Wrong OUT time', correctionTypes: ['ATTENDANCE' as const], correctionSessionId: SESSION_ID }
+
+  /** The run is read with `before` as its current revision; the transaction's own read answers `locked`. */
+  function setup(opts: { before?: ReturnType<typeof makeRevision> | null; locked?: ReturnType<typeof makeRevision> | null; session?: boolean } = {}) {
+    const tx = makeTx()
+    withInteractiveTransaction(tx)
+    const before = opts.before === undefined ? REV_2 : opts.before
+    const locked = opts.locked === undefined ? before : opts.locked
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue({ ...makeRun(), revisions: before ? [before] : [] } as never)
+    tx.payrollRevision.findFirst.mockResolvedValue(locked)
+    vi.mocked(lockWeekRow).mockResolvedValue({ id: UPLOAD_ID } as never)
+    if (opts.session) {
+      vi.mocked(prisma.payrollCorrectionSession.findUnique).mockResolvedValue(makeSession() as never)
+      tx.payrollCorrectionSession.findUnique.mockResolvedValue(makeSession())
+      tx.attendancePunch.count.mockResolvedValue(28)
+      vi.mocked(getPunchReview).mockResolvedValue(reviewOf(fullDay()) as never)
+      tx.employee.findMany.mockResolvedValue([payEmployee(EMPLOYEE_ONE)])
+    } else {
+      tx.attendanceUpload.findFirst.mockResolvedValue({ id: UPLOAD_ID })
+      tx.attendanceRecord.findMany.mockResolvedValue([
+        { employeeId: EMPLOYEE_ONE.id, regularHours: 8, overtimeHours: 0, employee: payEmployee(EMPLOYEE_ONE) },
+      ])
+    }
+    tx.payrollRunEmployee.findMany.mockResolvedValue([])
+    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([])
+    return tx
+  }
+
+  /** First call order of every query and write the transaction client made. */
+  function txCallOrders(tx: Tx): Array<[string, number]> {
+    const orders: Array<[string, number]> = []
+    for (const [model, methods] of Object.entries(tx)) {
+      for (const [method, fn] of Object.entries(methods as Record<string, unknown>)) {
+        const calls = (fn as { mock: { invocationCallOrder: number[] } }).mock.invocationCallOrder
+        if (calls.length > 0) orders.push([`tx.${model}.${method}`, calls[0]])
+      }
+    }
+    return orders
+  }
+
+  describe('without a session', () => {
+    it('locks once, by the run\'s week start, before any other call on the transaction client', async () => {
+      const tx = setup()
+
+      await recalculateAndCreateRevision(adjustmentsOnly)
+
+      expect(lockWeekRow).toHaveBeenCalledTimes(1)
+      expect(lockWeekRow).toHaveBeenCalledWith(tx, { weekStart: WEEK_START })
+      const lockArg = vi.mocked(lockWeekRow).mock.calls[0][1] as { weekStart: Date }
+      expect(lockArg.weekStart.getTime()).toBe(WEEK_START.getTime())
+      const lock = callOrder(lockWeekRow)
+      for (const [name, firstCall] of txCallOrders(tx)) expect(lock, `the lock must come before ${name}`).toBeLessThan(firstCall)
+      expect(txCallOrders(tx).length).toBeGreaterThan(3)
+    })
+
+    it('reads the current revision after the lock, on the transaction client, by run and isCurrent', async () => {
+      const tx = setup()
+
+      await recalculateAndCreateRevision(adjustmentsOnly)
+
+      expect(tx.payrollRevision.findFirst).toHaveBeenCalledTimes(1)
+      expect(tx.payrollRevision.findFirst).toHaveBeenCalledWith({ where: { payrollRunId: RUN_ID, isCurrent: true } })
+      expectInOrder(
+        ['lockWeekRow', lockWeekRow],
+        ['tx.payrollRevision.findFirst', tx.payrollRevision.findFirst],
+        ['tx.attendanceUpload.findFirst', tx.attendanceUpload.findFirst],
+        ['tx.payrollRevision.create', tx.payrollRevision.create],
+      )
+    })
+
+    it('it is still one transaction with the shared timeout, and no query leaves it', async () => {
+      setup()
+
+      await recalculateAndCreateRevision(adjustmentsOnly)
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1)
+      expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 30000 })
+      expectOnlyInteractiveTransactions()
+      expectNoGlobalWrites()
+    })
+
+    it('a week with no active row (the lock finds nothing) is not an error: the draft is still written', async () => {
+      const tx = setup()
+      vi.mocked(lockWeekRow).mockResolvedValue(null)
+
+      await expect(recalculateAndCreateRevision(adjustmentsOnly)).resolves.toMatchObject({ revisionNumber: 3 })
+
+      expect(tx.payrollRevision.create).toHaveBeenCalledTimes(1)
+    })
+
+    it('a failing lock query writes nothing', async () => {
+      const tx = setup()
+      vi.mocked(lockWeekRow).mockRejectedValue(new Error('could not obtain lock'))
+
+      await expect(recalculateAndCreateRevision(adjustmentsOnly)).rejects.toThrow('could not obtain lock')
+
+      expectNoTxWrites(tx)
+      expect(tx.payrollRevision.findFirst).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('with a session', () => {
+    it('locks once by the session\'s upload id, before the session re-read and the revision re-read', async () => {
+      const tx = setup({ session: true })
+
+      await recalculateAndCreateRevision(withSession)
+
+      expect(lockWeekRow).toHaveBeenCalledTimes(1)
+      expect(lockWeekRow).toHaveBeenCalledWith(tx, { id: UPLOAD_ID })
+      expectInOrder(
+        ['lockWeekRow', lockWeekRow],
+        ['tx.payrollCorrectionSession.findUnique', tx.payrollCorrectionSession.findUnique],
+        ['tx.payrollRevision.findFirst', tx.payrollRevision.findFirst],
+        ['tx.attendancePunch.count', tx.attendancePunch.count],
+        ['getPunchReview', getPunchReview],
+        ['tx.payrollRevision.create', tx.payrollRevision.create],
+      )
+      for (const [name, firstCall] of txCallOrders(tx)) expect(callOrder(lockWeekRow), `the lock must come before ${name}`).toBeLessThan(firstCall)
+    })
+
+    it('a session that ended while waiting for the lock is refused before the revision is read', async () => {
+      const tx = setup({ session: true })
+      tx.payrollCorrectionSession.findUnique.mockResolvedValue(makeSession({ status: 'ABANDONED' }))
+
+      await expect(recalculateAndCreateRevision(withSession)).rejects.toMatchObject({ code: 'CORRECTION_NOT_ACTIVE' })
+
+      expect(tx.payrollRevision.findFirst).not.toHaveBeenCalled()
+      expectNoTxWrites(tx)
+    })
+  })
+
+  describe('the revision is the one that is current when the lock is held', () => {
+    it('another revision was approved after the read: the draft is numbered after it (4, not 3)', async () => {
+      const tx = setup({ before: REV_2, locked: REV_3 })
+
+      const result = await recalculateAndCreateRevision(adjustmentsOnly)
+
+      expect(result.revisionNumber).toBe(4)
+      expect(tx.payrollRevision.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ revisionNumber: 4, status: 'DRAFT', isCurrent: false }),
+      })
+    })
+
+    it('the previous-employee diff is taken against the revision that is current now', async () => {
+      const tx = setup({ before: REV_2, locked: REV_3 })
+
+      await recalculateAndCreateRevision(adjustmentsOnly)
+
+      expect(tx.payrollRunEmployee.findMany).toHaveBeenCalledTimes(1)
+      expect(tx.payrollRunEmployee.findMany).toHaveBeenCalledWith({ where: { payrollRevisionId: 'rev-3' } })
+      expect(tx.payrollRunEmployee.findMany).not.toHaveBeenCalledWith({ where: { payrollRevisionId: 'rev-2' } })
+    })
+
+    it('with a session, the punch review is read for the locked revision number', async () => {
+      setup({ before: REV_2, locked: REV_3, session: true })
+
+      await recalculateAndCreateRevision(withSession)
+
+      expect(vi.mocked(getPunchReview).mock.calls[0][1]).toEqual({
+        kind: 'CORRECTION',
+        payrollRunId: RUN_ID,
+        correctionId: SESSION_ID,
+        revisionNumber: 3,
+      })
+    })
+
+    it('when nothing moved, the number is the old read\'s plus one and the diff is against that revision', async () => {
+      const tx = setup()
+
+      const result = await recalculateAndCreateRevision(adjustmentsOnly)
+
+      expect(result.revisionNumber).toBe(3)
+      expect(tx.payrollRunEmployee.findMany).toHaveBeenCalledWith({ where: { payrollRevisionId: 'rev-2' } })
+    })
+  })
+
+  describe('no current revision under the lock', () => {
+    it('REVISION_NOT_FOUND and no write of any kind (without a session)', async () => {
+      const tx = setup({ before: REV_2, locked: null })
+
+      const error = await recalculateAndCreateRevision(adjustmentsOnly).catch((e) => e)
+
+      expect(error).toMatchObject({ name: 'CorrectionServiceError', code: 'REVISION_NOT_FOUND', message: 'No current revision found' })
+      expect(lockWeekRow).toHaveBeenCalledTimes(1)
+      expectNoTxWrites(tx)
+      expectNoGlobalWrites()
+      expect(tx.payrollRunEmployee.findMany).not.toHaveBeenCalled()
+    })
+
+    it('REVISION_NOT_FOUND and no write of any kind (with a session): the punches are not even read', async () => {
+      const tx = setup({ before: REV_2, locked: null, session: true })
+
+      await expect(recalculateAndCreateRevision(withSession)).rejects.toMatchObject({ code: 'REVISION_NOT_FOUND' })
+
+      expect(tx.attendancePunch.count).not.toHaveBeenCalled()
+      expect(getPunchReview).not.toHaveBeenCalled()
+      expectNoTxWrites(tx)
+      expectNoGlobalWrites()
+    })
+
+    it('the earlier draft is kept: nothing is deleted when the re-read finds no revision', async () => {
+      const tx = setup({ before: REV_2, locked: null })
+
+      await recalculateAndCreateRevision(adjustmentsOnly).catch(() => undefined)
+
+      expect(tx.payrollRevision.deleteMany).not.toHaveBeenCalled()
+      expect(tx.payrollRunEmployee.deleteMany).not.toHaveBeenCalled()
+    })
+
+    it('the read before the transaction stays as a fast fail: no revision there means no transaction and no lock', async () => {
+      const tx = setup({ before: null })
+
+      await expect(recalculateAndCreateRevision(adjustmentsOnly)).rejects.toMatchObject({ code: 'REVISION_NOT_FOUND' })
+
+      expect(prisma.$transaction).not.toHaveBeenCalled()
+      expect(lockWeekRow).not.toHaveBeenCalled()
+      expect(tx.payrollRevision.findFirst).not.toHaveBeenCalled()
+    })
+  })
+})
+
 // ─── A missing week row ───────────────────────────────────────────────────────
 
 describe('lockWeekRow finds no row (the upload was deleted): current behaviour of each writer', () => {
