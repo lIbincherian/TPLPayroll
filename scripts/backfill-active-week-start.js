@@ -11,9 +11,14 @@
  *
  * `activeWeekStart` equals `payrollWeekStartDate` while the row is the active one for its week
  * and is NULL otherwise. Because it is unique and Postgres treats NULLs as distinct, that gives
- * exactly one active row per week. Two steps, in one transaction:
- *   1. Weeks that already have several active rows keep only the newest (latest uploadedAt,
- *      the larger id on a tie); the others are set isActiveForPayrollWeek = false.
+ * exactly one active row per week. Three steps, in one transaction:
+ *   0. Inactive rows must not hold a key; clear any that do. (A stale key on an inactive row would
+ *      make step 2 hit the unique index when another row of that week takes the key.)
+ *   1. Weeks that already have several active rows keep only the one that holds data: APPROVED or
+ *      READY (Excel) first, then REVIEW, then the rest; within a status a row with punches or
+ *      attendance records beats an empty one; then the newest uploadedAt, the larger id on a tie.
+ *      The others are set isActiveForPayrollWeek = false and their key to NULL, and each one is
+ *      printed (week, id, status).
  *   2. Every active row without an activeWeekStart gets one.
  */
 require('dotenv').config()
@@ -40,6 +45,9 @@ async function run() {
   const client = new Client({
     connectionString,
     connectionTimeoutMillis: 10000,
+    // Supabase's pooler certificate chains to Supabase's own CA, which Node does not trust by default, so
+    // chain verification is off (same as src/lib/prisma.ts). The link is still encrypted. To verify, ship the
+    // CA from the Supabase dashboard and use { ca, rejectUnauthorized: true } here and in prisma.ts together.
     ssl: connectionString.includes('supabase') ? { rejectUnauthorized: false } : undefined,
   })
   await client.connect()
@@ -47,19 +55,29 @@ async function run() {
   try {
     await client.query('BEGIN')
 
+    const staleKeys = await client.query(`
+      UPDATE "AttendanceUpload"
+      SET "activeWeekStart" = NULL
+      WHERE "isActiveForPayrollWeek" = false AND "activeWeekStart" IS NOT NULL
+    `)
+
     const deactivated = await client.query(`
       UPDATE "AttendanceUpload" u
-      SET "isActiveForPayrollWeek" = false
+      SET "isActiveForPayrollWeek" = false, "activeWeekStart" = NULL
       FROM (
-        SELECT id,
+        SELECT u2.id,
                ROW_NUMBER() OVER (
-                 PARTITION BY "payrollWeekStartDate"
-                 ORDER BY "uploadedAt" DESC, id DESC
+                 PARTITION BY u2."payrollWeekStartDate"
+                 ORDER BY CASE u2."status" WHEN 'APPROVED' THEN 0 WHEN 'READY' THEN 0 WHEN 'REVIEW' THEN 1 ELSE 2 END,
+                          (EXISTS (SELECT 1 FROM "AttendancePunch" p WHERE p."attendanceUploadId" = u2.id)
+                           OR EXISTS (SELECT 1 FROM "AttendanceRecord" r WHERE r."attendanceUploadId" = u2.id)) DESC,
+                          u2."uploadedAt" DESC, u2.id DESC
                ) AS position
-        FROM "AttendanceUpload"
-        WHERE "isActiveForPayrollWeek" = true
+        FROM "AttendanceUpload" u2
+        WHERE u2."isActiveForPayrollWeek" = true
       ) ranked
       WHERE u.id = ranked.id AND ranked.position > 1
+      RETURNING u.id, u."payrollWeekStartDate", u.status
     `)
 
     const filled = await client.query(`
@@ -69,6 +87,10 @@ async function run() {
     `)
 
     await client.query('COMMIT')
+    console.log(`Stale keys cleared on inactive rows: ${staleKeys.rowCount}`)
+    for (const row of deactivated.rows) {
+      console.log(`  deactivated: week ${new Date(row.payrollWeekStartDate).toISOString().slice(0, 10)}, ${row.id}, ${row.status}`)
+    }
     console.log(`Duplicate active rows deactivated: ${deactivated.rowCount}`)
     console.log(`activeWeekStart filled: ${filled.rowCount}`)
   } catch (error) {

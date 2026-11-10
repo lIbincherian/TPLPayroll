@@ -9,6 +9,9 @@ const pool = new Pool({
   max: 2,
   idleTimeoutMillis: 10000,
   connectionTimeoutMillis: 10000,
+  // Supabase's pooler certificate chains to Supabase's own CA, which Node does not trust by default, so
+  // chain verification is off (same as scripts/backfill-*.js). The link is still encrypted. To verify, ship the
+  // CA from the Supabase dashboard and use { ca, rejectUnauthorized: true } here and in those scripts together.
   ssl: connectionString.includes('supabase') ? { rejectUnauthorized: false } : undefined,
 })
 

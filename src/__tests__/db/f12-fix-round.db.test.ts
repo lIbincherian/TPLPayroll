@@ -419,17 +419,24 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
     })
 
     it('is all-or-nothing: when the fill step fails, the dedupe is rolled back too', async () => {
-      // A deactivated duplicate that still holds its key blocks the fill of the newer row (unique key).
+      // A row whose key is another week's start (mis-keyed) blocks the fill of that other week's row (unique
+      // key). The older duplicate of the first week would be deactivated by the dedupe step before that.
       await prisma.attendanceUpload.create({
         data: {
-          id: 'f12db-atomic-old', source: 'ETIMEOFFICE', payrollWeekSource: 'ETIMEOFFICE', status: 'REVIEW', isActiveForPayrollWeek: true,
-          activeWeekStart: utc(W.bf5), payrollWeekStartDate: utc(W.bf5), payrollWeekEndDate: utc(addDays(W.bf5, 6)), uploadedAt: new Date('2026-04-09T08:00:00Z'),
+          id: 'f12db-atomic-miskeyed', source: 'ETIMEOFFICE', payrollWeekSource: 'ETIMEOFFICE', status: 'REVIEW', isActiveForPayrollWeek: true,
+          activeWeekStart: utc(addDays(W.bf5, 7)), payrollWeekStartDate: utc(W.bf5), payrollWeekEndDate: utc(addDays(W.bf5, 6)), uploadedAt: new Date('2026-04-09T09:00:00Z'),
         },
       })
       await prisma.attendanceUpload.create({
         data: {
-          id: 'f12db-atomic-new', source: 'ETIMEOFFICE', payrollWeekSource: 'ETIMEOFFICE', status: 'REVIEW', isActiveForPayrollWeek: true,
-          activeWeekStart: null, payrollWeekStartDate: utc(W.bf5), payrollWeekEndDate: utc(addDays(W.bf5, 6)), uploadedAt: new Date('2026-04-09T09:00:00Z'),
+          id: 'f12db-atomic-dup', source: 'ETIMEOFFICE', payrollWeekSource: 'ETIMEOFFICE', status: 'REVIEW', isActiveForPayrollWeek: true,
+          activeWeekStart: null, payrollWeekStartDate: utc(W.bf5), payrollWeekEndDate: utc(addDays(W.bf5, 6)), uploadedAt: new Date('2026-04-09T08:00:00Z'),
+        },
+      })
+      await prisma.attendanceUpload.create({
+        data: {
+          id: 'f12db-atomic-other', source: 'ETIMEOFFICE', payrollWeekSource: 'ETIMEOFFICE', status: 'REVIEW', isActiveForPayrollWeek: true,
+          activeWeekStart: null, payrollWeekStartDate: utc(addDays(W.bf5, 7)), payrollWeekEndDate: utc(addDays(W.bf5, 13)), uploadedAt: new Date('2026-04-09T09:00:00Z'),
         },
       })
       const before = await snapshot()
@@ -439,10 +446,12 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
       try {
         expect(run.code).toBe(1)
         expect(run.stderr).toContain('Backfill failed')
-        // Nothing changed: the older row was not deactivated.
+        // Nothing changed: the older duplicate was not deactivated.
         expect(await snapshot()).toBe(before)
       } finally {
-        await prisma.attendanceUpload.deleteMany({ where: { id: { in: ['f12db-atomic-old', 'f12db-atomic-new'] } } })
+        await prisma.attendanceUpload.deleteMany({
+          where: { id: { in: ['f12db-atomic-miskeyed', 'f12db-atomic-dup', 'f12db-atomic-other'] } },
+        })
       }
     })
   })
