@@ -1,7 +1,6 @@
 import { Suspense } from 'react'
 import { notFound, redirect } from 'next/navigation'
 import { AppShell } from '@/components/layout/AppShell'
-import { getPunchReviewAction } from '@/features/attendance-sync/actions/attendance-sync.actions'
 import { ExcelWeekView } from '@/features/attendance-sync/components/ExcelWeekView'
 import { LoadErrorBanner } from '@/features/attendance-sync/components/LoadErrorBanner'
 import { PunchReviewGrid } from '@/features/attendance-sync/components/PunchReviewGrid'
@@ -9,7 +8,9 @@ import { ReviewGridSkeleton } from '@/features/attendance-sync/components/Review
 import { getAttendanceWeekStatus } from '@/features/attendance-sync/lib/review'
 import { parseWeekId, toISODate, toUtcDate } from '@/features/attendance-sync/lib/week'
 import { getExcelWeekData } from '@/features/attendance-sync/services/excel-week.service'
+import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
 import { getWeekByStart } from '@/features/attendance-sync/services/week-list.service'
+import { AttendanceSyncError, type LiveReview } from '@/features/attendance-sync/types/attendance-sync.types'
 
 export const dynamic = 'force-dynamic'
 
@@ -49,15 +50,20 @@ async function ReviewContent({ weekId }: { weekId: string }) {
   const status = getAttendanceWeekStatus(row)
   if (status === 'NO_DATA' || status === 'SYNC_FAILED') redirect('/attendance')
 
-  const result = await getPunchReviewAction(weekId)
-  if (!result.ok) return <LoadErrorBanner message="Couldn't load this week's punches." />
+  let review: LiveReview
+  try {
+    review = await getPunchReview(weekId, { kind: 'LIVE' })
+  } catch (e) {
+    if (e instanceof AttendanceSyncError) return <LoadErrorBanner message="Couldn't load this week's punches." />
+    throw e
+  }
 
   // Codes that match no employee are fixed first; the grid can't be finished without them.
-  if (result.data.status === 'REVIEW' && result.data.counts.unresolvedCodes > 0) {
+  if (review.status === 'REVIEW' && review.counts.unresolvedCodes > 0) {
     redirect(`/attendance/${weekId}/employee-check`)
   }
 
-  return <PunchReviewGrid initialReview={result.data} backHref="/attendance" backLabel="Attendance" title="Punch review" />
+  return <PunchReviewGrid initialReview={review} backHref="/attendance" backLabel="Attendance" title="Punch review" />
 }
 
 export default async function ReviewPage({ params }: Props) {

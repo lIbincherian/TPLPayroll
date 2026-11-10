@@ -8,7 +8,7 @@ import {
 import { getActiveCorrection } from '@/features/payroll-correction/services/correction.service'
 import { PunchReviewGrid } from '@/features/attendance-sync/components/PunchReviewGrid'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
-import { AttendanceSyncError } from '@/features/attendance-sync/types/attendance-sync.types'
+import { AttendanceSyncError, type CorrectionReview } from '@/features/attendance-sync/types/attendance-sync.types'
 
 export const dynamic = 'force-dynamic'
 
@@ -34,7 +34,7 @@ export default async function CorrectionPunchesPage({ params }: Props) {
   const session = await getActiveCorrection(payrollRunId)
   if (!session || !session.hasPunchClone) redirect(`/payroll/run/${payrollRunId}/correct`)
 
-  let review
+  let review: CorrectionReview
   try {
     review = await getPunchReview(session.weekId, {
       kind: 'CORRECTION',
@@ -54,9 +54,11 @@ export default async function CorrectionPunchesPage({ params }: Props) {
         backHref={`/payroll/run/${payrollRunId}/correct`}
         backLabel="Reason"
         title="Correct punches"
-        correctionReason={session.correctionReason}
-        onApproveCorrection={approveCorrectionPunchesAction}
-        onAbandonCorrection={abandonCorrectionAction}
+        correction={{
+          reason: session.correctionReason,
+          onApprove: approveCorrectionPunchesAction,
+          onAbandon: abandonCorrectionAction,
+        }}
       />
     </AppShell>
   )
