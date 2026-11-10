@@ -337,3 +337,128 @@ test.describe('E2E-32: Scheduled sync replaces an unedited earlier pull', () => 
     await expect(weekRow(page, week.start).getByTestId('week-stale-notice')).toHaveCount(0)
   })
 })
+
+// Fix round 3, item 4: the scheduled pull checks for edits and decisions before it calls the API (no
+// lock), so an edit or a decision that lands while the call is running used to be replaced. The replace
+// transaction now looks again under the week lock and, for a scheduled pull, leaves the week alone.
+// The screens refuse edits while a pull runs (see pull-lock.spec.ts), so the change is written directly
+// to the database, which is what an edit that slipped in just before the pull took its lock looks like.
+test.describe('E2E-05 (round 3): an edit or decision that lands while the scheduled pull waits for the API', () => {
+  const ANITA = 'TPLGOAHLP001'
+
+  async function seedUntouchedWeek(employeeCode = ANITA, empCode = '0001') {
+    const employee = await prisma.employee.findFirstOrThrow({ where: { employeeId: employeeCode } })
+    return seedReviewWeek({
+      weekStartISO: week.start,
+      rows: [
+        {
+          employee: { id: employee.id, employeeId: employee.employeeId, employeeName: employee.employeeName },
+          empCode,
+          days: [{ date: dates[0], punches: FULL_DAY.map((time) => ({ time })) }],
+        },
+      ],
+    })
+  }
+
+  /** Start the scheduled sync against a slow API and wait until the server holds the sync lock. */
+  async function startSlowScheduledPull(request: Parameters<typeof runCron>[0], delayMs = 6000) {
+    setMockScenario({
+      status: 200,
+      body: { Error: false, Msg: 'Success', IsAdmin: true, PunchData: mockDays('0001', dates, ['09:00', '17:00']) },
+      delayMs,
+    })
+    const pending = runCron(request)
+    await expect
+      .poll(async () => (await getWeekRow(week.start))?.syncLockedAt ?? null, { timeout: 20000, intervals: [200] })
+      .not.toBeNull()
+    return { pending }
+  }
+
+  test('a punch edited during the call survives: SKIPPED_HAS_EDITS, notice shown, one SYNC audit row, no failure recorded', async ({ request, page }) => {
+    test.setTimeout(90000)
+    const { id } = await seedUntouchedWeek()
+    const mondayPunches = await getPunchRows(week.start, {})
+    expect(mondayPunches).toHaveLength(4)
+
+    const { pending } = await startSlowScheduledPull(request)
+    const outPunch = await prisma.attendancePunch.findFirstOrThrow({ where: { attendanceUploadId: id, originalTime: '17:47' } })
+    await prisma.attendancePunch.update({ where: { id: outPunch.id }, data: { currentTime: '18:00', note: 'Edited during the pull' } })
+
+    const result = await pending
+    expect(result.status).toBe(200)
+    expect(result.body).toMatchObject({ ok: true, outcome: 'SKIPPED_HAS_EDITS' })
+
+    // The edit is intact and the earlier pull's punches were not replaced by the 09:00/17:00 ones.
+    const after = await prisma.attendancePunch.findUniqueOrThrow({ where: { id: outPunch.id } })
+    expect(after).toMatchObject({ originalTime: '17:47', currentTime: '18:00', note: 'Edited during the pull' })
+    const punches = await getPunchRows(week.start, {})
+    expect(punches).toHaveLength(4)
+    expect(new Set(punches.map((p) => p.date))).toEqual(new Set([dates[0]]))
+    expect(punches.some((p) => p.currentTime === '09:00')).toBe(false)
+
+    // The week: still in review, the stale notice is set, the sync lock is released, and it is not a failure.
+    const row = await getWeekRow(week.start)
+    expect(row?.status).toBe('REVIEW')
+    expect(row?.staleNoticeAt).not.toBeNull()
+    expect(row?.syncLockedAt).toBeNull()
+    expect(row?.lastSyncError).toBeNull()
+
+    // Exactly one audit row for the run, saying it was skipped because of the edit.
+    const audit = (await getAuditRows('ATTENDANCE_WEEK')).filter((a) => a.actionType === 'SYNC' || a.actionType === 'PULL')
+    expect(audit).toHaveLength(1)
+    expect(audit[0].detailsJson).toMatchObject({ outcome: 'SKIPPED_HAS_EDITS', trigger: 'SCHEDULED', editedDays: 1, decisions: 0 })
+    expect(JSON.stringify(audit.map((a) => a.detailsJson))).not.toContain('FAILED')
+
+    await openAttendance(page)
+    await expect(weekRow(page, week.start).getByTestId('week-stale-notice')).toContainText('Newer data may be available')
+    await expect(weekRow(page, week.start).getByTestId('week-error')).toHaveCount(0)
+    await expect(page.getByTestId(`pull-now-${week.start}`)).toBeVisible()
+  })
+
+  test('an employee decision recorded during the call also leaves the week alone', async ({ request }) => {
+    test.setTimeout(90000)
+    const inactive = await prisma.employee.findFirstOrThrow({ where: { employeeId: 'TPLGOAHLP002' } })
+    const { id } = await seedReviewWeek({
+      weekStartISO: week.start,
+      rows: [
+        {
+          employee: { id: inactive.id, employeeId: inactive.employeeId, employeeName: inactive.employeeName },
+          empCode: '0002',
+          days: [{ date: dates[0], punches: [{ time: '08:00' }, { time: '16:00' }] }],
+        },
+      ],
+    })
+    expect(await prisma.attendanceEmployeeDecision.count({ where: { attendanceUploadId: id } })).toBe(0)
+
+    const { pending } = await startSlowScheduledPull(request)
+    await prisma.attendanceEmployeeDecision.create({
+      data: { attendanceUploadId: id, employeeId: inactive.id, reason: 'INACTIVE', decision: 'APPROVED' },
+    })
+
+    const result = await pending
+    expect(result.body).toMatchObject({ ok: true, outcome: 'SKIPPED_HAS_EDITS' })
+    expect(await prisma.attendanceEmployeeDecision.count({ where: { attendanceUploadId: id } })).toBe(1)
+    expect(await getPunchRows(week.start, {})).toHaveLength(2) // the earlier pull is still there
+    const row = await getWeekRow(week.start)
+    expect(row?.staleNoticeAt).not.toBeNull()
+    expect(row?.syncLockedAt).toBeNull()
+    const audit = (await getAuditRows('ATTENDANCE_WEEK')).filter((a) => a.actionType === 'SYNC')
+    expect(audit).toHaveLength(1)
+    expect(audit[0].detailsJson).toMatchObject({ outcome: 'SKIPPED_HAS_EDITS', editedDays: 0, decisions: 1 })
+  })
+
+  test('contrast: with nothing changed during the call the same slow pull replaces the week', async ({ request }) => {
+    test.setTimeout(90000)
+    await seedUntouchedWeek()
+
+    const { pending } = await startSlowScheduledPull(request, 3000)
+    const result = await pending
+
+    expect(result.body).toMatchObject({ ok: true, outcome: 'LOADED' })
+    const punches = await getPunchRows(week.start, {})
+    expect(new Set(punches.map((p) => p.date))).toEqual(new Set(dates))
+    const row = await getWeekRow(week.start)
+    expect(row?.staleNoticeAt).toBeNull()
+    expect(row?.syncLockedAt).toBeNull()
+  })
+})
