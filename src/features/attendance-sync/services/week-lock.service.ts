@@ -1,5 +1,8 @@
 import type { Prisma } from '@prisma/client'
 import { SYNC_LOCK_TTL_MS } from '../lib/constants'
+import { AttendanceSyncError } from '../types/attendance-sync.types'
+
+export const SYNC_IN_PROGRESS_MESSAGE = 'A pull is running for this week. Wait for it to finish, then try again.'
 
 export interface LockedWeekRow {
   id: string
@@ -61,5 +64,10 @@ export async function lockWeekRow(
 
 /** True while a pull holds the week: its sync lock is set and younger than SYNC_LOCK_TTL_MS. */
 export function isSyncing(row: { syncLockedAt: Date | null }, now: Date = new Date()): boolean {
-  return row.syncLockedAt != null && now.getTime() - row.syncLockedAt.getTime() < SYNC_LOCK_TTL_MS
+  return row.syncLockedAt !== null && now.getTime() - row.syncLockedAt.getTime() < SYNC_LOCK_TTL_MS
+}
+
+/** Throws SYNC_IN_PROGRESS while a pull holds the week (see isSyncing). */
+export function assertNotSyncing(row: { syncLockedAt: Date | null }, now: Date = new Date()): void {
+  if (isSyncing(row, now)) throw new AttendanceSyncError('SYNC_IN_PROGRESS', SYNC_IN_PROGRESS_MESSAGE)
 }

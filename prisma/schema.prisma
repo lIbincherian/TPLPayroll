@@ -95,7 +95,7 @@ model AttendanceUpload {
   staleNoticeAt          DateTime? // scheduled sync skipped because the week has edits/decisions
   syncLockedAt           DateTime?
   approvedAt             DateTime?
-  activeWeekStart        DateTime? @unique // = payrollWeekStartDate while isActiveForPayrollWeek, else null. Postgres NULLs are distinct, so this is one active row per week.
+  activeWeekStart        DateTime? @unique // = payrollWeekStartDate while isActiveForPayrollWeek, else null. Postgres NULLs are distinct, so this is one active row per week. Any code that sets isActiveForPayrollWeek = false must null this too.
 
   attendanceRecords  AttendanceRecord[]
   punches            AttendancePunch[]
@@ -262,6 +262,7 @@ model PayrollRun {
   generatedAt           DateTime  @default(now())
   approvedAt            DateTime?
   invoicesGeneratedAt   DateTime?
+  approvedWeekStart     DateTime? @unique // = payrollWeekStartDate once status is APPROVED or REVISED, else null. Postgres NULLs are distinct, so this is one approved run per week.
 
   revisions              PayrollRevision[]
   adjustmentApplications PayrollAdjustmentApplication[]

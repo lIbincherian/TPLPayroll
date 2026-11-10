@@ -223,6 +223,11 @@ export interface PunchReview {
   approvedAt: string | null
 }
 
+/** A review of the live week. */
+export type LiveReview = PunchReview & { mode: { kind: 'LIVE' } }
+/** A review of a correction's draft clone. */
+export type CorrectionReview = PunchReview & { mode: Extract<ReviewMode, { kind: 'CORRECTION' }> }
+
 /** A recorded employee decision, with the employee's display fields. */
 export interface ApprovalDecisionInput {
   employeeId: string
@@ -361,6 +366,7 @@ export type AttendanceSyncErrorCode =
   | 'EMPLOYEE_NOT_FOUND'
   | 'CODE_NOT_FOUND'
   | 'CORRECTION_NOT_ACTIVE'
+  | 'DAY_CHANGED'
   | 'CONFIG_MISSING'
   | 'SYNC_FAILED'
 
