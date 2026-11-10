@@ -13,8 +13,8 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
-  // The attendance feature is below payroll-correction, never the other way round. The page that
-  // mounts a correction passes the correction actions in as props.
+  // The attendance feature is below every payroll slice (correction, generation, adjustments, ...),
+  // never the other way round. The page that mounts a correction passes the correction actions in as props.
   {
     files: ['src/features/attendance-sync/**/*.{ts,tsx}'],
     rules: {
@@ -23,8 +23,8 @@ const eslintConfig = defineConfig([
         {
           patterns: [
             {
-              group: ['@/features/payroll-correction/*', '**/payroll-correction/*'],
-              message: 'attendance-sync must not import payroll-correction; inject actions from the page.',
+              group: ['@/features/payroll-*/*', '**/payroll-*/*'],
+              message: 'attendance-sync must not import payroll-correction or any other payroll slice; inject what it needs from the page.',
             },
           ],
         },

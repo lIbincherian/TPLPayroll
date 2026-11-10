@@ -14,7 +14,7 @@ const DEFAULT_BASE_URL = 'https://api.etimeoffice.com/api/'
 
 type EtimeofficeLogin = { corporateId: string; username: string; password: string }
 
-export type EtimeofficeConfig =
+type EtimeofficeConfig =
   | { mode: 'LIVE'; baseUrl: string; login: EtimeofficeLogin }
   | { mode: 'MOCK'; baseUrl: string }
   | { mode: 'MISSING' }
@@ -23,8 +23,11 @@ export type EtimeofficeConfig =
  * LIVE when the full login is set. MOCK (the in-app mock API) only when the corporate id is
  * unset and the app is not on Vercel. Anything else is MISSING, so production never
  * falls back to the mock.
+ *
+ * Module-private on purpose: it returns the login, and the `server-only` package that would stop a
+ * client bundle importing this module is not installed. Nothing outside this file can ask for the login.
  */
-export function getEtimeofficeConfig(): EtimeofficeConfig {
+function getEtimeofficeConfig(): EtimeofficeConfig {
   const corporateId = process.env.ETIMEOFFICE_CORPORATE_ID
   const username = process.env.ETIMEOFFICE_USERNAME
   const password = process.env.ETIMEOFFICE_PASSWORD

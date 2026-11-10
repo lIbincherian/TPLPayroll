@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fetchPunchData, getEtimeofficeConfig } from '../services/etimeoffice.client'
+import { fetchPunchData, isMockEtimeofficeEnabled } from '../services/etimeoffice.client'
 import { API_FETCH_TIMEOUT_MS } from '../lib/constants'
 
 const week = { start: '2026-11-05', end: '2026-11-11' }
@@ -48,51 +48,76 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('getEtimeofficeConfig', () => {
-  it('is LIVE when the full login is set, with the default base URL', () => {
+// The login is read by one module-private function, so the configuration is checked through what it decides:
+// where fetchPunchData sends the request, with or without the Authorization header, or that it sends none.
+async function sendRequest() {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse(goodBody))
+  const result = await fetchPunchData(week, { fetch: fetchMock as unknown as typeof fetch })
+  const [url, init] = (fetchMock.mock.calls[0] ?? []) as [string | undefined, { headers: Record<string, string> } | undefined]
+  return { result, fetchMock, url, headers: init?.headers }
+}
+
+describe('configuration (through fetchPunchData)', () => {
+  it('is LIVE when the full login is set: the default base URL, with the Authorization header', async () => {
     setEnv(LIVE_ENV)
-    expect(getEtimeofficeConfig()).toEqual({
-      mode: 'LIVE',
-      baseUrl: 'https://api.etimeoffice.com/api/',
-      login: { corporateId: 'corp-secret-id', username: 'user-secret-name', password: 'pass-secret-word' },
-    })
+    const { url, headers } = await sendRequest()
+    expect(url?.startsWith('https://api.etimeoffice.com/api/')).toBe(true)
+    expect(headers?.Authorization).toBe(
+      'Basic ' + Buffer.from('corp-secret-id:user-secret-name:pass-secret-word:True').toString('base64'),
+    )
+    expect(isMockEtimeofficeEnabled()).toBe(false)
   })
 
-  it('uses ETIMEOFFICE_BASE_URL when set', () => {
+  it('uses ETIMEOFFICE_BASE_URL when set', async () => {
     setEnv({ ...LIVE_ENV, ETIMEOFFICE_BASE_URL: 'https://example.test/api/' })
-    expect(getEtimeofficeConfig()).toMatchObject({ mode: 'LIVE', baseUrl: 'https://example.test/api/' })
+    const { url, headers } = await sendRequest()
+    expect(url?.startsWith('https://example.test/api/')).toBe(true)
+    expect(headers?.Authorization).toBeDefined()
   })
 
-  it('is LIVE even on Vercel when the login is complete', () => {
+  it('is LIVE even on Vercel when the login is complete', async () => {
     setEnv({ ...LIVE_ENV, VERCEL: '1' })
-    expect(getEtimeofficeConfig().mode).toBe('LIVE')
+    const { result, headers } = await sendRequest()
+    expect(result.ok).toBe(true)
+    expect(headers?.Authorization).toBeDefined()
   })
 
-  it('is MOCK locally when the corporate id is unset, using NEXT_PUBLIC_APP_URL', () => {
+  it('is MOCK locally when the corporate id is unset, using NEXT_PUBLIC_APP_URL, with no Authorization header', async () => {
     setEnv({ NEXT_PUBLIC_APP_URL: 'http://localhost:3100' })
-    expect(getEtimeofficeConfig()).toEqual({ mode: 'MOCK', baseUrl: 'http://localhost:3100/api/mock-etimeoffice/' })
+    const { url, headers } = await sendRequest()
+    expect(url?.startsWith('http://localhost:3100/api/mock-etimeoffice/')).toBe(true)
+    expect(headers).not.toHaveProperty('Authorization')
+    expect(isMockEtimeofficeEnabled()).toBe(true)
   })
 
-  it('defaults the mock base URL to http://localhost:3000', () => {
+  it('defaults the mock base URL to http://localhost:3000', async () => {
     setEnv({})
-    expect(getEtimeofficeConfig()).toEqual({ mode: 'MOCK', baseUrl: 'http://localhost:3000/api/mock-etimeoffice/' })
+    const { url } = await sendRequest()
+    expect(url?.startsWith('http://localhost:3000/api/mock-etimeoffice/')).toBe(true)
+    expect(isMockEtimeofficeEnabled()).toBe(true)
   })
 
-  it('is MISSING on Vercel without a login: production never falls back to the mock', () => {
+  it('is MISSING on Vercel without a login: no request, and production never falls back to the mock', async () => {
     setEnv({ VERCEL: '1' })
-    expect(getEtimeofficeConfig()).toEqual({ mode: 'MISSING' })
+    const { result, fetchMock } = await sendRequest()
+    expect(result).toEqual({ ok: false, code: 'CONFIG_MISSING', message: "eTimeOffice login isn't configured." })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(isMockEtimeofficeEnabled()).toBe(false)
   })
 
-  it('is MISSING when the corporate id is set but the username or password is not', () => {
+  it('is MISSING when the corporate id is set but the username or password is not', async () => {
     setEnv({ ETIMEOFFICE_CORPORATE_ID: 'corp', ETIMEOFFICE_USERNAME: 'user' })
-    expect(getEtimeofficeConfig()).toEqual({ mode: 'MISSING' })
+    expect((await sendRequest()).result).toMatchObject({ ok: false, code: 'CONFIG_MISSING' })
     setEnv({ ETIMEOFFICE_CORPORATE_ID: 'corp', ETIMEOFFICE_PASSWORD: 'pass' })
-    expect(getEtimeofficeConfig()).toEqual({ mode: 'MISSING' })
+    expect((await sendRequest()).result).toMatchObject({ ok: false, code: 'CONFIG_MISSING' })
+    expect(isMockEtimeofficeEnabled()).toBe(false)
   })
 
-  it('treats empty strings as unset', () => {
+  it('treats empty strings as unset', async () => {
     setEnv({ ETIMEOFFICE_CORPORATE_ID: '', ETIMEOFFICE_USERNAME: '', ETIMEOFFICE_PASSWORD: '', VERCEL: '1' })
-    expect(getEtimeofficeConfig()).toEqual({ mode: 'MISSING' })
+    const { result, fetchMock } = await sendRequest()
+    expect(result).toMatchObject({ ok: false, code: 'CONFIG_MISSING' })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

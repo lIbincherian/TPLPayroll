@@ -1,16 +1,22 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
+import path from 'path'
 import { Client } from 'pg'
 
-// The real-data specs only read. A few of the app's read paths still write (the settings page upserts its row,
-// the slips download rebuilds a run's invoice snapshots). The base copy that global setup keeps in the
-// `e2e_base` schema is exact, so a spec that triggers such a write puts the rows back from it afterwards, and
-// the global teardown can still prove the base is untouched.
+// The real-data specs only read. A few of the app's read paths can still write (the settings page when it finds a
+// stored week start other than Thursday, the slips download rebuilding a run's invoice snapshots). The base copy
+// that global setup keeps in the `e2e_base` schema is exact, so a spec that triggers such a write puts the rows
+// back from it afterwards, and the global teardown can still prove the base is untouched.
 
+// The same guard the loader and global setup use: one definition of "local" for everything that writes to this database.
+const loader = require(path.join(__dirname, '..', '..', 'scripts', 'seed-local-from-snapshot.js')) as {
+  assertLocal(url: string | undefined): string
+}
+
+/** The database URL, only once the loader's guard has confirmed it is local. Called before any statement runs. */
 function localUrl(): string {
   const url = process.env.DIRECT_DATABASE_URL || process.env.DATABASE_URL
-  if (!url) throw new Error('No database URL')
-  const host = new URL(url).hostname
-  if (!['localhost', '127.0.0.1', '::1', '[::1]'].includes(host)) throw new Error(`Refusing to write to ${host}: not local`)
-  return url
+  loader.assertLocal(url)
+  return url as string
 }
 
 /** Replace the rows of `table` matching `where` with the base copy's rows. `where` uses $1, $2, ... */

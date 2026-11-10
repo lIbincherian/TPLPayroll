@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/prisma', () => ({
   default: {
     settings: {
+      findUnique: vi.fn(),
       upsert: vi.fn(),
       update: vi.fn(),
     },
@@ -41,11 +42,12 @@ describe('updateSettingsAction — week start lock (real service)', () => {
   })
 
   it('returns the current Thursday settings for THURSDAY, without an update', async () => {
-    vi.mocked(prisma.settings.upsert).mockResolvedValue({ id: 'singleton', payrollWeekStartDay: 'THURSDAY' } as never)
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue({ id: 'singleton', payrollWeekStartDay: 'THURSDAY' } as never)
 
     const result = await updateSettingsAction({ payrollWeekStartDay: 'THURSDAY' })
 
     expect(result).toEqual({ ok: true, data: { payrollWeekStartDay: 'THURSDAY', currency: 'INR', docExpiryThresholdDays: 7 } })
     expect(prisma.settings.update).not.toHaveBeenCalled()
+    expect(prisma.settings.upsert).not.toHaveBeenCalled()
   })
 })

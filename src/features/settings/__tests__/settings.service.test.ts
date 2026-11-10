@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/prisma', () => ({
   default: {
     settings: {
+      findUnique: vi.fn(),
       upsert: vi.fn(),
       update: vi.fn(),
     },
@@ -31,21 +32,24 @@ describe('getSettings', () => {
     vi.clearAllMocks()
   })
 
-  it('returns THURSDAY with fixed currency and expiry threshold', async () => {
+  it('returns THURSDAY with fixed currency and expiry threshold, and writes nothing', async () => {
     // GIVEN existing record with THURSDAY
-    vi.mocked(prisma.settings.upsert).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
 
     // WHEN
     const result = await getSettings()
 
-    // THEN payrollWeekStartDay is THURSDAY with fixed fields
+    // THEN payrollWeekStartDay is THURSDAY with fixed fields, and the read did not write the row
     expect(result.payrollWeekStartDay).toBe('THURSDAY')
     expect(result.currency).toBe('INR')
     expect(result.docExpiryThresholdDays).toBe(7)
+    expect(prisma.settings.upsert).not.toHaveBeenCalled()
+    expect(prisma.settings.update).not.toHaveBeenCalled()
   })
 
   it('self-heals a stored non-Thursday value by upserting THURSDAY (F12 lock)', async () => {
-    // GIVEN the upsert is asked to write THURSDAY over whatever is stored
+    // GIVEN MONDAY is stored, so the upsert is asked to write THURSDAY over it
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(makeSettingsRecord('MONDAY') as never)
     vi.mocked(prisma.settings.upsert).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
 
     // WHEN
@@ -61,7 +65,8 @@ describe('getSettings', () => {
   })
 
   it('returns defaults (THURSDAY) when no record exists (upsert creates it)', async () => {
-    // GIVEN upsert creates a new record with default THURSDAY
+    // GIVEN no row is stored, and upsert creates a new record with default THURSDAY
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(null)
     vi.mocked(prisma.settings.upsert).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
 
     // WHEN
@@ -100,7 +105,7 @@ describe('updateSettings', () => {
 
   it('treats a request for THURSDAY as a no-op that returns the current settings', async () => {
     // GIVEN THURSDAY is stored
-    vi.mocked(prisma.settings.upsert).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
 
     // WHEN THURSDAY is requested
     const result = await updateSettings({ payrollWeekStartDay: 'THURSDAY' })
@@ -158,18 +163,20 @@ describe('updateSettings — week start lock (F12)', () => {
     expect(prisma.settings.upsert).not.toHaveBeenCalled()
   })
 
-  it('a request for THURSDAY returns the stored settings through the self-healing read, with no update', async () => {
-    vi.mocked(prisma.settings.upsert).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
+  it('a request for THURSDAY returns the stored settings through the self-healing read, with no write', async () => {
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
 
     const result = await updateSettings({ payrollWeekStartDay: 'THURSDAY' })
 
     expect(result).toEqual({ payrollWeekStartDay: 'THURSDAY', currency: 'INR', docExpiryThresholdDays: 7 })
     expect(prisma.settings.update).not.toHaveBeenCalled()
-    expect(prisma.settings.upsert).toHaveBeenCalledTimes(1)
+    expect(prisma.settings.findUnique).toHaveBeenCalledTimes(1)
+    expect(prisma.settings.upsert).not.toHaveBeenCalled()
   })
 
   it('getSettings writes THURSDAY over a stored non-Thursday value and returns Thursday', async () => {
     // The upsert's update branch is what fixes a stored MONDAY; the database returns the row after the write.
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(makeSettingsRecord('MONDAY') as never)
     vi.mocked(prisma.settings.upsert).mockImplementation((async (args: { update: { payrollWeekStartDay: string } }) =>
       makeSettingsRecord(args.update.payrollWeekStartDay)) as never)
 

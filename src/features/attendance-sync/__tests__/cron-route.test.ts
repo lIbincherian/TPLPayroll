@@ -18,7 +18,6 @@ vi.mock('@/features/attendance-sync/services/sync.service', () => ({
 
 vi.mock('@/features/attendance-sync/services/etimeoffice.client', () => ({
   fetchPunchData: mocks.fetchPunchData,
-  getEtimeofficeConfig: vi.fn(),
 }))
 
 vi.mock('@/lib/prisma', () => ({

@@ -21,8 +21,15 @@ function toAppSettings(payrollWeekStartDay: string): AppSettings {
 // ─── getSettings ──────────────────────────────────────────────────────────────
 
 // The payroll week start is locked to Thursday (F12). A stored value that is
-// anything else is changed to Thursday the first time settings are read.
+// anything else is changed to Thursday the first time settings are read. A read that
+// finds Thursday writes nothing (the row's updatedAt stays as it was).
 export async function getSettings(): Promise<AppSettings> {
+  const stored = await prisma.settings.findUnique({ where: { id: 'singleton' } })
+  if (stored?.payrollWeekStartDay === LOCKED_PAYROLL_WEEK_START_DAY) {
+    return toAppSettings(stored.payrollWeekStartDay)
+  }
+
+  // No row yet, or one that is not Thursday: create it, or change it to Thursday.
   const record = await prisma.settings.upsert({
     where: { id: 'singleton' },
     update: { payrollWeekStartDay: LOCKED_PAYROLL_WEEK_START_DAY },

@@ -4,10 +4,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { ESLint } from 'eslint'
 import { API_FETCH_TIMEOUT_MS, SYNC_LOCK_TTL_MS } from '@/features/attendance-sync/lib/constants'
-import {
-  getEtimeofficeConfig,
-  isMockEtimeofficeEnabled,
-} from '@/features/attendance-sync/services/etimeoffice.client'
+import { isMockEtimeofficeEnabled } from '@/features/attendance-sync/services/etimeoffice.client'
 
 // Fix round, items 8 and 9: house rules as tests.
 //  8a. Only etimeoffice.client.ts reads ETIMEOFFICE_* (the mock route asks the client whether it may answer).
@@ -69,7 +66,6 @@ describe('item 8a: ETIMEOFFICE_* is read in one place', () => {
     it('is true only in MOCK mode: no corporate id and not on Vercel', () => {
       unset('ETIMEOFFICE_CORPORATE_ID')
       unset('VERCEL')
-      expect(getEtimeofficeConfig().mode).toBe('MOCK')
       expect(isMockEtimeofficeEnabled()).toBe(true)
     })
 
@@ -84,7 +80,6 @@ describe('item 8a: ETIMEOFFICE_* is read in one place', () => {
       vi.stubEnv('ETIMEOFFICE_USERNAME', 'user')
       vi.stubEnv('ETIMEOFFICE_PASSWORD', 'secret')
       unset('VERCEL')
-      expect(getEtimeofficeConfig().mode).toBe('LIVE')
       expect(isMockEtimeofficeEnabled()).toBe(false)
     })
 
@@ -93,7 +88,6 @@ describe('item 8a: ETIMEOFFICE_* is read in one place', () => {
       unset('ETIMEOFFICE_USERNAME')
       unset('ETIMEOFFICE_PASSWORD')
       unset('VERCEL')
-      expect(getEtimeofficeConfig().mode).toBe('MISSING')
       expect(isMockEtimeofficeEnabled()).toBe(false)
     })
   })
@@ -240,8 +234,10 @@ describe('item 9b: attendance-sync does not import payroll-correction', () => {
       expect(await lint(line, 'src/features/attendance-sync/__tests__/zz.test.ts')).toHaveLength(1)
     })
 
-    it('does not flag imports of other features or of the feature\'s own modules', async () => {
-      expect(await lint(COMPONENT("import { skipAdjustmentApplication } from '@/features/payroll-adjustments/services/adjustment.service'"))).toEqual([])
+    it('flags every payroll slice, not only payroll-correction; other features and the feature itself are not flagged', async () => {
+      expect(await lint(COMPONENT("import { skipAdjustmentApplication } from '@/features/payroll-adjustments/services/adjustment.service'"))).toHaveLength(1)
+      expect(await lint(COMPONENT("import { calculatePayroll } from '../../payroll-generation/services/payroll.service'"))).toHaveLength(1)
+      expect(await lint(COMPONENT("import { getEmployee } from '@/features/employee-management/services/employee.service'"))).toEqual([])
       expect(await lint(COMPONENT("import { plural } from '../lib/format'"))).toEqual([])
     })
 
