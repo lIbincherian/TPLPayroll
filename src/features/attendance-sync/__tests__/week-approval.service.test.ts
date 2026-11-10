@@ -110,7 +110,7 @@ describe('approveWeek', () => {
     expect(approvedAt).toBeInstanceOf(Date)
     expect(db.tx.attendanceUpload.updateMany).toHaveBeenCalledWith({
       where: { id: 'upload-1', status: 'REVIEW' },
-      data: { status: 'APPROVED', approvedAt },
+      data: { status: 'APPROVED', approvedAt, lastSyncError: null },
     })
     expect(db.$transaction).toHaveBeenCalledTimes(1)
     expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 30000 })
@@ -331,7 +331,7 @@ describe('reopenWeek', () => {
     expect(reopenedAt).toBeInstanceOf(Date)
     expect(db.tx.attendanceUpload.updateMany).toHaveBeenCalledWith({
       where: { id: 'upload-1', status: 'APPROVED' },
-      data: { status: 'REVIEW', approvedAt: null },
+      data: { status: 'REVIEW', approvedAt: null, lastSyncError: null },
     })
     expect(db.tx.attendanceRecord.deleteMany).toHaveBeenCalledWith({ where: { attendanceUploadId: 'upload-1' } })
     expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 30000 })
