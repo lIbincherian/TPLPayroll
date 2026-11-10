@@ -11,6 +11,7 @@ import {
   getAttendanceWeekStatus,
   getNeedsFixingDays,
   getNoPunchEmployees,
+  punchSetSignature,
 } from '../lib/review'
 import { normalizeTimeInput, round2 } from '../lib/time'
 import { getWeekDates, hasWeekEnded, toUtcDate, todayInIST } from '../lib/week'
@@ -32,7 +33,7 @@ import {
 } from '../types/attendance-sync.types'
 import { auditEntry } from './attendance-audit.service'
 import { requireApiWeek } from './week-list.service'
-import { isSyncing, lockWeekRow } from './week-lock.service'
+import { assertNotSyncing, lockWeekRow } from './week-lock.service'
 
 const MAX_NOTE_LENGTH = 500
 const TRANSACTION_TIMEOUT_MS = 30000
@@ -110,7 +111,8 @@ async function requireActiveSession(
  * session's draft clone; otherwise it is the live set. Never calls the eTimeOffice API.
  *
  * Pass the interactive transaction client as `db` to read inside the caller's transaction.
- * The reads run one after another so a transaction never needs a second connection.
+ * On the plain client the independent reads run together; on a transaction client they run one
+ * after another, since a transaction never needs a second connection.
  */
 export async function loadReviewContext(
   weekId: string,
@@ -122,18 +124,27 @@ export async function loadReviewContext(
   let session: PayrollCorrectionSession | null = null
   if (mode.kind === 'CORRECTION') session = await requireActiveSession(mode, upload, db)
 
-  const employees = (await db.employee.findMany({ select: EMPLOYEE_LITE_SELECT })) as EmployeeLite[]
-  const decisions = await db.attendanceEmployeeDecision.findMany({
-    where: { attendanceUploadId: upload.id },
-    select: { employeeId: true, decision: true },
-  })
-  const punches = (await db.attendancePunch.findMany({
-    where: { attendanceUploadId: upload.id, correctionId: mode.kind === 'CORRECTION' ? mode.correctionId : null },
-    select: PUNCH_SELECT,
-  })) as PunchRecord[]
-  const payrollRun = await db.payrollRun.findFirst({
-    where: { payrollWeekStartDate: toUtcDate(week.start), status: { in: ['APPROVED', 'REVISED'] } },
-  })
+  const readEmployees = () => db.employee.findMany({ select: EMPLOYEE_LITE_SELECT }) as Promise<EmployeeLite[]>
+  const readDecisions = () =>
+    db.attendanceEmployeeDecision.findMany({
+      where: { attendanceUploadId: upload.id },
+      select: { employeeId: true, decision: true },
+    })
+  const readPunches = () =>
+    db.attendancePunch.findMany({
+      where: { attendanceUploadId: upload.id, correctionId: mode.kind === 'CORRECTION' ? mode.correctionId : null },
+      select: PUNCH_SELECT,
+    }) as Promise<PunchRecord[]>
+  const readPayrollRun = () =>
+    db.payrollRun.findFirst({
+      where: { payrollWeekStartDate: toUtcDate(week.start), status: { in: ['APPROVED', 'REVISED'] } },
+    })
+  // Inside a transaction every query must stay on the transaction's one connection (the pool holds
+  // two), so they run one after another; on the plain client they can run together.
+  const [employees, decisions, punches, payrollRun] =
+    db === prisma
+      ? await Promise.all([readEmployees(), readDecisions(), readPunches(), readPayrollRun()])
+      : [await readEmployees(), await readDecisions(), await readPunches(), await readPayrollRun()]
 
   if (mode.kind === 'LIVE' && payrollRun) {
     session = await db.payrollCorrectionSession.findFirst({
@@ -163,7 +174,12 @@ export async function loadReviewContext(
   }
 }
 
-function buildReview(weekId: string, mode: ReviewMode, ctx: ReviewContext, today = todayInIST()): PunchReview {
+function buildReview<M extends ReviewMode>(
+  weekId: string,
+  mode: M,
+  ctx: ReviewContext,
+  today = todayInIST(),
+): PunchReview & { mode: M } {
   const { upload, week, employees, decisions, punches, payrollRun, session, approvedEmployeeIds } = ctx
   const status = getAttendanceWeekStatus(upload)
   const dates = getWeekDates(week)
@@ -240,11 +256,11 @@ function buildReview(weekId: string, mode: ReviewMode, ctx: ReviewContext, today
  * The review grid, counts, totals and approval state. Reads only; never calls the API.
  * Pass the interactive transaction client as `db` to read inside the caller's transaction.
  */
-export async function getPunchReview(
+export async function getPunchReview<M extends ReviewMode = { kind: 'LIVE' }>(
   weekId: string,
-  mode: ReviewMode = { kind: 'LIVE' },
+  mode: M = { kind: 'LIVE' } as M,
   db: Prisma.TransactionClient = prisma,
-): Promise<PunchReview> {
+): Promise<PunchReview & { mode: M }> {
   return buildReview(weekId, mode, await loadReviewContext(weekId, mode, db))
 }
 
@@ -325,12 +341,49 @@ function codeFor(employeeCode: string): string {
 type WriteOp = (db: Prisma.TransactionClient) => Promise<unknown>
 
 /**
+ * Membership re-check under the lock: the employee must still be in this review's grid (the
+ * decision or the employee's status may have changed since the snapshot was read).
+ */
+async function assertStillInGrid(
+  tx: Prisma.TransactionClient,
+  upload: AttendanceUpload,
+  week: WeekRange,
+  employeeId: string,
+  mode: ReviewMode,
+): Promise<void> {
+  const employee = (await tx.employee.findUnique({
+    where: { id: employeeId },
+    select: EMPLOYEE_LITE_SELECT,
+  })) as EmployeeLite | null
+  const decisionRow = await tx.attendanceEmployeeDecision.findUnique({
+    where: { attendanceUploadId_employeeId: { attendanceUploadId: upload.id, employeeId } },
+    select: { decision: true },
+  })
+  const hasApprovedRecords =
+    mode.kind === 'CORRECTION' &&
+    (await tx.attendanceRecord.count({ where: { attendanceUploadId: upload.id, employeeId } })) > 0
+
+  const inGrid = employee
+    ? getReviewGridEmployees(
+        [employee],
+        decisionRow ? [{ employeeId, decision: decisionRow.decision as EmployeeDecisionValue }] : [],
+        week,
+        hasApprovedRecords ? new Set([employeeId]) : undefined,
+      ).length > 0
+    : false
+  if (!inGrid) throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', "That employee isn't in this week's review.")
+}
+
+/**
  * Save one employee-day. The submitted pairs are the whole day: a stored punch that is not
  * referenced, or whose time is cleared, is deleted (an API punch keeps its original time).
  * Validation failures write nothing and no audit entry.
  *
  * The writes run in one interactive transaction that first locks the week's row, so an
- * edit cannot interleave with an approve, a reopen, a pull or a revision approval. In a
+ * edit cannot interleave with an approve, a reopen, a pull or a revision approval. The writes
+ * are built from a snapshot read before the lock, so the transaction re-reads the day and the
+ * employee's place in the grid under the lock; if either changed (another save, a pull) it
+ * throws DAY_CHANGED or EMPLOYEE_NOT_FOUND instead of applying stale operations. In a
  * correction, a saved change also clears the session's draft revision: the preview built
  * from the earlier punches is then stale and can no longer be approved.
  */
@@ -510,13 +563,22 @@ export async function savePunchEdit(input: SavePunchEditInput): Promise<SavePunc
           if (locked.status !== 'REVIEW') {
             throw new AttendanceSyncError('WEEK_LOCKED', 'This week is locked. Reopen it to edit punches.')
           }
-          if (isSyncing(locked)) {
-            throw new AttendanceSyncError(
-              'SYNC_IN_PROGRESS',
-              'A pull is running for this week. Wait for it to finish, then try again.',
-            )
-          }
+          assertNotSyncing(locked)
         }
+
+        // The ops were built from a snapshot taken before the lock. Another save or a pull may have
+        // changed the day since; apply the ops only to the day they were built for.
+        const current = (await tx.attendancePunch.findMany({
+          where: { attendanceUploadId: upload.id, correctionId, employeeId: input.employeeId, punchDate },
+          select: PUNCH_SELECT,
+        })) as PunchRecord[]
+        if (punchSetSignature(current) !== punchSetSignature(stored)) {
+          throw new AttendanceSyncError(
+            'DAY_CHANGED',
+            'This day changed since you opened it (another save or a pull). Close the editor, reopen the day and try again.',
+          )
+        }
+        await assertStillInGrid(tx, upload, week, input.employeeId, mode)
 
         for (const op of ops) await op(tx)
 

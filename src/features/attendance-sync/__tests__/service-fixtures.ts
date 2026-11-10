@@ -130,6 +130,33 @@ export function resetDb(db: Db): void {
   )
 }
 
+/**
+ * Serve `employee.findUnique` (by id) on both clients from the same list the `findMany` mocks return.
+ * savePunchEdit looks the employee up again inside its transaction; an unknown id answers null.
+ */
+export function serveEmployeeLookup(db: Db, employees: EmployeeLite[]): void {
+  for (const client of [db, db.tx]) {
+    client.employee.findUnique.mockImplementation(
+      async ({ where }: { where: { id: string } }) => employees.find((e) => e.id === where.id) ?? null,
+    )
+  }
+}
+
+/**
+ * Serve `attendanceEmployeeDecision.findUnique` (by the upload + employee key) on both clients from the
+ * same rows the `findMany` mocks return. No decision for the employee answers null.
+ */
+export function serveDecisionLookup(db: Db, decisions: Array<{ employeeId: string; decision: string }>): void {
+  for (const client of [db, db.tx]) {
+    client.attendanceEmployeeDecision.findUnique.mockImplementation(
+      async ({ where }: { where: { attendanceUploadId_employeeId: { employeeId: string } } }) => {
+        const row = decisions.find((d) => d.employeeId === where.attendanceUploadId_employeeId.employeeId)
+        return row ? { decision: row.decision } : null
+      },
+    )
+  }
+}
+
 /** The `data` of every `auditLog.create` call on a client, in call order. */
 export function auditRows(client: { auditLog: ModelMock }): Array<{
   actionType: string

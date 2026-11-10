@@ -21,6 +21,8 @@ import {
   makeSession,
   makeUpload,
   resetDb,
+  serveDecisionLookup,
+  serveEmployeeLookup,
   serveUpload,
   utc,
   WEEK_DATES,
@@ -54,11 +56,14 @@ const decisionRows = (...rows: Array<{ id: string; code: string; name: string; d
 function serveEmployees(employees: ReturnType<typeof makeEmployee>[]) {
   db.employee.findMany.mockResolvedValue(employees)
   db.tx.employee.findMany.mockResolvedValue(employees)
+  // savePunchEdit looks the employee up again inside its transaction.
+  serveEmployeeLookup(db, employees)
 }
 
 function serveDecisions(rows: ReturnType<typeof decisionRows>) {
   db.attendanceEmployeeDecision.findMany.mockResolvedValue(rows)
   db.tx.attendanceEmployeeDecision.findMany.mockResolvedValue(rows)
+  serveDecisionLookup(db, rows)
 }
 
 /** Asha works a full day; one approved inactive employee and one rejected resigned employee have punches; Ravi has none. */

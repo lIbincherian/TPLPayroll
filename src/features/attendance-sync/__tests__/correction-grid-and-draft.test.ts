@@ -22,6 +22,7 @@ import {
   makeUpload,
   mockLockedWeek,
   resetDb,
+  serveEmployeeLookup,
   serveUpload,
   type Db,
   type PunchStore,
@@ -336,16 +337,20 @@ describe('savePunchEdit: who may be edited', () => {
     db.payrollCorrectionSession.findUnique.mockResolvedValue(makeSession())
     db.tx.payrollCorrectionSession.findUnique.mockResolvedValue(makeSession())
     db.employee.findMany.mockResolvedValue([asha, deactivated])
+    // savePunchEdit looks the employee up again inside its transaction.
+    serveEmployeeLookup(db, [asha, deactivated])
     db.attendanceEmployeeDecision.findMany.mockResolvedValue([])
     store = installPunchStore(db, cloneRows())
   })
 
   it('CORRECTION accepts a now-inactive employee who has approved records, and edits their clone punch', async () => {
     db.attendanceRecord.count.mockResolvedValue(7)
+    db.tx.attendanceRecord.count.mockResolvedValue(7) // the same check, repeated under the week lock
     db.attendanceRecord.findMany.mockResolvedValue([{ employeeId: 'emp-2' }]) // the review that follows the save
     const result = await save(CORRECTION)
 
     expect(db.attendanceRecord.count).toHaveBeenCalledWith({ where: { attendanceUploadId: 'upload-1', employeeId: 'emp-2' } })
+    expect(db.tx.attendanceRecord.count).toHaveBeenCalledWith({ where: { attendanceUploadId: 'upload-1', employeeId: 'emp-2' } })
     expect(result.day).toMatchObject({ regularHours: 5, isEdited: true })
     expect(store.rows.find((r) => r.id === 'c-1')).toMatchObject({ currentTime: '13:00', correctionId: 'session-1' })
   })
@@ -408,6 +413,7 @@ describe('savePunchEdit in a correction clears the draft revision pointer', () =
     serveUpload(db, makeUpload({ id: 'upload-1', status: 'APPROVED' }))
     db.payrollRun.findFirst.mockResolvedValue(makeRun())
     db.employee.findMany.mockResolvedValue([asha])
+    serveEmployeeLookup(db, [asha])
     serveSession(makeSession({ draftRevisionId: 'draft-1' }))
     installPunchStore(db, cloneRows())
   })

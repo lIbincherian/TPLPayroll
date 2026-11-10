@@ -25,6 +25,7 @@ import {
   makeUpload,
   mockLockedWeek,
   resetDb,
+  serveEmployeeLookup,
   serveUpload,
   utc,
   type Db,
@@ -56,6 +57,8 @@ const order = (fn: unknown, index = 0): number =>
 function serveEmployees(employees: ReturnType<typeof makeEmployee>[]) {
   db.employee.findMany.mockResolvedValue(employees)
   db.tx.employee.findMany.mockResolvedValue(employees)
+  // savePunchEdit looks the employee up again inside its transaction.
+  serveEmployeeLookup(db, employees)
 }
 
 function seedWeek(extra: ReturnType<typeof dayPunches> = []) {

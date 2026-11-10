@@ -20,6 +20,8 @@ import {
   makeSession,
   makeUpload,
   resetDb,
+  serveDecisionLookup,
+  serveEmployeeLookup,
   serveUpload,
   utc,
   WEEK_DATES,
@@ -44,6 +46,8 @@ let fetchSpy: ReturnType<typeof vi.spyOn>
 function seed(rows: PunchRow[], employees = [asha, ravi]) {
   store = installPunchStore(db, rows)
   db.employee.findMany.mockResolvedValue(employees)
+  // savePunchEdit looks the employee up again inside its transaction.
+  serveEmployeeLookup(db, employees)
 }
 
 const snapshot = () => JSON.parse(JSON.stringify(store.rows))
@@ -848,6 +852,7 @@ describe('savePunchEdit: guards', () => {
   it('refuses a rejected employee and an inactive one with no decision, but accepts an approved inactive one', async () => {
     const inactive = makeEmployee({ id: 'emp-2', employeeId: 'TPLGOAHLP002', employeeName: 'Old Timer', isActive: false })
     db.employee.findMany.mockResolvedValue([asha, inactive])
+    serveEmployeeLookup(db, [asha, inactive])
 
     db.attendanceEmployeeDecision.findMany.mockResolvedValue([{ employeeId: 'emp-2', decision: 'REJECTED' }])
     await expect(save([], { employeeId: 'emp-2' })).rejects.toMatchObject({ code: 'EMPLOYEE_NOT_FOUND' })
@@ -856,6 +861,7 @@ describe('savePunchEdit: guards', () => {
     await expect(save([], { employeeId: 'emp-2' })).rejects.toMatchObject({ code: 'EMPLOYEE_NOT_FOUND' })
 
     db.attendanceEmployeeDecision.findMany.mockResolvedValue([{ employeeId: 'emp-2', decision: 'APPROVED' }])
+    serveDecisionLookup(db, [{ employeeId: 'emp-2', decision: 'APPROVED' }])
     await expect(save([pair(0, { time: '08:00' }, { time: '16:00' })], { employeeId: 'emp-2' })).resolves.toMatchObject({
       day: { regularHours: 8 },
     })
