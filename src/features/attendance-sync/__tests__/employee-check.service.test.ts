@@ -268,9 +268,10 @@ describe('rematchWeekCodes', () => {
   const newEmployee = makeEmployee({ id: 'emp-999', employeeId: 'TPLGOAHLP999', employeeName: 'New Hire' })
 
   /**
-   * rematchWeekCodes reads and writes inside its one transaction, so db.tx serves everything: the
-   * unresolved codes (the `distinct` query), the employees, the saved exceptions, and the two lookups
-   * linkCodeToEmployee makes (the code's rows, then the employee's existing pairs).
+   * rematchWeekCodes reads the unresolved codes (the `distinct` query), the employees and the saved
+   * exceptions on the plain client. Each code that changes then runs in its own transaction, on db.tx: the
+   * unresolved count under the lock, the two lookups linkCodeToEmployee makes (the code's rows, then the
+   * employee's existing pairs) and the writes.
    */
   function serveRematch(opts: {
     unresolved: Array<{ empCode: string; matchStatus: string }>
@@ -279,11 +280,12 @@ describe('rematchWeekCodes', () => {
     codeRows?: Array<{ id: string; punchDate: Date; pairIndex: number }>
     existing?: Array<{ punchDate: Date; pairIndex: number }>
   }) {
-    db.tx.employee.findMany.mockResolvedValue(opts.employees ?? [asha, sevenA, sevenB, inactive, resigned, resigningDuringWeek])
-    db.tx.attendanceCodeException.findMany.mockResolvedValue(opts.exceptions ?? [])
-    db.tx.attendancePunch.findMany.mockImplementation(
-      async ({ where, distinct }: { where: { empCode?: string }; distinct?: string[] }) =>
-        distinct ? opts.unresolved : where.empCode ? (opts.codeRows ?? []) : (opts.existing ?? []),
+    db.employee.findMany.mockResolvedValue(opts.employees ?? [asha, sevenA, sevenB, inactive, resigned, resigningDuringWeek])
+    db.attendanceCodeException.findMany.mockResolvedValue(opts.exceptions ?? [])
+    db.attendancePunch.findMany.mockResolvedValue(opts.unresolved)
+    db.tx.attendancePunch.count.mockResolvedValue(opts.codeRows?.length ?? 1) // still unresolved under the lock
+    db.tx.attendancePunch.findMany.mockImplementation(async ({ where }: { where: { empCode?: string } }) =>
+      where.empCode ? (opts.codeRows ?? []) : (opts.existing ?? []),
     )
     db.tx.attendancePunch.updateMany.mockResolvedValue({ count: opts.codeRows?.length ?? 0 })
   }
@@ -304,7 +306,7 @@ describe('rematchWeekCodes', () => {
       matched: [{ empCode: '0999', employeeId: 'emp-999', employeeCode: 'TPLGOAHLP999' }],
       stillUnresolved: [],
     })
-    // Reads, writes and the audit row all happen in the one transaction.
+    // The write and the audit row happen in the code's own transaction.
     expect(db.$transaction).toHaveBeenCalledTimes(1)
     expect(db.attendancePunch.updateMany).not.toHaveBeenCalled()
     expect(db.auditLog.create).not.toHaveBeenCalled()
@@ -328,7 +330,7 @@ describe('rematchWeekCodes', () => {
 
     await rematchWeekCodes(WEEK_ID)
 
-    expect(db.tx.attendancePunch.findMany).toHaveBeenCalledWith({
+    expect(db.attendancePunch.findMany).toHaveBeenCalledWith({
       where: { attendanceUploadId: 'upload-1', correctionId: null, matchStatus: { in: ['UNKNOWN', 'DUPLICATE'] } },
       select: { empCode: true, matchStatus: true },
       distinct: ['empCode'],
@@ -399,14 +401,12 @@ describe('rematchWeekCodes', () => {
 
     await rematchWeekCodes(WEEK_ID)
 
-    expect(db.tx.attendancePunch.update).toHaveBeenCalledWith({
-      where: { id: 'c-0' },
-      data: { employeeId: 'emp-999', matchStatus: 'MATCHED', pairIndex: 2 },
+    // The rows on the day with existing pairs 0 and 1 move together, by an increment of 2.
+    expect(db.tx.attendancePunch.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['c-0', 'c-1'] } },
+      data: { employeeId: 'emp-999', matchStatus: 'MATCHED', pairIndex: { increment: 2 } },
     })
-    expect(db.tx.attendancePunch.update).toHaveBeenCalledWith({
-      where: { id: 'c-1' },
-      data: { employeeId: 'emp-999', matchStatus: 'MATCHED', pairIndex: 2 },
-    })
+    expect(db.tx.attendancePunch.update).not.toHaveBeenCalled()
     // The row on the free day is linked as is.
     expect(db.tx.attendancePunch.updateMany).toHaveBeenCalledWith({
       where: { id: { in: ['c-2'] } },
@@ -462,6 +462,7 @@ describe('matchCodeToEmployee', () => {
     db.attendancePunch.count.mockResolvedValue(4)
     db.tx.attendancePunch.count.mockResolvedValue(4) // the same check, repeated under the week lock
     db.employee.findUnique.mockResolvedValue({ id: 'emp-36', employeeId: 'TPLGOAHLP036', employeeName: 'Asha Rao' })
+    db.tx.employee.findUnique.mockResolvedValue({ id: 'emp-36', employeeId: 'TPLGOAHLP036', employeeName: 'Asha Rao' }) // read again under the lock
     db.tx.attendanceCodeException.findUnique.mockResolvedValue(null)
     db.tx.attendanceCodeException.upsert.mockResolvedValue({ id: 'exception-1' })
     db.tx.attendancePunch.findMany.mockImplementation(async ({ where }: { where: { empCode?: string } }) =>

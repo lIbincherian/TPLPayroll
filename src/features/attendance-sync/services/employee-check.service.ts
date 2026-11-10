@@ -230,22 +230,19 @@ async function linkCodeToEmployee(
     nextIndexByDay.set(day, Math.max(nextIndexByDay.get(day) ?? 0, row.pairIndex + 1))
   }
 
-  const plainIds: string[] = []
+  // One updateMany per offset, however many days the code has punches on.
+  const idsByOffset = new Map<number, string[]>()
   for (const row of codeRows) {
     const offset = nextIndexByDay.get(toISODate(row.punchDate)) ?? 0
-    if (offset === 0) {
-      plainIds.push(row.id)
-    } else {
-      await tx.attendancePunch.update({
-        where: { id: row.id },
-        data: { employeeId, matchStatus: 'MATCHED', pairIndex: row.pairIndex + offset },
-      })
-    }
+    idsByOffset.set(offset, [...(idsByOffset.get(offset) ?? []), row.id])
   }
-  if (plainIds.length > 0) {
+  for (const [offset, ids] of idsByOffset) {
     await tx.attendancePunch.updateMany({
-      where: { id: { in: plainIds } },
-      data: { employeeId, matchStatus: 'MATCHED' },
+      where: { id: { in: ids } },
+      data:
+        offset === 0
+          ? { employeeId, matchStatus: 'MATCHED' }
+          : { employeeId, matchStatus: 'MATCHED', pairIndex: { increment: offset } },
     })
   }
 
@@ -254,8 +251,13 @@ async function linkCodeToEmployee(
 
 /**
  * Re-run matching for the week's unresolved codes with the current employees and saved
- * exceptions. Call after the user adds or edits an employee. All of it runs in one transaction
- * that first locks the week's row, so a pull or an approval cannot land in the middle.
+ * exceptions. Call after the user adds or edits an employee.
+ *
+ * The codes are read and matched first, on the plain client. Each code that changes then commits
+ * in its own transaction, which first locks the week's row (so a pull or an approval cannot land
+ * in the middle of one code) and skips the code if nothing is left to link. An error (WEEK_LOCKED,
+ * SYNC_IN_PROGRESS, a database error) stops the loop and is thrown: codes already linked stay
+ * linked and audited, the rest stay unresolved for the next run.
  */
 export async function rematchWeekCodes(
   weekId: string,
@@ -263,29 +265,37 @@ export async function rematchWeekCodes(
   const { upload, week } = await requireApiWeek(weekId)
   assertCodesEditable(upload)
 
-  return prisma.$transaction(
-    async (tx) => {
-      assertCodesEditable(await lockWeek(tx, upload.id))
+  const unresolvedWhere = (empCode: string) => ({
+    attendanceUploadId: upload.id,
+    correctionId: null,
+    empCode,
+    matchStatus: { in: UNRESOLVED },
+  })
+  const [unresolved, employees, exceptions] = await Promise.all([
+    prisma.attendancePunch.findMany({
+      where: { attendanceUploadId: upload.id, correctionId: null, matchStatus: { in: UNRESOLVED } },
+      select: { empCode: true, matchStatus: true },
+      distinct: ['empCode'],
+    }),
+    loadEmployees(),
+    loadExceptions(),
+  ])
 
-      const unresolved = await tx.attendancePunch.findMany({
-        where: { attendanceUploadId: upload.id, correctionId: null, matchStatus: { in: UNRESOLVED } },
-        select: { empCode: true, matchStatus: true },
-        distinct: ['empCode'],
-      })
-      const employees = await loadEmployees(tx)
-      const exceptions = await loadExceptions(tx)
+  const matched: Array<{ empCode: string; employeeId: string; employeeCode: string }> = []
+  const stillUnresolved: string[] = []
 
-      const matched: Array<{ empCode: string; employeeId: string; employeeCode: string }> = []
-      const stillUnresolved: string[] = []
-      const unresolvedWhere = (empCode: string) => ({
-        attendanceUploadId: upload.id,
-        correctionId: null,
-        empCode,
-        matchStatus: { in: UNRESOLVED },
-      })
+  for (const { empCode, matchStatus } of unresolved) {
+    const match = matchEmployeeCode(empCode, employees, exceptions)
+    if ((match.status === 'UNKNOWN' || match.status === 'DUPLICATE') && match.status === matchStatus) {
+      stillUnresolved.push(empCode) // nothing to write
+      continue
+    }
 
-      for (const { empCode, matchStatus } of unresolved) {
-        const match = matchEmployeeCode(empCode, employees, exceptions)
+    const applied = await prisma.$transaction(
+      async (tx) => {
+        assertCodesEditable(await lockWeek(tx, upload.id))
+        // A pull or another match may have resolved the code since it was read.
+        if ((await tx.attendancePunch.count({ where: unresolvedWhere(empCode) })) === 0) return false
 
         if (match.status === 'MATCHED') {
           const linkedPunches = await linkCodeToEmployee(tx, upload.id, empCode, match.employee.id)
@@ -306,7 +316,6 @@ export async function rematchWeekCodes(
             },
             tx,
           )
-          matched.push({ empCode, employeeId: match.employee.id, employeeCode: match.employee.employeeId })
         } else if (match.status === 'IGNORED') {
           await tx.attendancePunch.updateMany({
             where: unresolvedWhere(empCode),
@@ -323,17 +332,22 @@ export async function rematchWeekCodes(
           )
         } else {
           // A duplicate whose second ID was edited becomes unknown (and the reverse).
-          if (match.status !== matchStatus) {
-            await tx.attendancePunch.updateMany({ where: unresolvedWhere(empCode), data: { matchStatus: match.status } })
-          }
-          stillUnresolved.push(empCode)
+          await tx.attendancePunch.updateMany({ where: unresolvedWhere(empCode), data: { matchStatus: match.status } })
         }
-      }
+        return true
+      },
+      { timeout: TRANSACTION_TIMEOUT_MS },
+    )
+    if (!applied) continue
 
-      return { matched, stillUnresolved }
-    },
-    { timeout: TRANSACTION_TIMEOUT_MS },
-  )
+    if (match.status === 'MATCHED') {
+      matched.push({ empCode, employeeId: match.employee.id, employeeCode: match.employee.employeeId })
+    } else if (match.status !== 'IGNORED') {
+      stillUnresolved.push(empCode)
+    }
+  }
+
+  return { matched, stillUnresolved }
 }
 
 async function requireUnresolvedCode(
@@ -360,17 +374,19 @@ export async function matchCodeToEmployee(
   assertCodesEditable(upload)
   await requireUnresolvedCode(upload.id, empCode)
 
-  const employee = await prisma.employee.findUnique({
-    where: { id: employeeId },
-    select: { id: true, employeeId: true, employeeName: true },
-  })
-  if (!employee) throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', 'That employee no longer exists.')
+  const employeeSelect = { id: true, employeeId: true, employeeName: true } as const
+  // Fast fail only: the employee is read again under the lock, and that copy is the one written.
+  const knownEmployee = await prisma.employee.findUnique({ where: { id: employeeId }, select: employeeSelect })
+  if (!knownEmployee) throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', 'That employee no longer exists.')
 
   return prisma.$transaction(
     async (tx) => {
       assertCodesEditable(await lockWeek(tx, upload.id))
       // A pull or another match may have resolved the code since the check above.
       await requireUnresolvedCode(upload.id, empCode, tx)
+      // The employee may have been deleted outside the app since the check above.
+      const employee = await tx.employee.findUnique({ where: { id: employeeId }, select: employeeSelect })
+      if (!employee) throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', 'That employee no longer exists.')
 
       const previous = await tx.attendanceCodeException.findUnique({ where: { empCode }, select: { id: true } })
       const exception = await tx.attendanceCodeException.upsert({
