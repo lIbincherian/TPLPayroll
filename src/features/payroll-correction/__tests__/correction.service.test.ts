@@ -111,6 +111,7 @@ function makePayrollRun(overrides: Partial<PayrollRun> = {}): PayrollRun {
     generatedAt: new Date('2025-03-14'),
     approvedAt: new Date('2025-03-14'),
     invoicesGeneratedAt: null,
+    approvedWeekStart: null,
     ...overrides,
   }
 }
@@ -348,12 +349,9 @@ describe('recalculateAndCreateRevision', () => {
     vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 1 } as never)
     vi.mocked(prisma.payrollRun.update).mockResolvedValue({ ...run, currentRevisionNumber: 2 } as never)
 
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => {
-      if (Array.isArray(promises)) {
-        return Promise.all(promises)
-      }
-      return promises as any
-    })
+    // The draft is written in one interactive transaction; the transaction client is the mock client here.
+    vi.mocked(prisma.$transaction).mockImplementation((async (arg: unknown) =>
+      typeof arg === 'function' ? arg(prisma) : Promise.all(arg as Promise<unknown>[])) as never)
 
     return { newRevision }
   }

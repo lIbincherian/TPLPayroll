@@ -149,7 +149,10 @@ export async function prepareAdjustmentsForCorrection(
 /**
  * Open a correction session for an approved run, or resume the one already open.
  * A new session remembers how the week's adjustment applications looked (so abandoning
- * can put them back) and then resets them for re-evaluation, in one transaction.
+ * can put them back) and then resets them for re-evaluation, in one transaction that first
+ * locks the week's row. Two requests for the same run (a double click) therefore serialize:
+ * the second finds the first one's session and resumes it, instead of opening another and
+ * snapshotting the adjustments the first one had already reset.
  */
 export async function beginCorrection(payrollRunId: string): Promise<BeginCorrectionResult> {
   const run = await prisma.payrollRun.findUnique({ where: { id: payrollRunId } })
@@ -187,33 +190,49 @@ export async function beginCorrection(payrollRunId: string): Promise<BeginCorrec
     throw new CorrectionServiceError('PAYROLL_RUN_NOT_FOUND', 'No attendance was found for this payroll run\'s week')
   }
 
-  const applications = await prisma.payrollAdjustmentApplication.findMany({
-    where: {
-      OR: [
-        { payrollRunId },
-        { payrollWeekStartDate: run.payrollWeekStartDate, payrollRunId: null },
-      ],
-    },
-    select: {
-      id: true,
-      approvalStatus: true,
-      isReversed: true,
-      approvedAt: true,
-      skippedAt: true,
-      appliedAt: true,
-    },
-  })
-  const adjustmentSnapshot: AdjustmentSnapshotEntry[] = applications.map((app) => ({
-    applicationId: app.id,
-    approvalStatus: app.approvalStatus,
-    isReversed: app.isReversed,
-    approvedAt: app.approvedAt?.toISOString() ?? null,
-    skippedAt: app.skippedAt?.toISOString() ?? null,
-    appliedAt: app.appliedAt?.toISOString() ?? null,
-  }))
-
-  const session = await prisma.$transaction(
+  return prisma.$transaction(
     async (tx) => {
+      await lockWeekRow(tx, { id: upload.id })
+
+      // The check above ran without the lock; another request may have opened a session since.
+      const open = await tx.payrollCorrectionSession.findFirst({
+        where: { payrollRunId, status: 'IN_PROGRESS' },
+        orderBy: { createdAt: 'desc' },
+      })
+      if (open) {
+        return {
+          sessionId: open.id,
+          resumed: true,
+          correctionTypes: parseCorrectionTypes(open.correctionTypesJson),
+        }
+      }
+
+      // Read under the lock, so the snapshot is the state the reset below is about to change.
+      const applications = await tx.payrollAdjustmentApplication.findMany({
+        where: {
+          OR: [
+            { payrollRunId },
+            { payrollWeekStartDate: run.payrollWeekStartDate, payrollRunId: null },
+          ],
+        },
+        select: {
+          id: true,
+          approvalStatus: true,
+          isReversed: true,
+          approvedAt: true,
+          skippedAt: true,
+          appliedAt: true,
+        },
+      })
+      const adjustmentSnapshot: AdjustmentSnapshotEntry[] = applications.map((app) => ({
+        applicationId: app.id,
+        approvalStatus: app.approvalStatus,
+        isReversed: app.isReversed,
+        approvedAt: app.approvedAt?.toISOString() ?? null,
+        skippedAt: app.skippedAt?.toISOString() ?? null,
+        appliedAt: app.appliedAt?.toISOString() ?? null,
+      }))
+
       const created = await tx.payrollCorrectionSession.create({
         data: {
           payrollRunId,
@@ -224,12 +243,10 @@ export async function beginCorrection(payrollRunId: string): Promise<BeginCorrec
         },
       })
       await prepareAdjustmentsForCorrection(payrollRunId, tx)
-      return created
+      return { sessionId: created.id, resumed: false, correctionTypes: [] }
     },
     { timeout: TRANSACTION_TIMEOUT_MS },
   )
-
-  return { sessionId: session.id, resumed: false, correctionTypes: [] }
 }
 
 // ─── getActiveCorrection ──────────────────────────────────────────────────────
@@ -263,6 +280,9 @@ export async function getActiveCorrection(payrollRunId: string): Promise<Correct
  * Save the reason and types, and copy the week's approved punches so they can be edited
  * apart from the live set. The live punches and attendance records stay untouched until
  * the revision is approved. Excel-era runs have no punches to copy.
+ *
+ * The transaction locks the week's row first and then checks whether the copy exists, so two
+ * concurrent calls cannot both copy (the clone set would hold every punch twice).
  */
 export async function startAttendanceCorrection(
   payrollRunId: string,
@@ -286,6 +306,13 @@ export async function startAttendanceCorrection(
 
   await prisma.$transaction(
     async (tx) => {
+      await lockWeekRow(tx, { id: upload.id })
+      // The session was read before the lock; it may have been abandoned or applied since.
+      const current = await tx.payrollCorrectionSession.findUnique({ where: { id: session.id } })
+      if (!current || current.status !== 'IN_PROGRESS') {
+        throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'This correction is no longer in progress.')
+      }
+
       await tx.payrollCorrectionSession.update({
         where: { id: session.id },
         data: { correctionReason: input.reason, correctionTypesJson: types },
@@ -484,6 +511,10 @@ export async function approveSkippedAdjustment(
 /**
  * Hours for a correction that edits punches: one row per employee per day from the
  * session's copied punches. The employee set is everyone with hours in the corrected week.
+ * Pass the transaction client as `db` to read inside the caller's transaction.
+ *
+ * An incomplete pair contributes no hours, so a draft built over one would be wrong for every
+ * caller; it is refused here.
  */
 async function loadCorrectionHours(
   weekStart: Date,
@@ -491,16 +522,27 @@ async function loadCorrectionHours(
   run: { id: string },
   currentRevisionNumber: number,
   correctionId: string,
+  db: Prisma.TransactionClient = prisma,
 ): Promise<HoursRecord[]> {
-  const review = await getPunchReview(toISODate(weekStart), {
-    kind: 'CORRECTION',
-    payrollRunId: run.id,
-    correctionId,
-    revisionNumber: currentRevisionNumber,
-  })
+  const review = await getPunchReview(
+    toISODate(weekStart),
+    {
+      kind: 'CORRECTION',
+      payrollRunId: run.id,
+      correctionId,
+      revisionNumber: currentRevisionNumber,
+    },
+    db,
+  )
+  if (review.counts.needsFixingDays > 0) {
+    throw new CorrectionServiceError(
+      'CORRECTION_HAS_INCOMPLETE_PAIRS',
+      `${review.counts.needsFixingDays} day(s) still have an incomplete pair. Fix or delete them first.`,
+    )
+  }
   const payrollEmployees = getPayrollEmployees(review)
 
-  const employees = await prisma.employee.findMany({
+  const employees = await db.employee.findMany({
     where: { id: { in: payrollEmployees.map((e) => e.employeeId) } },
     select: employeePaySelect(weekStart, weekEnd),
   })
@@ -522,6 +564,12 @@ async function loadCorrectionHours(
  * Work out the corrected payroll and save it as a DRAFT revision. The current revision stays
  * current and the PayrollRun is untouched until `approveRevision`. Recalculating again
  * replaces the draft.
+ *
+ * The calculation and the writes are one transaction that first locks the week's row, and the
+ * punches are read inside it, so the draft always matches the punches at commit. A punch edit
+ * that lands after it clears the session's draft pointer (savePunchEdit takes the same lock);
+ * one that landed before it is included. Adjustment changes are written in the same
+ * transaction, so a failed draft leaves them as they were.
  */
 export async function recalculateAndCreateRevision(
   input: CreateRevisionInput,
@@ -552,269 +600,269 @@ export async function recalculateAndCreateRevision(
   const weekStart = run.payrollWeekStartDate
   const weekEnd = run.payrollWeekEndDate
 
-  let session: { id: string } | null = null
+  // Checked here to fail fast; the transaction below checks it again once the week is locked.
+  let found: { id: string; attendanceUploadId: string } | null = null
   if (input.correctionSessionId) {
-    const found = await prisma.payrollCorrectionSession.findUnique({ where: { id: input.correctionSessionId } })
-    if (!found || found.status !== 'IN_PROGRESS' || found.payrollRunId !== run.id) {
+    const row = await prisma.payrollCorrectionSession.findUnique({ where: { id: input.correctionSessionId } })
+    if (!row || row.status !== 'IN_PROGRESS' || row.payrollRunId !== run.id) {
       throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'This correction is no longer in progress')
     }
-    session = found
+    found = row
   }
-  const editsPunches = session
-    ? (await prisma.attendancePunch.count({ where: { correctionId: session.id } })) > 0
-    : false
+  const session = found
 
-  // Hours come from the correction's edited punches when it has them, otherwise from the
-  // approved attendance records.
-  let attendanceRecords: HoursRecord[]
-  if (session && editsPunches) {
-    attendanceRecords = await loadCorrectionHours(weekStart, weekEnd, run, currentRevision.revisionNumber, session.id)
-  } else {
-    // Fetch the active attendance upload for this week
-    const upload = await prisma.attendanceUpload.findFirst({
-      where: {
-        payrollWeekStartDate: weekStart,
-        payrollWeekEndDate: weekEnd,
-        isActiveForPayrollWeek: true,
-      },
-    })
+  return prisma.$transaction(
+    async (tx) => {
+      if (session) {
+        await lockWeekRow(tx, { id: session.attendanceUploadId })
+        // The session was read before the lock; it may have been abandoned or applied since.
+        const current = await tx.payrollCorrectionSession.findUnique({ where: { id: session.id } })
+        if (!current || current.status !== 'IN_PROGRESS' || current.payrollRunId !== run.id) {
+          throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'This correction is no longer in progress')
+        }
+      }
 
-    attendanceRecords = await prisma.attendanceRecord.findMany({
-      where: { attendanceUploadId: upload?.id ?? '' },
-      include: { employee: { select: employeePaySelect(weekStart, weekEnd) } },
-      orderBy: [{ employeeId: 'asc' }, { attendanceDate: 'asc' }],
-    })
-  }
+      const editsPunches = session
+        ? (await tx.attendancePunch.count({ where: { correctionId: session.id } })) > 0
+        : false
 
-  // Group attendance by employee
-  type EmployeeGroup = {
-    employee: PayEmployee
-    records: HoursRecord[]
-  }
+      // Hours come from the correction's edited punches when it has them, otherwise from the
+      // approved attendance records.
+      let attendanceRecords: HoursRecord[]
+      if (session && editsPunches) {
+        attendanceRecords = await loadCorrectionHours(weekStart, weekEnd, run, currentRevision.revisionNumber, session.id, tx)
+      } else {
+        // Fetch the active attendance upload for this week
+        const upload = await tx.attendanceUpload.findFirst({
+          where: {
+            payrollWeekStartDate: weekStart,
+            payrollWeekEndDate: weekEnd,
+            isActiveForPayrollWeek: true,
+          },
+        })
 
-  const employeeMap = new Map<string, EmployeeGroup>()
-  for (const record of attendanceRecords) {
-    const key = record.employeeId
-    if (!employeeMap.has(key)) {
-      employeeMap.set(key, { employee: record.employee, records: [] })
-    }
-    employeeMap.get(key)!.records.push(record)
-  }
+        attendanceRecords = await tx.attendanceRecord.findMany({
+          where: { attendanceUploadId: upload?.id ?? '' },
+          include: { employee: { select: employeePaySelect(weekStart, weekEnd) } },
+          orderBy: [{ employeeId: 'asc' }, { attendanceDate: 'asc' }],
+        })
+      }
 
-  // Get previous revision's employee data for diff tracking
-  const previousEmployees = await prisma.payrollRunEmployee.findMany({
-    where: { payrollRevisionId: currentRevision.id },
-  })
-  const prevByEmployee = new Map(previousEmployees.map((pe) => [pe.employeeId, pe]))
+      // Group attendance by employee
+      type EmployeeGroup = {
+        employee: PayEmployee
+        records: HoursRecord[]
+      }
 
-  // Apply adjustment changes (reversals)
-  if (input.adjustmentChanges?.reversed?.length) {
-    await prisma.payrollAdjustmentApplication.updateMany({
-      where: { id: { in: input.adjustmentChanges.reversed } },
-      data: { isReversed: true },
-    })
-  }
+      const employeeMap = new Map<string, EmployeeGroup>()
+      for (const record of attendanceRecords) {
+        const key = record.employeeId
+        if (!employeeMap.has(key)) {
+          employeeMap.set(key, { employee: record.employee, records: [] })
+        }
+        employeeMap.get(key)!.records.push(record)
+      }
 
-  // Apply adjustment changes (re-approvals)
-  if (input.adjustmentChanges?.approved?.length) {
-    await prisma.payrollAdjustmentApplication.updateMany({
-      where: { id: { in: input.adjustmentChanges.approved } },
-      data: { approvalStatus: 'APPROVED', appliedAt: new Date() },
-    })
-  }
+      // Get previous revision's employee data for diff tracking
+      const previousEmployees = await tx.payrollRunEmployee.findMany({
+        where: { payrollRevisionId: currentRevision.id },
+      })
+      const prevByEmployee = new Map(previousEmployees.map((pe) => [pe.employeeId, pe]))
 
-  // Get approved, non-reversed adjustment applications for this week
-  const approvedApplications = await prisma.payrollAdjustmentApplication.findMany({
-    where: {
-      payrollWeekStartDate: weekStart,
-      approvalStatus: 'APPROVED',
-      isReversed: false,
-      employeeId: { in: [...employeeMap.keys()] },
-    },
-    include: {
-      payrollAdjustment: { select: { adjustmentType: true } },
-    },
-  })
+      // Apply adjustment changes (reversals)
+      if (input.adjustmentChanges?.reversed?.length) {
+        await tx.payrollAdjustmentApplication.updateMany({
+          where: { id: { in: input.adjustmentChanges.reversed } },
+          data: { isReversed: true },
+        })
+      }
 
-  type AdjGroup = { additions: number; deductions: number }
-  const adjByEmployee = new Map<string, AdjGroup>()
-  for (const app of approvedApplications) {
-    if (!adjByEmployee.has(app.employeeId)) {
-      adjByEmployee.set(app.employeeId, { additions: 0, deductions: 0 })
-    }
-    const group = adjByEmployee.get(app.employeeId)!
-    const amount = Number(app.appliedAmount)
-    if (app.payrollAdjustment.adjustmentType === 'ADDITION') {
-      group.additions += amount
-    } else {
-      group.deductions += amount
-    }
-  }
+      // Apply adjustment changes (re-approvals)
+      if (input.adjustmentChanges?.approved?.length) {
+        await tx.payrollAdjustmentApplication.updateMany({
+          where: { id: { in: input.adjustmentChanges.approved } },
+          data: { approvalStatus: 'APPROVED', appliedAt: new Date() },
+        })
+      }
 
-  // Calculate payroll for each employee
-  const employeeRows: RevisedEmployeeRow[] = []
+      // Get approved, non-reversed adjustment applications for this week
+      const approvedApplications = await tx.payrollAdjustmentApplication.findMany({
+        where: {
+          payrollWeekStartDate: weekStart,
+          approvalStatus: 'APPROVED',
+          isReversed: false,
+          employeeId: { in: [...employeeMap.keys()] },
+        },
+        include: {
+          payrollAdjustment: { select: { adjustmentType: true } },
+        },
+      })
 
-  for (const [, group] of employeeMap) {
-    const { employee, records } = group
-    const wage = employee.wageHistory[0]
-    if (!wage) continue
+      type AdjGroup = { additions: number; deductions: number }
+      const adjByEmployee = new Map<string, AdjGroup>()
+      for (const app of approvedApplications) {
+        if (!adjByEmployee.has(app.employeeId)) {
+          adjByEmployee.set(app.employeeId, { additions: 0, deductions: 0 })
+        }
+        const group = adjByEmployee.get(app.employeeId)!
+        const amount = Number(app.appliedAmount)
+        if (app.payrollAdjustment.adjustmentType === 'ADDITION') {
+          group.additions += amount
+        } else {
+          group.deductions += amount
+        }
+      }
 
-    const hourlyRate = Number(wage.hourlyRate)
-    const weeklySalary = Number(wage.weeklySalary)
+      // Calculate payroll for each employee
+      const employeeRows: RevisedEmployeeRow[] = []
 
-    const dailyRegular = records.map((r) => Number(r.regularHours))
-    const dailyOT = records.map((r) => Number(r.overtimeHours))
+      for (const [, group] of employeeMap) {
+        const { employee, records } = group
+        const wage = employee.wageHistory[0]
+        if (!wage) continue
 
-    const { regularHours, regularPay } = calculateRegularPay(dailyRegular, hourlyRate)
-    const { overtimeHours, overtimePay } = calculateOvertimePay(dailyOT, hourlyRate)
-    const grossPay = regularPay + overtimePay
+        const hourlyRate = Number(wage.hourlyRate)
+        const weeklySalary = Number(wage.weeklySalary)
 
-    const adjs = adjByEmployee.get(employee.id) ?? { additions: 0, deductions: 0 }
-    const netPayable = calculateNetPayable(grossPay, adjs.additions, adjs.deductions)
+        const dailyRegular = records.map((r) => Number(r.regularHours))
+        const dailyOT = records.map((r) => Number(r.overtimeHours))
 
-    const prev = prevByEmployee.get(employee.id)
+        const { regularHours, regularPay } = calculateRegularPay(dailyRegular, hourlyRate)
+        const { overtimeHours, overtimePay } = calculateOvertimePay(dailyOT, hourlyRate)
+        const grossPay = regularPay + overtimePay
 
-    employeeRows.push({
-      employeeId: employee.id,
-      employeeCode: employee.employeeId,
-      employeeName: employee.employeeName,
-      designation: employee.designation,
-      designationShort: employee.designationShort,
-      site: employee.site,
-      gPay: employee.gPay,
-      bankAccount: employee.bankAccount,
-      weeklySalaryUsed: weeklySalary,
-      hourlyRateUsed: hourlyRate,
-      regularHours,
-      overtimeHours,
-      regularPay,
-      overtimePay,
-      grossPay,
-      additions: adjs.additions,
-      deductions: adjs.deductions,
-      netPayable,
-      previousNetPayable: prev ? Number(prev.netPayable) : null,
-      previousRegularPay: prev ? Number(prev.regularPay) : null,
-      previousOvertimePay: prev ? Number(prev.overtimePay) : null,
-      previousAdditions: prev ? Number(prev.additions) : null,
-      previousDeductions: prev ? Number(prev.deductions) : null,
-      isNew: !prev,
-      isLeftOut: false,
-    })
-  }
+        const adjs = adjByEmployee.get(employee.id) ?? { additions: 0, deductions: 0 }
+        const netPayable = calculateNetPayable(grossPay, adjs.additions, adjs.deductions)
 
-  // Calculate totals
-  const totals = {
-    totalRegularHours: employeeRows.reduce((s, r) => s + r.regularHours, 0),
-    totalOvertimeHours: employeeRows.reduce((s, r) => s + r.overtimeHours, 0),
-    totalRegularPay: employeeRows.reduce((s, r) => s + r.regularPay, 0),
-    totalOvertimePay: employeeRows.reduce((s, r) => s + r.overtimePay, 0),
-    totalAdditions: employeeRows.reduce((s, r) => s + r.additions, 0),
-    totalDeductions: employeeRows.reduce((s, r) => s + r.deductions, 0),
-    totalNetPayable: employeeRows.reduce((s, r) => s + r.netPayable, 0),
-  }
+        const prev = prevByEmployee.get(employee.id)
 
-  const newRevisionNumber = currentRevision.revisionNumber + 1
-  const now = new Date()
+        employeeRows.push({
+          employeeId: employee.id,
+          employeeCode: employee.employeeId,
+          employeeName: employee.employeeName,
+          designation: employee.designation,
+          designationShort: employee.designationShort,
+          site: employee.site,
+          gPay: employee.gPay,
+          bankAccount: employee.bankAccount,
+          weeklySalaryUsed: weeklySalary,
+          hourlyRateUsed: hourlyRate,
+          regularHours,
+          overtimeHours,
+          regularPay,
+          overtimePay,
+          grossPay,
+          additions: adjs.additions,
+          deductions: adjs.deductions,
+          netPayable,
+          previousNetPayable: prev ? Number(prev.netPayable) : null,
+          previousRegularPay: prev ? Number(prev.regularPay) : null,
+          previousOvertimePay: prev ? Number(prev.overtimePay) : null,
+          previousAdditions: prev ? Number(prev.additions) : null,
+          previousDeductions: prev ? Number(prev.deductions) : null,
+          isNew: !prev,
+          isLeftOut: false,
+        })
+      }
 
-  const newRevisionId = randomUUID()
+      // Calculate totals
+      const totals = {
+        totalRegularHours: employeeRows.reduce((s, r) => s + r.regularHours, 0),
+        totalOvertimeHours: employeeRows.reduce((s, r) => s + r.overtimeHours, 0),
+        totalRegularPay: employeeRows.reduce((s, r) => s + r.regularPay, 0),
+        totalOvertimePay: employeeRows.reduce((s, r) => s + r.overtimePay, 0),
+        totalAdditions: employeeRows.reduce((s, r) => s + r.additions, 0),
+        totalDeductions: employeeRows.reduce((s, r) => s + r.deductions, 0),
+        totalNetPayable: employeeRows.reduce((s, r) => s + r.netPayable, 0),
+      }
 
-  // One transaction: replace any earlier draft with this one. The current revision, the
-  // PayrollRun and the adjustment applications' revision links are not touched here.
-  const promises = [
-    prisma.payrollRunEmployee.deleteMany({
-      where: { payrollRunId: run.id, payrollRevision: { status: 'DRAFT' } },
-    }),
-    prisma.payrollRevision.deleteMany({
-      where: { payrollRunId: run.id, status: 'DRAFT' },
-    }),
+      const newRevisionNumber = currentRevision.revisionNumber + 1
+      const now = new Date()
 
-    // Create the draft revision
-    prisma.payrollRevision.create({
-      data: {
-        id: newRevisionId,
+      const newRevisionId = randomUUID()
+
+      // Replace any earlier draft with this one. The current revision, the PayrollRun and the
+      // adjustment applications' revision links are not touched here.
+      await tx.payrollRunEmployee.deleteMany({
+        where: { payrollRunId: run.id, payrollRevision: { status: 'DRAFT' } },
+      })
+      await tx.payrollRevision.deleteMany({
+        where: { payrollRunId: run.id, status: 'DRAFT' },
+      })
+
+      // Create the draft revision
+      await tx.payrollRevision.create({
+        data: {
+          id: newRevisionId,
+          payrollRunId: run.id,
+          revisionNumber: newRevisionNumber,
+          status: 'DRAFT',
+          isCurrent: false,
+          correctionReason: input.correctionReason,
+          totalRegularPay: totals.totalRegularPay,
+          totalOvertimePay: totals.totalOvertimePay,
+          totalAdditions: totals.totalAdditions,
+          totalDeductions: totals.totalDeductions,
+          totalNetPayable: totals.totalNetPayable,
+          generatedAt: now,
+          approvedAt: null,
+        },
+      })
+
+      // Create the draft's employee records
+      await tx.payrollRunEmployee.createMany({
+        data: employeeRows.map((emp) => ({
+          payrollRunId: run.id,
+          payrollRevisionId: newRevisionId,
+          employeeId: emp.employeeId,
+          weeklySalaryUsed: emp.weeklySalaryUsed,
+          hourlyRateUsed: emp.hourlyRateUsed,
+          regularHours: emp.regularHours,
+          overtimeHours: emp.overtimeHours,
+          regularPay: emp.regularPay,
+          overtimePay: emp.overtimePay,
+          additions: emp.additions,
+          deductions: emp.deductions,
+          netPayable: emp.netPayable,
+        })),
+      })
+
+      if (session) {
+        await tx.payrollCorrectionSession.update({
+          where: { id: session.id },
+          data: {
+            draftRevisionId: newRevisionId,
+            correctionReason: input.correctionReason,
+            correctionTypesJson: input.correctionTypes,
+          },
+        })
+      }
+
+      return {
         payrollRunId: run.id,
+        revisionId: newRevisionId,
         revisionNumber: newRevisionNumber,
-        status: 'DRAFT',
-        isCurrent: false,
-        correctionReason: input.correctionReason,
-        totalRegularPay: totals.totalRegularPay,
-        totalOvertimePay: totals.totalOvertimePay,
-        totalAdditions: totals.totalAdditions,
-        totalDeductions: totals.totalDeductions,
-        totalNetPayable: totals.totalNetPayable,
-        generatedAt: now,
-        approvedAt: null,
-      },
-    }),
-
-    // Create the draft's employee records
-    prisma.payrollRunEmployee.createMany({
-      data: employeeRows.map((emp) => ({
-        payrollRunId: run.id,
-        payrollRevisionId: newRevisionId,
-        employeeId: emp.employeeId,
-        weeklySalaryUsed: emp.weeklySalaryUsed,
-        hourlyRateUsed: emp.hourlyRateUsed,
-        regularHours: emp.regularHours,
-        overtimeHours: emp.overtimeHours,
-        regularPay: emp.regularPay,
-        overtimePay: emp.overtimePay,
-        additions: emp.additions,
-        deductions: emp.deductions,
-        netPayable: emp.netPayable,
-      })),
-    }),
-
-    ...(session
-      ? [
-          prisma.payrollCorrectionSession.update({
-            where: { id: session.id },
-            data: {
-              draftRevisionId: newRevisionId,
-              correctionReason: input.correctionReason,
-              correctionTypesJson: input.correctionTypes,
-            },
-          }),
-        ]
-      : []),
-  ]
-
-  await prisma.$transaction(promises, { timeout: 30000 })
-
-  return {
-    payrollRunId: run.id,
-    revisionId: newRevisionId,
-    revisionNumber: newRevisionNumber,
-    totals,
-    employeeCount: employeeRows.length,
-  }
+        totals,
+        employeeCount: employeeRows.length,
+      }
+    },
+    { timeout: TRANSACTION_TIMEOUT_MS },
+  )
 }
 
 // ─── approveCorrectionPunches ─────────────────────────────────────────────────
 
 /**
- * The "Approve punches" step: every incomplete pair must be fixed, then the corrected
- * hours are turned into the draft revision shown on the preview.
+ * The "Approve punches" step: the corrected hours are turned into the draft revision shown on
+ * the preview. Every incomplete pair must be fixed first; that check runs inside the
+ * recalculation's transaction (CORRECTION_HAS_INCOMPLETE_PAIRS), against the same punches the
+ * draft is built from.
  */
 export async function approveCorrectionPunches(payrollRunId: string): Promise<CreateRevisionResult> {
   const session = await requireActiveSession(payrollRunId)
-  const run = await prisma.payrollRun.findUnique({ where: { id: payrollRunId }, select: { currentRevisionNumber: true } })
+  const run = await prisma.payrollRun.findUnique({ where: { id: payrollRunId }, select: { id: true } })
   if (!run) {
     throw new CorrectionServiceError('PAYROLL_RUN_NOT_FOUND', `Payroll run "${payrollRunId}" not found`)
-  }
-
-  const review = await getPunchReview(toISODate(session.attendanceUpload.payrollWeekStartDate), {
-    kind: 'CORRECTION',
-    payrollRunId,
-    correctionId: session.id,
-    revisionNumber: run.currentRevisionNumber,
-  })
-  if (review.counts.needsFixingDays > 0) {
-    throw new CorrectionServiceError(
-      'CORRECTION_HAS_INCOMPLETE_PAIRS',
-      `${review.counts.needsFixingDays} day(s) still have an incomplete pair. Fix or delete them first.`,
-    )
   }
 
   return recalculateAndCreateRevision({
@@ -1026,8 +1074,15 @@ export async function approveRevision(
 
 // ─── abandonCorrection ────────────────────────────────────────────────────────
 
-/** Punch edits in the copied set, compared with the approved punches they were copied from. */
-async function findDiscardedEdits(attendanceUploadId: string, correctionId: string): Promise<DiscardedEdit[]> {
+/**
+ * Punch edits in the copied set, compared with the approved punches they were copied from.
+ * Pass the transaction client as `db` to read inside the caller's transaction.
+ */
+async function findDiscardedEdits(
+  attendanceUploadId: string,
+  correctionId: string,
+  db: Prisma.TransactionClient = prisma,
+): Promise<DiscardedEdit[]> {
   const select = {
     id: true,
     clonedFromPunchId: true,
@@ -1040,10 +1095,8 @@ async function findDiscardedEdits(attendanceUploadId: string, correctionId: stri
     employee: { select: { employeeId: true } },
   } as const
 
-  const [clones, live] = await Promise.all([
-    prisma.attendancePunch.findMany({ where: { correctionId }, select }),
-    prisma.attendancePunch.findMany({ where: { attendanceUploadId, correctionId: null }, select }),
-  ])
+  const clones = await db.attendancePunch.findMany({ where: { correctionId }, select })
+  const live = await db.attendancePunch.findMany({ where: { attendanceUploadId, correctionId: null }, select })
   const liveById = new Map(live.map((row) => [row.id, row]))
   const copiedLiveIds = new Set(clones.map((row) => row.clonedFromPunchId).filter((id): id is string => !!id))
 
@@ -1088,17 +1141,29 @@ async function findDiscardedEdits(attendanceUploadId: string, correctionId: stri
  * Throw the correction away: delete its copied punches and its draft revision, and put the
  * adjustment applications back as they were. The approved hours and the current revision are
  * never touched. The discarded punch edits stay in the audit log, marked by a DISCARD entry.
+ *
+ * Everything runs in one transaction that first locks the week's row and re-reads the session, so
+ * an abandon cannot interleave with `approveRevision` (which promotes these copied punches) or a
+ * punch edit: exactly one of the two ends the session.
  */
 export async function abandonCorrection(payrollRunId: string): Promise<AbandonCorrectionResult> {
   const session = await requireActiveSession(payrollRunId)
-
-  const hadCopy = (await prisma.attendancePunch.count({ where: { correctionId: session.id } })) > 0
-  const edits = hadCopy ? await findDiscardedEdits(session.attendanceUploadId, session.id) : []
-  const snapshot = parseAdjustmentSnapshot(session.adjustmentSnapshotJson)
   const now = new Date()
 
-  await prisma.$transaction(
+  return prisma.$transaction(
     async (tx) => {
+      await lockWeekRow(tx, { id: session.attendanceUploadId })
+      // The session was read before the lock; an approval may have applied it since.
+      const current = await tx.payrollCorrectionSession.findUnique({ where: { id: session.id } })
+      if (!current || current.status !== 'IN_PROGRESS') {
+        throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'This correction is no longer in progress.')
+      }
+
+      // What is about to be thrown away, read after the lock so it matches what is deleted.
+      const hadCopy = (await tx.attendancePunch.count({ where: { correctionId: session.id } })) > 0
+      const edits = hadCopy ? await findDiscardedEdits(session.attendanceUploadId, session.id, tx) : []
+      const snapshot = parseAdjustmentSnapshot(current.adjustmentSnapshotJson)
+
       await tx.attendancePunch.deleteMany({ where: { correctionId: session.id } })
 
       await tx.payrollRunEmployee.deleteMany({
@@ -1142,11 +1207,11 @@ export async function abandonCorrection(payrollRunId: string): Promise<AbandonCo
           tx,
         )
       }
+
+      return { sessionId: session.id, discardedEdits: edits.length }
     },
     { timeout: TRANSACTION_TIMEOUT_MS },
   )
-
-  return { sessionId: session.id, discardedEdits: edits.length }
 }
 
 // ─── getRevisionHistory ───────────────────────────────────────────────────────

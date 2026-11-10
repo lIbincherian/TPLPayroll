@@ -188,21 +188,26 @@ function payEmployee(employee: EmployeeLite) {
 /** A transaction client whose writes can be checked apart from calls made outside the transaction. */
 function makeTx() {
   const m = () => vi.fn()
-  return {
+  const tx = {
     payrollRun: { findUnique: m(), update: m() },
-    payrollRevision: { updateMany: m(), deleteMany: m() },
-    payrollRunEmployee: { findMany: m(), deleteMany: m() },
-    payrollCorrectionSession: { create: m(), update: m(), findUnique: m() },
+    payrollRevision: { updateMany: m(), deleteMany: m(), create: m() },
+    payrollRunEmployee: { findMany: m(), deleteMany: m(), createMany: m() },
+    payrollCorrectionSession: { create: m(), update: m(), findUnique: m(), findFirst: m() },
     payrollAdjustmentApplication: { findMany: m(), updateMany: m() },
     attendanceEmployeeDecision: { findMany: m() },
     attendancePunch: { count: m(), findMany: m(), createMany: m(), deleteMany: m(), updateMany: m() },
-    attendanceRecord: { deleteMany: m(), createMany: m() },
+    attendanceRecord: { deleteMany: m(), createMany: m(), findMany: m() },
+    attendanceUpload: { findFirst: m() },
+    employee: { findMany: m() },
     auditLog: { create: m(), update: m(), delete: m(), deleteMany: m(), updateMany: m() },
   }
+  // Every writer reads its session again under the week lock; unless a test says otherwise it is still in progress.
+  tx.payrollCorrectionSession.findUnique.mockResolvedValue(makeSession())
+  return tx
 }
 type Tx = ReturnType<typeof makeTx>
 
-function useInteractiveTransaction(tx: Tx) {
+function withInteractiveTransaction(tx: Tx) {
   vi.mocked(prisma.$transaction).mockImplementation((async (arg: unknown) =>
     typeof arg === 'function' ? arg(tx) : Promise.all(arg as Promise<unknown>[])) as never)
 }
@@ -245,11 +250,12 @@ describe('beginCorrection', () => {
 
   it('accepts a REVISED run', async () => {
     const tx = makeTx()
-    useInteractiveTransaction(tx)
+    withInteractiveTransaction(tx)
     vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makeRun({ status: 'REVISED' }) as never)
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(null)
     vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue({ id: UPLOAD_ID } as never)
-    vi.mocked(prisma.payrollAdjustmentApplication.findMany).mockResolvedValue([] as never)
+    tx.payrollCorrectionSession.findFirst.mockResolvedValue(null)
+    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([] as never)
     tx.payrollCorrectionSession.create.mockResolvedValue(makeSession())
     tx.payrollRun.findUnique.mockResolvedValue({ payrollWeekStartDate: WEEK_START })
 
@@ -258,11 +264,13 @@ describe('beginCorrection', () => {
 
   it('opens an IN_PROGRESS session that remembers the adjustments, then resets them, in one transaction', async () => {
     const tx = makeTx()
-    useInteractiveTransaction(tx)
+    withInteractiveTransaction(tx)
     vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makeRun() as never)
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(null)
     vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue({ id: UPLOAD_ID } as never)
-    vi.mocked(prisma.payrollAdjustmentApplication.findMany).mockResolvedValue([
+    tx.payrollCorrectionSession.findFirst.mockResolvedValue(null)
+    // The snapshot is read under the week lock, on the transaction client.
+    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([
       {
         id: 'app-1',
         approvalStatus: 'APPROVED',
@@ -320,6 +328,8 @@ describe('beginCorrection', () => {
     })
     expect(callOrder(tx.payrollCorrectionSession.create)).toBeLessThan(callOrder(tx.payrollAdjustmentApplication.updateMany))
     expect(prisma.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
+    expect(prisma.payrollAdjustmentApplication.findMany).not.toHaveBeenCalled()
+    expect(lockWeekRow).toHaveBeenCalledWith(tx, { id: UPLOAD_ID })
     expect(prisma.$transaction).toHaveBeenCalledTimes(1)
     // The week's attendance and the current revision are not touched.
     expect(prisma.attendanceRecord.deleteMany).not.toHaveBeenCalled()
@@ -446,7 +456,7 @@ describe('startAttendanceCorrection', () => {
 
   it('lets an Excel-era run correct adjustments only', async () => {
     const tx = makeTx()
-    useInteractiveTransaction(tx)
+    withInteractiveTransaction(tx)
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(
       makeSession({ attendanceUpload: { id: UPLOAD_ID, source: 'EXCEL', payrollWeekStartDate: WEEK_START } }) as never,
     )
@@ -460,7 +470,7 @@ describe('startAttendanceCorrection', () => {
 
   it('stores a given reason and the types on the session', async () => {
     const tx = makeTx()
-    useInteractiveTransaction(tx)
+    withInteractiveTransaction(tx)
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(makeSession() as never)
     tx.attendancePunch.count.mockResolvedValue(0)
     tx.attendancePunch.findMany.mockResolvedValue([])
@@ -475,7 +485,7 @@ describe('startAttendanceCorrection', () => {
 
   it('stores a blank reason as null', async () => {
     const tx = makeTx()
-    useInteractiveTransaction(tx)
+    withInteractiveTransaction(tx)
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(makeSession() as never)
     tx.attendancePunch.count.mockResolvedValue(0)
     tx.attendancePunch.findMany.mockResolvedValue([])
@@ -490,7 +500,7 @@ describe('startAttendanceCorrection', () => {
 
   it('copies the live punches once, tagged with the session and linked to their source punch', async () => {
     const tx = makeTx()
-    useInteractiveTransaction(tx)
+    withInteractiveTransaction(tx)
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(makeSession() as never)
     tx.attendancePunch.count.mockResolvedValue(0)
     tx.attendancePunch.findMany.mockResolvedValue([
@@ -534,7 +544,7 @@ describe('startAttendanceCorrection', () => {
 
   it('does not copy again when coming back, so edits made so far are kept', async () => {
     const tx = makeTx()
-    useInteractiveTransaction(tx)
+    withInteractiveTransaction(tx)
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(makeSession() as never)
     tx.attendancePunch.count.mockResolvedValue(24)
 
@@ -548,7 +558,7 @@ describe('startAttendanceCorrection', () => {
 
   it('copies a large week in chunks of 1000', async () => {
     const tx = makeTx()
-    useInteractiveTransaction(tx)
+    withInteractiveTransaction(tx)
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(makeSession() as never)
     tx.attendancePunch.count.mockResolvedValue(0)
     tx.attendancePunch.findMany.mockResolvedValue(Array.from({ length: 2500 }, (_, i) => livePunch(`live-${i}`)))
@@ -561,7 +571,7 @@ describe('startAttendanceCorrection', () => {
 
   it('copies nothing for an adjustments-only correction', async () => {
     const tx = makeTx()
-    useInteractiveTransaction(tx)
+    withInteractiveTransaction(tx)
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(makeSession() as never)
 
     await startAttendanceCorrection(RUN_ID, { reason: 'Bonus fix', types: ['ADJUSTMENTS'] })
@@ -579,19 +589,23 @@ describe('startAttendanceCorrection', () => {
 // ─── recalculateAndCreateRevision with a correction session (C8, US-12.30) ────
 
 describe('recalculateAndCreateRevision for a correction session', () => {
+  /** The draft is calculated and written in one interactive transaction; everything it reads and writes goes through the returned tx. */
   function setup(opts: { clonedPunches?: number; session?: Record<string, unknown> | null; review?: ReturnType<typeof correctedReview> } = {}) {
+    const tx = makeTx()
+    withInteractiveTransaction(tx)
+    const session = (opts.session === undefined ? makeSession() : opts.session) as never
     vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue({ ...makeRun(), revisions: [makeRevision()] } as never)
-    vi.mocked(prisma.payrollCorrectionSession.findUnique).mockResolvedValue(
-      (opts.session === undefined ? makeSession() : opts.session) as never,
-    )
-    vi.mocked(prisma.attendancePunch.count).mockResolvedValue(opts.clonedPunches ?? 28)
+    // The session is found before the transaction, and read again inside it (after the week row is locked).
+    vi.mocked(prisma.payrollCorrectionSession.findUnique).mockResolvedValue(session)
+    tx.payrollCorrectionSession.findUnique.mockResolvedValue(session)
+    tx.attendancePunch.count.mockResolvedValue(opts.clonedPunches ?? 28)
     vi.mocked(getPunchReview).mockResolvedValue((opts.review ?? correctedReview()) as never)
-    vi.mocked(prisma.employee.findMany).mockResolvedValue([payEmployee(EMPLOYEE_ONE), payEmployee(EMPLOYEE_TWO)] as never)
-    vi.mocked(prisma.payrollRunEmployee.findMany).mockResolvedValue([
+    tx.employee.findMany.mockResolvedValue([payEmployee(EMPLOYEE_ONE), payEmployee(EMPLOYEE_TWO)])
+    tx.payrollRunEmployee.findMany.mockResolvedValue([
       { employeeId: EMPLOYEE_ONE.id, netPayable: 2750, regularPay: 2875, overtimePay: 375, additions: 0, deductions: 500 },
-    ] as never)
-    vi.mocked(prisma.payrollAdjustmentApplication.findMany).mockResolvedValue([] as never)
-    vi.mocked(prisma.$transaction).mockImplementation((async (arg: unknown) => Promise.all(arg as Promise<unknown>[])) as never)
+    ])
+    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([])
+    return tx
   }
 
   const input = {
@@ -621,41 +635,41 @@ describe('recalculateAndCreateRevision for a correction session', () => {
   })
 
   it('takes the hours from the corrected punches, not from the approved attendance records', async () => {
-    setup()
+    const tx = setup()
 
     const result = await recalculateAndCreateRevision(input)
 
-    // Hours come from the review of the correction's punch copy.
-    expect(getPunchReview).toHaveBeenCalledWith('2025-03-06', {
-      kind: 'CORRECTION',
-      payrollRunId: RUN_ID,
-      correctionId: SESSION_ID,
-      revisionNumber: 1,
-    })
+    // Hours come from the review of the correction's punch copy, read on the transaction client.
+    expect(getPunchReview).toHaveBeenCalledWith(
+      '2025-03-06',
+      { kind: 'CORRECTION', payrollRunId: RUN_ID, correctionId: SESSION_ID, revisionNumber: 1 },
+      tx,
+    )
     expect(prisma.attendanceRecord.findMany).not.toHaveBeenCalled()
+    expect(tx.attendanceRecord.findMany).not.toHaveBeenCalled()
     // 07:40-13:04 + 13:56-18:00 = 9.47 h: 8.00 regular and 1.47 overtime.
-    const rows = vi.mocked(prisma.payrollRunEmployee.createMany).mock.calls[0][0]?.data as Array<Record<string, unknown>>
+    const rows = tx.payrollRunEmployee.createMany.mock.calls[0][0]?.data as Array<Record<string, unknown>>
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ employeeId: EMPLOYEE_ONE.id, regularHours: 8, overtimeHours: 1.47 })
     expect(result.employeeCount).toBe(1)
   })
 
   it('leaves out an employee who has zero hours after the correction', async () => {
-    setup({ review: correctedReview({ withZeroHourEmployee: true }) })
+    const tx = setup({ review: correctedReview({ withZeroHourEmployee: true }) })
 
     const result = await recalculateAndCreateRevision(input)
 
-    const rows = vi.mocked(prisma.payrollRunEmployee.createMany).mock.calls[0][0]?.data as Array<{ employeeId: string }>
+    const rows = tx.payrollRunEmployee.createMany.mock.calls[0][0]?.data as Array<{ employeeId: string }>
     expect(rows.map((r) => r.employeeId)).toEqual([EMPLOYEE_ONE.id])
     expect(result.employeeCount).toBe(1)
   })
 
   it('saves a DRAFT, links it to the session and leaves the current revision and the run alone', async () => {
-    setup()
+    const tx = setup()
 
     const result = await recalculateAndCreateRevision(input)
 
-    expect(prisma.payrollRevision.create).toHaveBeenCalledWith({
+    expect(tx.payrollRevision.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         id: result.revisionId,
         revisionNumber: 2,
@@ -665,32 +679,36 @@ describe('recalculateAndCreateRevision for a correction session', () => {
         correctionReason: 'Wrong OUT time',
       }),
     })
-    expect(prisma.payrollCorrectionSession.update).toHaveBeenCalledWith({
+    expect(tx.payrollCorrectionSession.update).toHaveBeenCalledWith({
       where: { id: SESSION_ID },
       data: { draftRevisionId: result.revisionId, correctionReason: 'Wrong OUT time', correctionTypesJson: ['ATTENDANCE'] },
     })
+    for (const client of [prisma, tx]) {
+      expect(client.payrollRevision.updateMany).not.toHaveBeenCalled()
+      expect(client.payrollRun.update).not.toHaveBeenCalled()
+      expect(client.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
+      expect(client.attendanceRecord.deleteMany).not.toHaveBeenCalled()
+      expect(client.attendanceRecord.createMany).not.toHaveBeenCalled()
+      expect(client.attendancePunch.deleteMany).not.toHaveBeenCalled()
+      expect(client.attendancePunch.updateMany).not.toHaveBeenCalled()
+    }
     expect(prisma.payrollRevision.update).not.toHaveBeenCalled()
-    expect(prisma.payrollRevision.updateMany).not.toHaveBeenCalled()
-    expect(prisma.payrollRun.update).not.toHaveBeenCalled()
-    expect(prisma.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
-    // The approved hours and the live punches are untouched until the revision is approved.
-    expect(prisma.attendanceRecord.deleteMany).not.toHaveBeenCalled()
-    expect(prisma.attendanceRecord.createMany).not.toHaveBeenCalled()
-    expect(prisma.attendancePunch.deleteMany).not.toHaveBeenCalled()
-    expect(prisma.attendancePunch.updateMany).not.toHaveBeenCalled()
+    // Everything was written through the transaction client.
+    expect(prisma.payrollRevision.create).not.toHaveBeenCalled()
+    expect(prisma.payrollCorrectionSession.update).not.toHaveBeenCalled()
   })
 
   it('replaces an earlier draft in the same transaction, deleting its employees first', async () => {
-    setup()
+    const tx = setup()
 
     await recalculateAndCreateRevision(input)
 
-    expect(prisma.payrollRunEmployee.deleteMany).toHaveBeenCalledWith({
+    expect(tx.payrollRunEmployee.deleteMany).toHaveBeenCalledWith({
       where: { payrollRunId: RUN_ID, payrollRevision: { status: 'DRAFT' } },
     })
-    expect(prisma.payrollRevision.deleteMany).toHaveBeenCalledWith({ where: { payrollRunId: RUN_ID, status: 'DRAFT' } })
-    expect(callOrder(prisma.payrollRunEmployee.deleteMany)).toBeLessThan(callOrder(prisma.payrollRevision.deleteMany))
-    expect(callOrder(prisma.payrollRevision.deleteMany)).toBeLessThan(callOrder(prisma.payrollRevision.create))
+    expect(tx.payrollRevision.deleteMany).toHaveBeenCalledWith({ where: { payrollRunId: RUN_ID, status: 'DRAFT' } })
+    expect(callOrder(tx.payrollRunEmployee.deleteMany)).toBeLessThan(callOrder(tx.payrollRevision.deleteMany))
+    expect(callOrder(tx.payrollRevision.deleteMany)).toBeLessThan(callOrder(tx.payrollRevision.create))
     expect(prisma.$transaction).toHaveBeenCalledTimes(1)
   })
 
@@ -704,21 +722,22 @@ describe('recalculateAndCreateRevision for a correction session', () => {
   })
 
   it('uses the approved attendance records when the session copied no punches', async () => {
-    setup({ clonedPunches: 0 })
-    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue({ id: UPLOAD_ID } as never)
-    vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([
+    const tx = setup({ clonedPunches: 0 })
+    tx.attendanceUpload.findFirst.mockResolvedValue({ id: UPLOAD_ID })
+    tx.attendanceRecord.findMany.mockResolvedValue([
       {
         employeeId: EMPLOYEE_ONE.id,
         regularHours: 8,
         overtimeHours: 0,
         employee: payEmployee(EMPLOYEE_ONE),
       },
-    ] as never)
+    ])
 
     await recalculateAndCreateRevision({ ...input, correctionTypes: ['ADJUSTMENTS'] })
 
     expect(getPunchReview).not.toHaveBeenCalled()
-    expect(prisma.attendanceRecord.findMany).toHaveBeenCalledTimes(1)
+    expect(tx.attendanceRecord.findMany).toHaveBeenCalledTimes(1)
+    expect(prisma.attendanceRecord.findMany).not.toHaveBeenCalled()
   })
 })
 
@@ -739,48 +758,62 @@ describe('approveCorrectionPunches', () => {
   })
 
   it('is blocked while any day still has an incomplete pair, and creates no draft', async () => {
-    vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(makeSession() as never)
-    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makeRun() as never)
+    const tx = makeTx()
+    withInteractiveTransaction(tx)
+    vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(
+      makeSession({ correctionTypesJson: ['ATTENDANCE'] }) as never,
+    )
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue({ ...makeRun(), revisions: [makeRevision()] } as never)
+    vi.mocked(prisma.payrollCorrectionSession.findUnique).mockResolvedValue(makeSession() as never)
+    tx.attendancePunch.count.mockResolvedValue(28)
+    // The check runs on the review read inside the recalculation's transaction.
     vi.mocked(getPunchReview).mockResolvedValue(correctedReview({ needsFixingDays: 2 }) as never)
 
     await expect(approveCorrectionPunches(RUN_ID)).rejects.toMatchObject({
       code: 'CORRECTION_HAS_INCOMPLETE_PAIRS',
       message: expect.stringContaining('2 day(s)'),
     })
+    expect(getPunchReview).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(getPunchReview).mock.calls[0][2]).toBe(tx)
+    expect(tx.payrollRevision.create).not.toHaveBeenCalled()
+    expect(tx.payrollRunEmployee.deleteMany).not.toHaveBeenCalled()
+    expect(tx.payrollCorrectionSession.update).not.toHaveBeenCalled()
     expect(prisma.payrollRevision.create).not.toHaveBeenCalled()
-    expect(prisma.$transaction).not.toHaveBeenCalled()
   })
 
   it('builds the draft revision from the corrected punches when nothing needs fixing', async () => {
+    const tx = makeTx()
+    withInteractiveTransaction(tx)
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(
       makeSession({ correctionReason: 'Wrong OUT time', correctionTypesJson: ['ATTENDANCE'] }) as never,
     )
     vi.mocked(getPunchReview).mockResolvedValue(correctedReview() as never)
-    // approveCorrectionPunches reads the run's number, then recalculate reads the run with its revisions.
+    // approveCorrectionPunches only checks that the run exists, then recalculate reads the run with its revisions.
     vi.mocked(prisma.payrollRun.findUnique)
-      .mockResolvedValueOnce({ currentRevisionNumber: 1 } as never)
+      .mockResolvedValueOnce({ id: RUN_ID } as never)
       .mockResolvedValue({ ...makeRun(), revisions: [makeRevision()] } as never)
     vi.mocked(prisma.payrollCorrectionSession.findUnique).mockResolvedValue(makeSession() as never)
-    vi.mocked(prisma.attendancePunch.count).mockResolvedValue(28)
-    vi.mocked(prisma.employee.findMany).mockResolvedValue([payEmployee(EMPLOYEE_ONE)] as never)
-    vi.mocked(prisma.payrollRunEmployee.findMany).mockResolvedValue([] as never)
-    vi.mocked(prisma.payrollAdjustmentApplication.findMany).mockResolvedValue([] as never)
-    vi.mocked(prisma.$transaction).mockImplementation((async (arg: unknown) => Promise.all(arg as Promise<unknown>[])) as never)
+    tx.attendancePunch.count.mockResolvedValue(28)
+    tx.employee.findMany.mockResolvedValue([payEmployee(EMPLOYEE_ONE)])
+    tx.payrollRunEmployee.findMany.mockResolvedValue([])
+    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([])
 
     const result = await approveCorrectionPunches(RUN_ID)
 
-    expect(getPunchReview).toHaveBeenCalledWith('2025-03-06', {
-      kind: 'CORRECTION',
-      payrollRunId: RUN_ID,
-      correctionId: SESSION_ID,
-      revisionNumber: 1,
-    })
+    // The review is read once, on the transaction client, from the same punches the draft is built from.
+    expect(getPunchReview).toHaveBeenCalledTimes(1)
+    expect(getPunchReview).toHaveBeenCalledWith(
+      '2025-03-06',
+      { kind: 'CORRECTION', payrollRunId: RUN_ID, correctionId: SESSION_ID, revisionNumber: 1 },
+      tx,
+    )
     expect(result.revisionNumber).toBe(2)
-    expect(prisma.payrollRevision.create).toHaveBeenCalledWith({
+    expect(tx.payrollRevision.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ status: 'DRAFT', isCurrent: false, correctionReason: 'Wrong OUT time' }),
     })
     // The current revision still has isCurrent = true: only the draft was created.
-    expect(prisma.payrollRevision.updateMany).not.toHaveBeenCalled()
+    expect(tx.payrollRevision.updateMany).not.toHaveBeenCalled()
+    expect(tx.payrollRun.update).not.toHaveBeenCalled()
     expect(prisma.payrollRun.update).not.toHaveBeenCalled()
   })
 })
@@ -799,7 +832,7 @@ describe('approveRevision for an attendance correction', () => {
     tx: Tx,
     opts: { clonedPunches?: number; session?: ReturnType<typeof makeSession> | null; review?: ReturnType<typeof correctedReview> } = {},
   ) {
-    useInteractiveTransaction(tx)
+    withInteractiveTransaction(tx)
     const session = opts.session === undefined ? makeSession({ draftRevisionId: 'revision-uuid-2' }) : opts.session
     vi.mocked(prisma.payrollRevision.findUnique).mockResolvedValue(makeDraft() as never)
     // The session is found before the transaction, and read again inside it (after the week row is locked).
@@ -1028,16 +1061,22 @@ describe('abandonCorrection', () => {
     }
   }
 
-  /** The copy and the live set, as the two queries in findDiscardedEdits return them. */
+  // The transaction client of the current test: the copy is counted and compared with the live set inside it.
+  let activeTx: Tx
+
+  /** The copy and the live set, as the two queries in findDiscardedEdits return them (on the transaction client). */
   function setPunches(clones: SelectRow[], live: SelectRow[]) {
-    vi.mocked(prisma.attendancePunch.count).mockResolvedValue(clones.length)
-    vi.mocked(prisma.attendancePunch.findMany).mockImplementation((async (args: { where: { correctionId: string | null } }) =>
+    activeTx.attendancePunch.count.mockResolvedValue(clones.length)
+    activeTx.attendancePunch.findMany.mockImplementation((async (args: { where: { correctionId: string | null } }) =>
       args.where.correctionId === SESSION_ID ? clones : live) as never)
   }
 
   function setup(tx: Tx, session = makeSession({ adjustmentSnapshotJson: snapshot, draftRevisionId: 'draft-1' })) {
-    useInteractiveTransaction(tx)
+    activeTx = tx
+    withInteractiveTransaction(tx)
+    // Found before the transaction, and read again inside it once the week row is locked.
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(session as never)
+    tx.payrollCorrectionSession.findUnique.mockResolvedValue(session)
   }
 
   it('needs a correction in progress', async () => {
@@ -1094,7 +1133,6 @@ describe('abandonCorrection', () => {
     const tx = makeTx()
     setup(tx)
     setPunches([], [])
-    vi.mocked(prisma.attendancePunch.count).mockResolvedValue(0)
 
     await abandonCorrection(RUN_ID)
 
@@ -1203,11 +1241,12 @@ describe('abandonCorrection', () => {
   it('writes no audit entry and reads no punches for an adjustments-only correction', async () => {
     const tx = makeTx()
     setup(tx)
-    vi.mocked(prisma.attendancePunch.count).mockResolvedValue(0)
+    tx.attendancePunch.count.mockResolvedValue(0)
 
     const result = await abandonCorrection(RUN_ID)
 
     expect(result).toEqual({ sessionId: SESSION_ID, discardedEdits: 0 })
+    expect(tx.attendancePunch.findMany).not.toHaveBeenCalled()
     expect(prisma.attendancePunch.findMany).not.toHaveBeenCalled()
     expect(auditEntry).not.toHaveBeenCalled()
     // The draft is still removed, the adjustments are still restored and the session still ends.
@@ -1222,7 +1261,7 @@ describe('abandonCorrection', () => {
   it('tolerates a session that has no adjustment snapshot', async () => {
     const tx = makeTx()
     setup(tx, makeSession({ adjustmentSnapshotJson: null }))
-    vi.mocked(prisma.attendancePunch.count).mockResolvedValue(0)
+    tx.attendancePunch.count.mockResolvedValue(0)
 
     await expect(abandonCorrection(RUN_ID)).resolves.toMatchObject({ sessionId: SESSION_ID })
     expect(tx.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
