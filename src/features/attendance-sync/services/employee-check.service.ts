@@ -1,4 +1,4 @@
-import type { Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { TRANSACTION_TIMEOUT_MS } from '../lib/constants'
 import { buildDayView } from '../lib/hours'
@@ -9,6 +9,7 @@ import { getWeekDates, toISODate } from '../lib/week'
 import {
   AttendanceSyncError,
   type CodeExceptionLite,
+  type CodeMatch,
   type EmployeeCheck,
   type EmployeeDecisionValue,
   type EmployeeLite,
@@ -62,10 +63,17 @@ async function loadEmployees(db: Prisma.TransactionClient = prisma): Promise<Emp
   return db.employee.findMany({ select: EMPLOYEE_LITE_SELECT }) as Promise<EmployeeLite[]>
 }
 
-async function loadExceptions(db: Prisma.TransactionClient = prisma): Promise<CodeExceptionLite[]> {
+/** The saved code exceptions: all of them, or just the one for `empCode`. */
+async function loadExceptions(db: Prisma.TransactionClient = prisma, empCode?: string): Promise<CodeExceptionLite[]> {
   return (await db.attendanceCodeException.findMany({
+    where: empCode === undefined ? undefined : { empCode },
     select: { empCode: true, kind: true, employeeId: true },
   })) as CodeExceptionLite[]
+}
+
+/** True for the database's foreign-key refusal, e.g. a punch linked to an employee deleted a moment ago. */
+function isForeignKeyViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003'
 }
 
 type WeekState = { status: string; syncLockedAt: Date | null }
@@ -253,11 +261,14 @@ async function linkCodeToEmployee(
  * Re-run matching for the week's unresolved codes with the current employees and saved
  * exceptions. Call after the user adds or edits an employee.
  *
- * The codes are read and matched first, on the plain client. Each code that changes then commits
- * in its own transaction, which first locks the week's row (so a pull or an approval cannot land
- * in the middle of one code) and skips the code if nothing is left to link. An error (WEEK_LOCKED,
- * SYNC_IN_PROGRESS, a database error) stops the loop and is thrown: codes already linked stay
- * linked and audited, the rest stay unresolved for the next run.
+ * The codes are read and matched first, on the plain client, only to skip the codes that cannot
+ * change. Each code that might then commits in its own transaction, which first locks the week's
+ * row (so a pull or an approval cannot land in the middle of one code), skips the code if nothing
+ * is left to link, and matches it again against the employees and the code's exception read under
+ * the lock: an employee added, edited or deleted since the first read decides the outcome, and an
+ * employee that vanished leaves the code unresolved (listed in `stillUnresolved`), never a foreign-key
+ * error. An error (WEEK_LOCKED, SYNC_IN_PROGRESS, a database error) stops the loop and is thrown:
+ * codes already linked stay linked and audited, the rest stay unresolved for the next run.
  */
 export async function rematchWeekCodes(
   weekId: string,
@@ -291,58 +302,72 @@ export async function rematchWeekCodes(
       continue
     }
 
-    const applied = await prisma.$transaction(
-      async (tx) => {
-        assertCodesEditable(await lockWeek(tx, upload.id))
-        // A pull or another match may have resolved the code since it was read.
-        if ((await tx.attendancePunch.count({ where: unresolvedWhere(empCode) })) === 0) return false
+    let applied: CodeMatch | null
+    try {
+      applied = await prisma.$transaction(
+        async (tx) => {
+          assertCodesEditable(await lockWeek(tx, upload.id))
+          // A pull or another match may have resolved the code since it was read.
+          if ((await tx.attendancePunch.count({ where: unresolvedWhere(empCode) })) === 0) return null
 
-        if (match.status === 'MATCHED') {
-          const linkedPunches = await linkCodeToEmployee(tx, upload.id, empCode, match.employee.id)
-          await auditEntry(
-            {
-              actionType: 'UPDATE',
-              entityType: 'ATTENDANCE_CODE',
-              entityId: upload.id,
-              details: {
-                summary: `Code ${empCode} linked to ${match.employee.employeeId}`,
-                weekStart: week.start,
-                empCode,
-                employeeId: match.employee.id,
-                employeeCode: match.employee.employeeId,
-                via: match.via,
-                linkedPunches,
+          // The employees and the code's exception were read before the lock. Match again on what the lock
+          // sees, so a link is only written to an employee that exists now and that the code still resolves to.
+          const lockedEmployees = await loadEmployees(tx)
+          const lockedExceptions = await loadExceptions(tx, empCode)
+          const current = matchEmployeeCode(empCode, lockedEmployees, lockedExceptions)
+
+          if (current.status === 'MATCHED') {
+            const linkedPunches = await linkCodeToEmployee(tx, upload.id, empCode, current.employee.id)
+            await auditEntry(
+              {
+                actionType: 'UPDATE',
+                entityType: 'ATTENDANCE_CODE',
+                entityId: upload.id,
+                details: {
+                  summary: `Code ${empCode} linked to ${current.employee.employeeId}`,
+                  weekStart: week.start,
+                  empCode,
+                  employeeId: current.employee.id,
+                  employeeCode: current.employee.employeeId,
+                  via: current.via,
+                  linkedPunches,
+                },
               },
-            },
-            tx,
-          )
-        } else if (match.status === 'IGNORED') {
-          await tx.attendancePunch.updateMany({
-            where: unresolvedWhere(empCode),
-            data: { employeeId: null, matchStatus: 'IGNORED' },
-          })
-          await auditEntry(
-            {
-              actionType: 'UPDATE',
-              entityType: 'ATTENDANCE_CODE',
-              entityId: upload.id,
-              details: { summary: `Code ${empCode} ignored`, weekStart: week.start, empCode },
-            },
-            tx,
-          )
-        } else {
-          // A duplicate whose second ID was edited becomes unknown (and the reverse).
-          await tx.attendancePunch.updateMany({ where: unresolvedWhere(empCode), data: { matchStatus: match.status } })
-        }
-        return true
-      },
-      { timeout: TRANSACTION_TIMEOUT_MS },
-    )
+              tx,
+            )
+          } else if (current.status === 'IGNORED') {
+            await tx.attendancePunch.updateMany({
+              where: unresolvedWhere(empCode),
+              data: { employeeId: null, matchStatus: 'IGNORED' },
+            })
+            await auditEntry(
+              {
+                actionType: 'UPDATE',
+                entityType: 'ATTENDANCE_CODE',
+                entityId: upload.id,
+                details: { summary: `Code ${empCode} ignored`, weekStart: week.start, empCode },
+              },
+              tx,
+            )
+          } else {
+            // Still unresolved. A duplicate whose second ID was edited becomes unknown (and the reverse).
+            await tx.attendancePunch.updateMany({ where: unresolvedWhere(empCode), data: { matchStatus: current.status } })
+          }
+          return current
+        },
+        { timeout: TRANSACTION_TIMEOUT_MS },
+      )
+    } catch (error) {
+      // The employee was deleted after the locked read and before the link: the whole code rolled back.
+      if (!isForeignKeyViolation(error)) throw error
+      stillUnresolved.push(empCode)
+      continue
+    }
     if (!applied) continue
 
-    if (match.status === 'MATCHED') {
-      matched.push({ empCode, employeeId: match.employee.id, employeeCode: match.employee.employeeId })
-    } else if (match.status !== 'IGNORED') {
+    if (applied.status === 'MATCHED') {
+      matched.push({ empCode, employeeId: applied.employee.id, employeeCode: applied.employee.employeeId })
+    } else if (applied.status !== 'IGNORED') {
       stillUnresolved.push(empCode)
     }
   }

@@ -283,6 +283,9 @@ describe('rematchWeekCodes', () => {
     db.employee.findMany.mockResolvedValue(opts.employees ?? [asha, sevenA, sevenB, inactive, resigned, resigningDuringWeek])
     db.attendanceCodeException.findMany.mockResolvedValue(opts.exceptions ?? [])
     db.attendancePunch.findMany.mockResolvedValue(opts.unresolved)
+    // Each changing code is matched again under its lock, on the transaction client: the same employees and exceptions.
+    db.tx.employee.findMany.mockResolvedValue(opts.employees ?? [asha, sevenA, sevenB, inactive, resigned, resigningDuringWeek])
+    db.tx.attendanceCodeException.findMany.mockResolvedValue(opts.exceptions ?? [])
     db.tx.attendancePunch.count.mockResolvedValue(opts.codeRows?.length ?? 1) // still unresolved under the lock
     db.tx.attendancePunch.findMany.mockImplementation(async ({ where }: { where: { empCode?: string } }) =>
       where.empCode ? (opts.codeRows ?? []) : (opts.existing ?? []),

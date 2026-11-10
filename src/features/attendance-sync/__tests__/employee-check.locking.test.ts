@@ -85,6 +85,9 @@ beforeEach(() => {
   db.employee.findMany.mockResolvedValue([asha])
   // A saved IGNORE exception makes rematchWeekCodes write (updateMany) for the unresolved code 0999.
   db.attendanceCodeException.findMany.mockResolvedValue([{ empCode: '0999', kind: 'IGNORE', employeeId: null }])
+  // Each changing code is matched again under its lock, on the transaction client: the same employees and exceptions.
+  db.tx.employee.findMany.mockResolvedValue([asha])
+  db.tx.attendanceCodeException.findMany.mockResolvedValue([{ empCode: '0999', kind: 'IGNORE', employeeId: null }])
 
   // The transaction's own reads: everything the four writers need to succeed.
   db.tx.attendancePunch.count.mockResolvedValue(4)
@@ -346,9 +349,13 @@ describe('rematchWeekCodes reads on the plain client and commits each changing c
     })
     expect(db.employee.findMany).toHaveBeenCalledTimes(1)
     expect(db.attendanceCodeException.findMany).toHaveBeenCalledTimes(1)
-    // None of these reads touch the transaction client.
-    expect(db.tx.employee.findMany).not.toHaveBeenCalled()
-    expect(db.tx.attendanceCodeException.findMany).not.toHaveBeenCalled()
+    // The transaction client does not repeat the unresolved-codes read; it reads the employees and the
+    // code's exception again, but only after taking the lock.
+    expect(db.tx.employee.findMany).toHaveBeenCalledTimes(1)
+    expect(db.tx.attendanceCodeException.findMany).toHaveBeenCalledTimes(1)
+    expect(db.tx.attendanceCodeException.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { empCode: '0999' } }))
+    expect(order(db.tx.$queryRaw)).toBeLessThan(order(db.tx.employee.findMany))
+    expect(order(db.tx.$queryRaw)).toBeLessThan(order(db.tx.attendanceCodeException.findMany))
     for (const call of db.tx.attendancePunch.findMany.mock.calls) {
       expect((call[0] as { distinct?: string[] }).distinct).toBeUndefined()
     }
@@ -388,11 +395,14 @@ describe('rematchWeekCodes reads on the plain client and commits each changing c
   })
 
   it('the UNKNOWN/DUPLICATE status flip goes through the transaction client too', async () => {
-    db.attendanceCodeException.findMany.mockResolvedValue([])
-    db.employee.findMany.mockResolvedValue([
+    const sevens = [
       makeEmployee({ id: 'emp-7a', employeeId: 'TPLGOAHLP007', employeeName: 'Seven Hlp' }),
       makeEmployee({ id: 'emp-7b', employeeId: 'TPLGOASUP007', employeeName: 'Seven Sup' }),
-    ])
+    ]
+    db.attendanceCodeException.findMany.mockResolvedValue([])
+    db.employee.findMany.mockResolvedValue(sevens)
+    db.tx.attendanceCodeException.findMany.mockResolvedValue([])
+    db.tx.employee.findMany.mockResolvedValue(sevens)
     db.attendancePunch.findMany.mockImplementation(async ({ distinct }: { distinct?: string[] }) =>
       distinct ? [{ empCode: '0007', matchStatus: 'UNKNOWN' }] : [],
     )
@@ -418,10 +428,12 @@ describe('rematchWeekCodes reads on the plain client and commits each changing c
   })
 
   it('a failure on a later code leaves the earlier code committed in its own transaction (never on the plain client)', async () => {
-    db.attendanceCodeException.findMany.mockResolvedValue([
+    const ignores = [
       { empCode: '0999', kind: 'IGNORE', employeeId: null },
       { empCode: '0998', kind: 'IGNORE', employeeId: null },
-    ])
+    ]
+    db.attendanceCodeException.findMany.mockResolvedValue(ignores)
+    db.tx.attendanceCodeException.findMany.mockResolvedValue(ignores)
     db.attendancePunch.findMany.mockImplementation(async ({ distinct }: { distinct?: string[] }) =>
       distinct
         ? [
@@ -444,6 +456,7 @@ describe('rematchWeekCodes reads on the plain client and commits each changing c
 
   it('returns what it matched and what is still unresolved, once the transactions have committed', async () => {
     db.attendanceCodeException.findMany.mockResolvedValue([])
+    db.tx.attendanceCodeException.findMany.mockResolvedValue([])
     db.attendancePunch.findMany.mockImplementation(async ({ distinct }: { distinct?: string[] }) =>
       distinct
         ? [
@@ -505,6 +518,7 @@ describe('linking a code reads the code\'s rows, then the employee\'s existing p
 
   it('rematchWeekCodes: the same, for a code that now matches an employee by number', async () => {
     db.attendanceCodeException.findMany.mockResolvedValue([])
+    db.tx.attendanceCodeException.findMany.mockResolvedValue([])
     db.attendancePunch.findMany.mockResolvedValue([{ empCode: '0036', matchStatus: 'UNKNOWN' }])
     const { calls, gate } = gateTheCodeRows()
 

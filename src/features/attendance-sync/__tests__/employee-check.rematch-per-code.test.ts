@@ -47,6 +47,9 @@ function serve(opts: {
   db.employee.findMany.mockResolvedValue(opts.employees ?? [asha, ravi, meena, sevenA, sevenB])
   db.attendanceCodeException.findMany.mockResolvedValue(opts.exceptions ?? [])
   db.attendancePunch.findMany.mockResolvedValue(opts.unresolved)
+  // Each changing code is matched again under its lock, on the transaction client: the same employees and exceptions.
+  db.tx.employee.findMany.mockResolvedValue(opts.employees ?? [asha, ravi, meena, sevenA, sevenB])
+  db.tx.attendanceCodeException.findMany.mockResolvedValue(opts.exceptions ?? [])
 }
 
 beforeEach(() => {
