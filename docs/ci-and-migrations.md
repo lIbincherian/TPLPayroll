@@ -71,11 +71,13 @@ If the PR merges first, the build fails at `prisma migrate deploy` before anythi
 
 Both outcomes were reproduced against a local database while preparing this PR.
 
+**Production vs `0_init`.** Production's columns, indexes and enum match `0_init` exactly (compared read-only, category by category). One representational difference: production holds `Employee_employeeId_key` as a UNIQUE *constraint*, `0_init` creates it as a unique *index*. Both enforce the same rule on the same index. A future migration that changes it must use `ALTER TABLE "Employee" DROP CONSTRAINT IF EXISTS "Employee_employeeId_key"` before `DROP INDEX IF EXISTS`, so it runs on both.
+
 ## Preview builds and the paused staging project
 
 Every Preview build runs `prisma migrate deploy` against `tpl-payroll-stage`. If that Supabase project is paused (Supabase pauses inactive projects), the build cannot reach the database and fails with `P1001`. Restore the project in the Supabase dashboard, wait for it to come back, then redeploy the preview.
 
-All Preview branches share the one staging database, so a PR's migration is applied to staging as soon as its preview builds, before the PR merges. Two open PRs with conflicting migrations can break each other's previews; if staging ends up in a bad state it can be reset, since it holds no real data.
+All Preview branches share the one staging database, so a PR's migration is applied to staging as soon as its preview builds, before the PR merges. Two open PRs with conflicting migrations can break each other's previews; if staging ends up in a bad state, check what data it holds before resetting it.
 
 ## Branch protection (repo owner)
 
