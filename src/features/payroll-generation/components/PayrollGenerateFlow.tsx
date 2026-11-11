@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useTransition } from 'react'
+import { useCallback, useState, useEffect, useTransition } from 'react'
 import { StepIndicator } from './StepIndicator'
 import { AttendanceVerificationStep } from './AttendanceVerificationStep'
 import { AdjustmentReviewStepWrapper } from './AdjustmentReviewStepWrapper'
@@ -48,6 +48,7 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
 
   // Step 0 data
   const [readiness, setReadiness] = useState<AttendanceReadinessResult | null>(null)
+  const [readinessError, setReadinessError] = useState<string | null>(null)
 
   // Step 1 data
   const [adjustments, setAdjustments] = useState<WeeklyReviewItem[]>([])
@@ -62,13 +63,26 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
 
   const weekLabel = formatWeekLabel(weekStart, weekEnd)
 
-  // ── Load Step 0 data on mount ─────────────────────────────────────────────
-  useEffect(() => {
-    startTransition(async () => {
+  // ── Load Step 0 data ──────────────────────────────────────────────────────
+  // Clears what step 0 holds first, so it shows the loading state and never the numbers of an earlier
+  // attendance; a failed load is shown with a way to try again.
+  const loadReadiness = useCallback(async () => {
+    setReadiness(null)
+    setReadinessError(null)
+    try {
       const result = await checkAttendanceReadinessAction(weekStart, weekEnd)
       if (result.ok) setReadiness(result.data)
-    })
+      else setReadinessError(result.error)
+    } catch {
+      setReadinessError("Couldn't load attendance. Try again.")
+    }
   }, [weekStart, weekEnd])
+
+  useEffect(() => {
+    startTransition(async () => {
+      await loadReadiness()
+    })
+  }, [loadReadiness])
 
   // ── Step 0 → 1: load pending adjustments ─────────────────────────────────
   const handleAttendanceContinue = () => {
@@ -118,13 +132,21 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
             checkAttendanceReadinessAction(weekStart, weekEnd),
             getPendingAdjustmentsForWeekAction(weekStart, weekEnd),
           ])
-          if (current.ok) setReadiness(current.data)
+          if (!current.ok) {
+            // The readiness did not come back: what step 0 holds is the old attendance, so it is loaded again
+            // (and shows its own error with a way to try again if that fails too).
+            setStep(0)
+            void loadReadiness()
+            return
+          }
+          setReadiness(current.data)
           if (pending.ok) setAdjustments(pending.data)
-          setStep(current.ok && current.data.ready && pending.ok ? 1 : 0)
+          setStep(current.data.ready && pending.ok ? 1 : 0)
         } catch {
-          // The reload itself failed (e.g. a network error): never leave the user on the dead summary.
-          // The first step reloads attendance and shows the approval error above it.
+          // The reload itself failed (e.g. a network error): never leave the user on the dead summary, and
+          // never show the old attendance there. The first step loads it again and shows the approval error above it.
           setStep(0)
+          void loadReadiness()
         }
       }
     }
@@ -148,7 +170,18 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
         )}
 
         {step === 0 && (
-          readiness == null ? (
+          readinessError ? (
+            <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+              <p>{readinessError}</p>
+              <button
+                type="button"
+                onClick={() => startTransition(async () => { await loadReadiness() })}
+                className="mt-3 inline-flex items-center rounded-xl border border-rose-200 bg-white px-4 py-2 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-100 active:scale-[0.98]"
+              >
+                Try again
+              </button>
+            </div>
+          ) : readiness == null ? (
             <div className="space-y-4">
               <div className="h-6 w-48 rounded skeleton-shimmer" />
               <div className="h-4 w-32 rounded skeleton-shimmer" />

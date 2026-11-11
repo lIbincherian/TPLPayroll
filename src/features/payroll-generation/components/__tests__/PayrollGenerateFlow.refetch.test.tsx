@@ -13,7 +13,9 @@ import type { WeeklyReviewItem } from '@/features/payroll-adjustments/types/adju
 // When the approval is refused because the attendance changed under the summary (ATTENDANCE_CHANGED) or is
 // no longer approved (ATTENDANCE_NOT_APPROVED), what steps 0 and 1 hold was loaded from the old attendance.
 // The flow loads it again: it lands on the adjustments step with the fresh adjustments when the attendance is
-// still ready, and on the first step (which says why) when it is not ready or when the reload failed.
+// still ready, and on the first step (which says why) when it is not ready or when the reload failed. The first
+// step never shows the numbers of the old attendance: when the reload failed it loads them again, and a load that
+// fails shows its error with a way to try again.
 
 vi.mock('@/features/payroll-generation/actions/payroll.actions', () => ({
   checkAttendanceReadinessAction: vi.fn(),
@@ -162,15 +164,26 @@ describe('PayrollGenerateFlow reloads what it showed when the attendance changed
     expect(screen.getByText(message)).toBeInTheDocument()
   })
 
-  it('the reload of the readiness failing (ok: false): back to the first step, still showing what it had, with the message', async () => {
+  it('the reload of the readiness failing (ok: false): back to the first step, which loads it again and, when that fails too, shows the error with Try again and never the old numbers', async () => {
     vi.mocked(checkAttendanceReadinessAction).mockResolvedValueOnce(ready(1, 0)).mockResolvedValue({ ok: false, error: 'An unexpected error occurred' })
 
     await approveFromSummary()
 
-    expect(await screen.findByRole('heading', { name: 'Verify Attendance' })).toBeInTheDocument()
-    expect(screen.getByRole('alert')).toHaveTextContent(CHANGED)
-    expect(screen.getByText('Attendance approved: 1 employees, 0 left out')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeInTheDocument()
+    expect(screen.getAllByRole('alert').map((alert) => alert.textContent)).toEqual(
+      expect.arrayContaining([CHANGED, expect.stringContaining('An unexpected error occurred')]),
+    )
+    expect(screen.queryByText('Attendance approved: 1 employees, 0 left out')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Verify Attendance' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Payroll Summary' })).not.toBeInTheDocument()
+    expect(checkAttendanceReadinessAction).toHaveBeenCalledTimes(3) // on mount, after the refusal, and again for the first step
+
+    // Try again loads it: this time it comes back.
+    vi.mocked(checkAttendanceReadinessAction).mockResolvedValue(ready(2, 3, 56))
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+
+    expect(await screen.findByText('Attendance approved: 2 employees, 3 left out')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
   })
 
   it('the reload of the adjustments failing (ok: false) while the attendance is ready: first step, with the refreshed readiness (2 employees, 3 left out)', async () => {
@@ -230,17 +243,19 @@ describe('PayrollGenerateFlow reloads what it showed when the attendance changed
     expect(getPendingAdjustmentsForWeekAction).toHaveBeenCalledTimes(1)
   })
 
-  it('a reload that throws (the server cannot be reached) still takes the user off the dead summary, with a way forward', async () => {
-    vi.mocked(checkAttendanceReadinessAction).mockResolvedValueOnce(ready(1, 0)).mockRejectedValue(new Error('Failed to fetch'))
+  it('a reload that throws (the server cannot be reached) takes the user off the dead summary to the first step, which loads the attendance again: the fresh numbers, never the old ones', async () => {
+    vi.mocked(checkAttendanceReadinessAction)
+      .mockResolvedValueOnce(ready(1, 0))
+      .mockRejectedValueOnce(new Error('Failed to fetch'))
+      .mockResolvedValue(ready(2, 3, 56))
 
     await approveFromSummary()
 
-    // Not left looking at a loading skeleton: either step 0 or step 1 is on screen again.
-    await waitFor(() => {
-      const first = screen.queryByRole('heading', { name: 'Verify Attendance' })
-      const second = screen.queryByRole('heading', { name: 'Review Adjustments' })
-      expect(first ?? second).toBeInTheDocument()
-    })
+    expect(await screen.findByRole('heading', { name: 'Verify Attendance' })).toBeInTheDocument()
+    expect(screen.getByText('Attendance approved: 2 employees, 3 left out')).toBeInTheDocument()
+    expect(screen.queryByText('Attendance approved: 1 employees, 0 left out')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(CHANGED)
     expect(screen.queryByRole('heading', { name: 'Payroll Summary' })).not.toBeInTheDocument()
+    expect(checkAttendanceReadinessAction).toHaveBeenCalledTimes(3) // on mount, the reload that threw, and the first step's own
   })
 })
