@@ -174,7 +174,7 @@ function makeTx() {
     payrollRevision: { findFirst: m(), updateMany: m(), deleteMany: m(), create: m() },
     payrollRunEmployee: { findMany: m(), deleteMany: m(), createMany: m() },
     payrollCorrectionSession: { create: m(), update: m(), findUnique: m(), findFirst: m() },
-    payrollAdjustmentApplication: { findMany: m(), updateMany: m() },
+    payrollAdjustmentApplication: { findMany: m(), update: m(), updateMany: m() },
     attendanceEmployeeDecision: { findMany: m() },
     attendancePunch: { count: m(), findMany: m(), createMany: m(), deleteMany: m(), updateMany: m() },
     attendanceRecord: { deleteMany: m(), createMany: m(), findMany: m() },
@@ -232,6 +232,7 @@ function txWrites(tx: Tx): Array<[string, unknown]> {
     ['tx.payrollRunEmployee.createMany', tx.payrollRunEmployee.createMany],
     ['tx.payrollCorrectionSession.create', tx.payrollCorrectionSession.create],
     ['tx.payrollCorrectionSession.update', tx.payrollCorrectionSession.update],
+    ['tx.payrollAdjustmentApplication.update', tx.payrollAdjustmentApplication.update],
     ['tx.payrollAdjustmentApplication.updateMany', tx.payrollAdjustmentApplication.updateMany],
     ['tx.attendancePunch.createMany', tx.attendancePunch.createMany],
     ['tx.attendancePunch.deleteMany', tx.attendancePunch.deleteMany],
@@ -943,12 +944,48 @@ describe('item 3: the draft is calculated and written in one transaction under t
     return tx
   }
 
-  const changes = { reversed: ['rev-1', 'rev-2'], approved: ['appr-1'] }
+  /**
+   * A week with one application that was not applied before the correction (the session's snapshot has it PENDING)
+   * and is APPROVED now, on a TOTAL_BALANCE adjustment of 70 a week with 50 left: the plan freezes 50, not the 70
+   * the application was created with. Returns the session whose snapshot says so.
+   */
+  function withApprovedApplication(tx: Tx) {
+    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([
+      {
+        id: 'app-new',
+        payrollAdjustmentId: 'adj-1',
+        employeeId: EMPLOYEE_ONE.id,
+        approvalStatus: 'APPROVED',
+        appliedAmount: 70,
+        isReversed: false,
+        carriedForwardToPayrollWeekStartDate: null,
+        payrollWeekStartDate: WEEK_START,
+        payrollWeekEndDate: WEEK_END,
+        payrollAdjustment: {
+          id: 'adj-1',
+          adjustmentType: 'DEDUCTION',
+          recurrenceType: 'RECURRING',
+          recurrenceEndType: 'TOTAL_BALANCE',
+          amount: 70,
+          totalBalance: 120,
+          remainingBalance: 50,
+          status: 'ACTIVE',
+        },
+      },
+    ] as never)
+    const session = makeSession({
+      adjustmentSnapshotJson: [
+        { applicationId: 'app-new', approvalStatus: 'PENDING', isReversed: false, approvedAt: null, skippedAt: null, appliedAt: null },
+      ],
+    })
+    tx.payrollCorrectionSession.findUnique.mockResolvedValue(session)
+    return session
+  }
 
-  it('with a session: lock, session re-read, punch count, review, hours, previous employees, adjustment changes, approved adjustments, draft writes, pointer - in that order', async () => {
+  it('with a session: lock, session re-read, punch count, review, hours, previous employees, settlement plan, draft writes, pointer - in that order', async () => {
     const tx = setup()
 
-    await recalculateAndCreateRevision({ ...input, adjustmentChanges: changes })
+    await recalculateAndCreateRevision(input)
 
     expect(lockWeekRow).toHaveBeenCalledTimes(1)
     expect(lockWeekRow).toHaveBeenCalledWith(tx, { id: UPLOAD_ID })
@@ -959,7 +996,6 @@ describe('item 3: the draft is calculated and written in one transaction under t
       ['getPunchReview', getPunchReview],
       ['tx.employee.findMany', tx.employee.findMany],
       ['tx.payrollRunEmployee.findMany', tx.payrollRunEmployee.findMany],
-      ['tx.payrollAdjustmentApplication.updateMany', tx.payrollAdjustmentApplication.updateMany],
       ['tx.payrollAdjustmentApplication.findMany', tx.payrollAdjustmentApplication.findMany],
       ['tx.payrollRunEmployee.deleteMany', tx.payrollRunEmployee.deleteMany],
       ['tx.payrollRevision.deleteMany', tx.payrollRevision.deleteMany],
@@ -997,7 +1033,7 @@ describe('item 3: the draft is calculated and written in one transaction under t
   ])('a session that is %s once the lock is held: CORRECTION_NOT_ACTIVE and no write of any kind', async (_label, locked) => {
     const tx = setup({ locked })
 
-    const error = await recalculateAndCreateRevision({ ...input, adjustmentChanges: changes }).catch((e) => e)
+    const error = await recalculateAndCreateRevision(input).catch((e) => e)
 
     expect(error).toMatchObject({
       name: 'CorrectionServiceError',
@@ -1028,10 +1064,10 @@ describe('item 3: the draft is calculated and written in one transaction under t
     expectNoTxWrites(tx)
   })
 
-  it('an incomplete pair (needsFixingDays 1) refuses the draft: exact message, no revision, no pointer change, earlier draft kept, adjustment changes not applied', async () => {
+  it('an incomplete pair (needsFixingDays 1) refuses the draft: exact message, no revision, no pointer change, earlier draft kept, nothing frozen', async () => {
     const tx = setup({ review: reviewOf(fullDay(), 1) })
 
-    const error = await recalculateAndCreateRevision({ ...input, adjustmentChanges: changes }).catch((e) => e)
+    const error = await recalculateAndCreateRevision(input).catch((e) => e)
 
     expect(error).toMatchObject({
       name: 'CorrectionServiceError',
@@ -1049,42 +1085,39 @@ describe('item 3: the draft is calculated and written in one transaction under t
     expectNoGlobalWrites()
   })
 
-  it('writes the adjustment changes through the transaction client with the exact ids, never through the global client', async () => {
+  it('freezes the amount the plan says, through the transaction client and nothing else: 50 left at 70 a week is frozen as 50 and the draft row deducts 50', async () => {
     const tx = setup()
+    withApprovedApplication(tx)
 
-    await recalculateAndCreateRevision({ ...input, adjustmentChanges: changes })
+    await recalculateAndCreateRevision(input)
 
-    expect(tx.payrollAdjustmentApplication.updateMany).toHaveBeenCalledTimes(2)
-    expect(tx.payrollAdjustmentApplication.updateMany).toHaveBeenNthCalledWith(1, {
-      where: { id: { in: ['rev-1', 'rev-2'] } },
-      data: { isReversed: true },
-    })
-    expect(tx.payrollAdjustmentApplication.updateMany).toHaveBeenNthCalledWith(2, {
-      where: { id: { in: ['appr-1'] } },
-      data: { approvalStatus: 'APPROVED', appliedAt: expect.any(Date) },
-    })
-    expect(prisma.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
+    expect(tx.payrollAdjustmentApplication.update).toHaveBeenCalledTimes(1)
+    expect(tx.payrollAdjustmentApplication.update).toHaveBeenCalledWith({ where: { id: 'app-new' }, data: { appliedAmount: 50 } })
+    expect(tx.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
+    expect(tx.payrollRunEmployee.createMany.mock.calls[0][0].data[0]).toMatchObject({ employeeId: EMPLOYEE_ONE.id, deductions: 50 })
     expect(prisma.payrollAdjustmentApplication.update).not.toHaveBeenCalled()
+    expect(prisma.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
   })
 
-  it('with no adjustment changes there is no adjustment write at all', async () => {
+  it('with nothing to freeze there is no adjustment write at all', async () => {
     const tx = setup()
 
     await recalculateAndCreateRevision(input)
-    await recalculateAndCreateRevision({ ...input, adjustmentChanges: { reversed: [], approved: [] } })
 
+    expect(tx.payrollAdjustmentApplication.update).not.toHaveBeenCalled()
     expect(tx.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
   })
 
-  it('a failed draft write rolls back the adjustment changes with it: they exist only inside the one transaction', async () => {
+  it('a failed draft write rolls the frozen amount back with it: it exists only inside the one transaction', async () => {
     const tx = setup()
+    withApprovedApplication(tx)
     // A transaction that keeps its writes aside and commits them only if the callback succeeds.
     const committed: unknown[] = []
     vi.mocked(prisma.$transaction).mockImplementation((async (arg: (client: Tx) => Promise<unknown>) => {
       const staged: unknown[] = []
-      tx.payrollAdjustmentApplication.updateMany.mockImplementation((async (args: unknown) => {
+      tx.payrollAdjustmentApplication.update.mockImplementation((async (args: unknown) => {
         staged.push(args)
-        return { count: 1 }
+        return {}
       }) as never)
       const result = await arg(tx) // a rejection here drops `staged`
       committed.push(...staged)
@@ -1092,11 +1125,11 @@ describe('item 3: the draft is calculated and written in one transaction under t
     }) as never)
     tx.payrollRevision.create.mockRejectedValue(new Error('db down'))
 
-    await expect(recalculateAndCreateRevision({ ...input, adjustmentChanges: changes })).rejects.toThrow('db down')
+    await expect(recalculateAndCreateRevision(input)).rejects.toThrow('db down')
 
-    expect(tx.payrollAdjustmentApplication.updateMany).toHaveBeenCalledTimes(2) // issued inside the transaction callback...
+    expect(tx.payrollAdjustmentApplication.update).toHaveBeenCalledTimes(1) // issued inside the transaction callback...
     expect(committed).toEqual([]) // ...and discarded with it
-    expect(prisma.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
+    expect(prisma.payrollAdjustmentApplication.update).not.toHaveBeenCalled()
     expect(tx.payrollCorrectionSession.update).not.toHaveBeenCalled() // the pointer was never set
     expect(prisma.$transaction).toHaveBeenCalledTimes(1)
   })
@@ -1130,7 +1163,6 @@ describe('item 3: the draft is calculated and written in one transaction under t
       payrollRunId: RUN_ID,
       correctionReason: 'Reverse a deduction',
       correctionTypes: ['ADJUSTMENTS'],
-      adjustmentChanges: changes,
     })
 
     expect(result).toMatchObject({ payrollRunId: RUN_ID, revisionNumber: 2, employeeCount: 1 })
@@ -1144,9 +1176,9 @@ describe('item 3: the draft is calculated and written in one transaction under t
     expect(prisma.$transaction).toHaveBeenCalledTimes(1)
     expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 30000 })
     expectOnlyInteractiveTransactions()
-    // The draft and the adjustment changes are all written inside that transaction.
+    // The draft is written inside that transaction, and the week's applications are planned inside it too.
     expect(tx.payrollRevision.create).toHaveBeenCalledTimes(1)
-    expect(tx.payrollAdjustmentApplication.updateMany).toHaveBeenCalledTimes(2)
+    expect(tx.payrollAdjustmentApplication.findMany).toHaveBeenCalled()
     expectNoGlobalWrites()
   })
 

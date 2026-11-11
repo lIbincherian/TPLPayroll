@@ -118,12 +118,6 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
         correctionReason: correctionReason.trim() || null,
         correctionTypes: [...selectedTypes],
         correctionSessionId: activeSession?.sessionId,
-        // The backend handles applying logic automatically based on final approved statuses.
-        // Passing empty array for backwards compatibility of shape, database is now the source of truth live.
-        adjustmentChanges: {
-          reversed: [],
-          approved: [],
-        },
       })
 
       if (res.ok) {

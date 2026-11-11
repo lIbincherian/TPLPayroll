@@ -80,10 +80,6 @@ export interface CreateRevisionInput {
   correctionTypes: CorrectionType[]
   /** When set and the session has copied punches, hours come from them instead of the approved records. */
   correctionSessionId?: string
-  adjustmentChanges?: {
-    reversed: string[]   // applicationIds to reverse
-    approved: string[]   // applicationIds to re-approve (previously skipped)
-  }
 }
 
 // ─── Create revision result ───────────────────────────────────────────────────
@@ -152,6 +148,7 @@ export type CorrectionErrorCode =
   | 'EXCEL_ERA_ATTENDANCE_CORRECTION'
   | 'REVISION_NOT_DRAFT'
   | 'REVISION_STALE'
+  | 'ADJUSTMENT_NOT_APPLICABLE'
 
 export class CorrectionServiceError extends Error {
   constructor(

@@ -29,6 +29,7 @@ import {
 } from '@/features/payroll-adjustments/services/adjustment.service'
 import { AdjustmentServiceError } from '@/features/payroll-adjustments/types/adjustment.types'
 import {
+  freezeDraftAdjustmentAmounts,
   parseAdjustmentSnapshot,
   type AdjustmentSnapshotEntry,
 } from '@/features/payroll-correction/services/adjustment-settlement'
@@ -743,8 +744,9 @@ async function loadCorrectionHours(
  * without a correction session), and the punches and the current revision are read inside it, so
  * the draft always matches the punches at commit and is numbered and diffed against the revision
  * that is current at that moment. A punch edit that lands after it clears the session's draft
- * pointer (savePunchEdit takes the same lock); one that landed before it is included. Adjustment
- * changes are written in the same transaction, so a failed draft leaves them as they were.
+ * pointer (savePunchEdit takes the same lock); one that landed before it is included. The amounts the
+ * draft deducts are frozen into the adjustment applications in the same transaction, so a failed draft
+ * leaves them as they were.
  */
 export async function recalculateAndCreateRevision(
   input: CreateRevisionInput,
@@ -789,6 +791,9 @@ export async function recalculateAndCreateRevision(
   return prisma.$transaction(
     async (tx) => {
       // Every draft takes the week lock first, with a session or without one.
+      // How the week's adjustment applications looked before the correction reset them; null when there is
+      // no snapshot (no session, or an older one).
+      let snapshot: AdjustmentSnapshotEntry[] | null = null
       if (session) {
         await lockWeekRow(tx, { id: session.attendanceUploadId })
         // The session was read before the lock; it may have been abandoned or applied since.
@@ -796,6 +801,9 @@ export async function recalculateAndCreateRevision(
         if (!current || current.status !== 'IN_PROGRESS' || current.payrollRunId !== run.id) {
           throw new CorrectionServiceError('CORRECTION_NOT_ACTIVE', 'This correction is no longer in progress')
         }
+        snapshot = Array.isArray(current.adjustmentSnapshotJson)
+          ? parseAdjustmentSnapshot(current.adjustmentSnapshotJson)
+          : null
       } else {
         // Without a session the week is found by its start date. No active row for it is not an error.
         await lockWeekRow(tx, { weekStart })
@@ -861,49 +869,13 @@ export async function recalculateAndCreateRevision(
       })
       const prevByEmployee = new Map(previousEmployees.map((pe) => [pe.employeeId, pe]))
 
-      // Apply adjustment changes (reversals)
-      if (input.adjustmentChanges?.reversed?.length) {
-        await tx.payrollAdjustmentApplication.updateMany({
-          where: { id: { in: input.adjustmentChanges.reversed } },
-          data: { isReversed: true },
-        })
-      }
-
-      // Apply adjustment changes (re-approvals)
-      if (input.adjustmentChanges?.approved?.length) {
-        await tx.payrollAdjustmentApplication.updateMany({
-          where: { id: { in: input.adjustmentChanges.approved } },
-          data: { approvalStatus: 'APPROVED', appliedAt: new Date() },
-        })
-      }
-
-      // Get approved, non-reversed adjustment applications for this week
-      const approvedApplications = await tx.payrollAdjustmentApplication.findMany({
-        where: {
-          payrollWeekStartDate: weekStart,
-          approvalStatus: 'APPROVED',
-          isReversed: false,
-          employeeId: { in: [...employeeMap.keys()] },
-        },
-        include: {
-          payrollAdjustment: { select: { adjustmentType: true } },
-        },
-      })
-
-      type AdjGroup = { additions: number; deductions: number }
-      const adjByEmployee = new Map<string, AdjGroup>()
-      for (const app of approvedApplications) {
-        if (!adjByEmployee.has(app.employeeId)) {
-          adjByEmployee.set(app.employeeId, { additions: 0, deductions: 0 })
-        }
-        const group = adjByEmployee.get(app.employeeId)!
-        const amount = Number(app.appliedAmount)
-        if (app.payrollAdjustment.adjustmentType === 'ADDITION') {
-          group.additions += amount
-        } else {
-          group.deductions += amount
-        }
-      }
+      // Who gets a draft row: the employees with a wage for the week. What each is deducted or paid is the
+      // settlement plan's (the amounts it freezes into the applications), so the draft and the settlement
+      // approveRevision makes later come from the same numbers.
+      const paidIds = new Set(
+        [...employeeMap.values()].filter((group) => group.employee.wageHistory[0]).map((group) => group.employee.id),
+      )
+      const adjustmentSums = await freezeDraftAdjustmentAmounts(tx, run, snapshot, paidIds)
 
       // Calculate payroll for each employee
       const employeeRows: RevisedEmployeeRow[] = []
@@ -923,7 +895,7 @@ export async function recalculateAndCreateRevision(
         const { overtimeHours, overtimePay } = calculateOvertimePay(dailyOT, hourlyRate)
         const grossPay = regularPay + overtimePay
 
-        const adjs = adjByEmployee.get(employee.id) ?? { additions: 0, deductions: 0 }
+        const adjs = adjustmentSums.get(employee.id) ?? { additions: 0, deductions: 0 }
         const netPayable = calculateNetPayable(grossPay, adjs.additions, adjs.deductions)
 
         const prev = prevByEmployee.get(employee.id)

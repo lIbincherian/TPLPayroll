@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client'
+import { CorrectionServiceError } from '@/features/payroll-correction/types/correction.types'
 
 // How a correction settles the week's adjustment applications against their adjustments' balances.
 //
@@ -245,6 +246,19 @@ export function planSettlement(input: {
   return { plans, problems }
 }
 
+/** What each employee's draft row must carry, in whole paise: the plan's N summed by adjustment type. */
+function sumsInPaise(plans: ApplicationPlan[]): Map<string, { additions: number; deductions: number }> {
+  const sums = new Map<string, { additions: number; deductions: number }>()
+  for (const plan of plans) {
+    if (plan.newAmount <= 0) continue
+    const sum = sums.get(plan.employeeId) ?? { additions: 0, deductions: 0 }
+    if (plan.adjustmentType === 'ADDITION') sum.additions += toPaise(plan.newAmount)
+    else sum.deductions += toPaise(plan.newAmount)
+    sums.set(plan.employeeId, sum)
+  }
+  return sums
+}
+
 /**
  * Pure. False when the plan has a problem, an APPLY plan's stored `appliedAmount` differs from its N, or any
  * draft row's additions or deductions differ from the plan's sums for that employee. Amounts are compared in
@@ -259,15 +273,10 @@ export function draftMatchesPlan(
   if (problems.length > 0) return false
 
   const stored = new Map(applications.map((app) => [app.id, toPaise(Number(app.appliedAmount))]))
-  const sums = new Map<string, { additions: number; deductions: number }>()
   for (const plan of plans) {
     if (plan.cell === 'APPLY' && stored.get(plan.applicationId) !== toPaise(plan.newAmount)) return false
-    if (plan.newAmount <= 0) continue
-    const sum = sums.get(plan.employeeId) ?? { additions: 0, deductions: 0 }
-    if (plan.adjustmentType === 'ADDITION') sum.additions += toPaise(plan.newAmount)
-    else sum.deductions += toPaise(plan.newAmount)
-    sums.set(plan.employeeId, sum)
   }
+  const sums = sumsInPaise(plans)
 
   const inDraft = new Set<string>()
   for (const row of draftRows) {
@@ -278,4 +287,76 @@ export function draftMatchesPlan(
   // Something is deducted for an employee the draft does not pay.
   for (const employeeId of sums.keys()) if (!inDraft.has(employeeId)) return false
   return true
+}
+
+/**
+ * The applications a correction of this run settles: the run's week, on the run or not yet linked to any.
+ * One query for them (with their adjustments) and one for the adjustments that have a PENDING application in
+ * the week after, which is where a skip carried them to.
+ */
+export async function loadSettlementInput(
+  tx: Prisma.TransactionClient,
+  run: { id: string; payrollWeekStartDate: Date },
+): Promise<{ applications: SettlementApplication[]; adjustmentsWithNextWeekPending: Set<string> }> {
+  const applications = await tx.payrollAdjustmentApplication.findMany({
+    where: {
+      payrollWeekStartDate: run.payrollWeekStartDate,
+      OR: [{ payrollRunId: run.id }, { payrollRunId: null }],
+    },
+    include: { payrollAdjustment: true },
+  })
+  const waiting = await tx.payrollAdjustmentApplication.findMany({
+    where: {
+      payrollAdjustmentId: { in: [...new Set(applications.map((app) => app.payrollAdjustmentId))] },
+      payrollWeekStartDate: addDays(run.payrollWeekStartDate, 7),
+      approvalStatus: 'PENDING',
+    },
+    select: { payrollAdjustmentId: true },
+  })
+  return { applications, adjustmentsWithNextWeekPending: new Set(waiting.map((row) => row.payrollAdjustmentId)) }
+}
+
+const NOT_APPLICABLE_MESSAGES: Record<PlanProblem['reason'], string> = {
+  ADJUSTMENT_NOT_ACTIVE: 'This adjustment is already completed or cancelled.',
+  NOTHING_LEFT: 'Nothing is left to deduct for this adjustment.',
+  CARRIED_FORWARD_HANDLED: 'This adjustment was carried to the next week and has been dealt with there.',
+}
+
+/** The user-facing message for a problem the plan found (the click's refusal and the recalculation's). */
+export function planProblemMessage(reason: PlanProblem['reason']): string {
+  return NOT_APPLICABLE_MESSAGES[reason]
+}
+
+/**
+ * Called by the recalculation, inside its transaction and under the week lock. Plans the week's settlement
+ * for the employees the draft pays and freezes what the draft deducts: writes `appliedAmount` = N for every
+ * APPLY plan whose stored amount differs, so the amount is part of the application and not recomputed later.
+ * Throws ADJUSTMENT_NOT_APPLICABLE when an approved application cannot be applied (nothing left, adjustment
+ * completed or cancelled, a ONE_TIME carried forward and handled there). Returns the per-employee sums the
+ * draft rows must carry.
+ */
+export async function freezeDraftAdjustmentAmounts(
+  tx: Prisma.TransactionClient,
+  run: { id: string; payrollWeekStartDate: Date },
+  snapshot: AdjustmentSnapshotEntry[] | null,
+  paidEmployeeIds: ReadonlySet<string>,
+): Promise<Map<string, { additions: number; deductions: number }>> {
+  const { applications, adjustmentsWithNextWeekPending } = await loadSettlementInput(tx, run)
+  const { plans, problems } = planSettlement({ applications, snapshot, paidEmployeeIds, adjustmentsWithNextWeekPending })
+  if (problems.length > 0) {
+    throw new CorrectionServiceError('ADJUSTMENT_NOT_APPLICABLE', planProblemMessage(problems[0].reason))
+  }
+
+  const byId = new Map(applications.map((app) => [app.id, app]))
+  for (const plan of plans) {
+    if (plan.cell !== 'APPLY') continue
+    if (toPaise(Number(byId.get(plan.applicationId)!.appliedAmount)) === toPaise(plan.newAmount)) continue
+    await tx.payrollAdjustmentApplication.update({
+      where: { id: plan.applicationId },
+      data: { appliedAmount: plan.newAmount },
+    })
+  }
+  return new Map(
+    [...sumsInPaise(plans)].map(([employeeId, sum]) => [employeeId, { additions: sum.additions / 100, deductions: sum.deductions / 100 }]),
+  )
 }
