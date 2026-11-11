@@ -27,7 +27,8 @@ import { CorrectionServiceError } from '@/features/payroll-correction/types/corr
 //   UNAPPLY_SKIP    applied, SKIPPED, already carried               R + O (cap)      SKIPPED, nothing carried
 //   UNAPPLY_PENDING applied, PENDING paid                           R + O (cap)      stays PENDING
 //   CARRY           not applied, SKIPPED or left out, not carried   none             SKIPPED, carried, counted
-//   SKIP_ONLY       not applied, SKIPPED, already carried or the    none             SKIPPED, nothing carried
+//   SKIP_ONLY       not applied, SKIPPED, already carried (or it    none             SKIPPED, nothing carried
+//                   was SKIPPED before this correction), or the
 //                   adjustment is not active
 //   NONE            not applied, PENDING paid                       none             unchanged
 //   INERT           adjustment cancelled, or a reversed approved    none             unchanged
@@ -106,6 +107,8 @@ interface Context {
   original: number
   final: Final
   carried: boolean
+  /** It was SKIPPED before this correction (by the weekly review or an earlier correction), which carried it. */
+  skippedBefore: boolean
 }
 
 interface Running {
@@ -140,7 +143,8 @@ function stepOf(ctx: Context, hasSnapshot: boolean): 1 | 2 | 3 | 4 | 5 | 6 {
  *   2. applied before, not APPROVED now: the balance goes back (capped at the total).
  *   3. applied before, APPROVED now: KEEP, N = O.
  *   4. not applied before, APPROVED now: APPLY, capped at what is left; a problem when it cannot be.
- *   5. not applied before, SKIPPED now: CARRY, or SKIP_ONLY when already carried or the adjustment is not active.
+ *   5. not applied before, SKIPPED now: CARRY, or SKIP_ONLY when already carried, skipped before this correction,
+ *      or the adjustment is not active.
  *   6. not applied before, PENDING now: NONE.
  *
  * A plan with a problem is still returned, with N = 0. The returned plans keep this order.
@@ -165,6 +169,7 @@ export function planSettlement(input: {
       original: wasApplied ? (entry?.appliedAmount ?? Number(app.appliedAmount)) : 0,
       final: (paidEmployeeIds.has(app.employeeId) ? app.approvalStatus : 'SKIPPED') as Final,
       carried: app.carriedForwardToPayrollWeekStartDate !== null,
+      skippedBefore: snapshot ? entry?.approvalStatus === 'SKIPPED' : app.approvalStatus === 'SKIPPED',
     }
     const group = byAdjustment.get(app.payrollAdjustmentId)
     if (group) group.push(context)
@@ -240,7 +245,9 @@ export function planSettlement(input: {
             if (adj.recurrenceType === 'ONE_TIME') running.status = 'COMPLETED'
           }
         } else if (step === 5) {
-          plan.cell = context.carried || running.status !== 'ACTIVE' ? 'SKIP_ONLY' : 'CARRY'
+          // Carried at most once: by the field, or because it was already SKIPPED before this correction (whatever
+          // recorded that, such a row was carried then).
+          plan.cell = context.carried || context.skippedBefore || running.status !== 'ACTIVE' ? 'SKIP_ONLY' : 'CARRY'
         } else {
           plan.cell = 'NONE'
         }
