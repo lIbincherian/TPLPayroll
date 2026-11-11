@@ -2,8 +2,6 @@
 
 import {
   initiateCorrection,
-  reverseAdjustmentApplication,
-  approveSkippedAdjustment,
   approveAdjustmentInCorrection,
   skipAdjustmentInCorrection,
   recalculateAndCreateRevision,
@@ -110,32 +108,6 @@ export async function initiateCorrectionAction(
 ): Promise<ActionResult<InitiateCorrectionResult>> {
   try {
     const result = await initiateCorrection(payrollRunId)
-    return ok(result)
-  } catch (e) {
-    return handleError(e)
-  }
-}
-
-// ─── reverseAdjustmentAction ──────────────────────────────────────────────────
-
-export async function reverseAdjustmentAction(
-  applicationId: string,
-): Promise<ActionResult<{ applicationId: string; isReversed: true }>> {
-  try {
-    const result = await reverseAdjustmentApplication(applicationId)
-    return ok(result)
-  } catch (e) {
-    return handleError(e)
-  }
-}
-
-// ─── approveSkippedAdjustmentAction ───────────────────────────────────────────
-
-export async function approveSkippedAdjustmentAction(
-  applicationId: string,
-): Promise<ActionResult<{ applicationId: string; approvalStatus: 'APPROVED' }>> {
-  try {
-    const result = await approveSkippedAdjustment(applicationId)
     return ok(result)
   } catch (e) {
     return handleError(e)

@@ -471,62 +471,6 @@ export async function initiateCorrection(
   }
 }
 
-// ─── reverseAdjustmentApplication ─────────────────────────────────────────────
-
-export async function reverseAdjustmentApplication(
-  applicationId: string,
-): Promise<{ applicationId: string; isReversed: true }> {
-  const app = await prisma.payrollAdjustmentApplication.findUnique({
-    where: { id: applicationId },
-  })
-
-  if (!app) {
-    throw new CorrectionServiceError('APPLICATION_NOT_FOUND', `Application "${applicationId}" not found`)
-  }
-
-  if (app.isReversed) {
-    throw new CorrectionServiceError('ALREADY_REVERSED', 'Application is already reversed')
-  }
-
-  await prisma.payrollAdjustmentApplication.update({
-    where: { id: applicationId },
-    data: { isReversed: true },
-  })
-
-  return { applicationId, isReversed: true }
-}
-
-// ─── approveSkippedAdjustment ─────────────────────────────────────────────────
-
-export async function approveSkippedAdjustment(
-  applicationId: string,
-): Promise<{ applicationId: string; approvalStatus: 'APPROVED' }> {
-  const app = await prisma.payrollAdjustmentApplication.findUnique({
-    where: { id: applicationId },
-  })
-
-  if (!app) {
-    throw new CorrectionServiceError('APPLICATION_NOT_FOUND', `Application "${applicationId}" not found`)
-  }
-
-  if (app.approvalStatus !== 'SKIPPED') {
-    throw new CorrectionServiceError(
-      'CANNOT_APPROVE_NON_SKIPPED',
-      `Cannot approve application with status "${app.approvalStatus}"`,
-    )
-  }
-
-  await prisma.payrollAdjustmentApplication.update({
-    where: { id: applicationId },
-    data: {
-      approvalStatus: 'APPROVED',
-      appliedAt: new Date(),
-    },
-  })
-
-  return { applicationId, approvalStatus: 'APPROVED' }
-}
-
 // ─── approving and skipping an application during a correction ────────────────
 
 /**

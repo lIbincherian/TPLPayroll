@@ -84,8 +84,6 @@ vi.mock('@/features/payroll-generation/services/payroll.service', () => ({
 import prisma from '@/lib/prisma'
 import {
   initiateCorrection,
-  reverseAdjustmentApplication,
-  approveSkippedAdjustment,
   recalculateAndCreateRevision,
   approveRevision,
   getRevisionHistory,
@@ -229,66 +227,6 @@ describe('initiateCorrection', () => {
     await expect(initiateCorrection('run-uuid-1')).rejects.toThrow(CorrectionServiceError)
     await expect(initiateCorrection('run-uuid-1')).rejects.toMatchObject({
       code: 'CANNOT_CORRECT_UNAPPROVED_PAYROLL',
-    })
-  })
-})
-
-// ─── US-08.2: Modify adjustments in correction ──────────────────────────────
-
-describe('reverseAdjustmentApplication', () => {
-  it('marks an approved application as reversed', async () => {
-    const app = makeAdjApplication({ approvalStatus: 'APPROVED', isReversed: false })
-    vi.mocked(prisma.payrollAdjustmentApplication.findUnique).mockResolvedValue(app as never)
-    vi.mocked(prisma.payrollAdjustmentApplication.update).mockResolvedValue({
-      ...app,
-      isReversed: true,
-    } as never)
-
-    const result = await reverseAdjustmentApplication('app-uuid-1')
-
-    expect(result.isReversed).toBe(true)
-    expect(vi.mocked(prisma.payrollAdjustmentApplication.update)).toHaveBeenCalledWith({
-      where: { id: 'app-uuid-1' },
-      data: { isReversed: true },
-    })
-  })
-
-  it('throws ALREADY_REVERSED for already-reversed applications', async () => {
-    const app = makeAdjApplication({ isReversed: true })
-    vi.mocked(prisma.payrollAdjustmentApplication.findUnique).mockResolvedValue(app as never)
-
-    await expect(reverseAdjustmentApplication('app-uuid-1')).rejects.toMatchObject({
-      code: 'ALREADY_REVERSED',
-    })
-  })
-})
-
-describe('approveSkippedAdjustment', () => {
-  it('approves a previously skipped application', async () => {
-    const app = makeAdjApplication({ approvalStatus: 'SKIPPED', isReversed: false })
-    vi.mocked(prisma.payrollAdjustmentApplication.findUnique).mockResolvedValue(app as never)
-    vi.mocked(prisma.payrollAdjustmentApplication.update).mockResolvedValue({
-      ...app,
-      approvalStatus: 'APPROVED',
-    } as never)
-
-    const result = await approveSkippedAdjustment('app-uuid-1')
-
-    expect(result.approvalStatus).toBe('APPROVED')
-    expect(vi.mocked(prisma.payrollAdjustmentApplication.update)).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'app-uuid-1' },
-        data: expect.objectContaining({ approvalStatus: 'APPROVED' }),
-      }),
-    )
-  })
-
-  it('throws CANNOT_APPROVE_NON_SKIPPED for non-skipped applications', async () => {
-    const app = makeAdjApplication({ approvalStatus: 'APPROVED' })
-    vi.mocked(prisma.payrollAdjustmentApplication.findUnique).mockResolvedValue(app as never)
-
-    await expect(approveSkippedAdjustment('app-uuid-1')).rejects.toMatchObject({
-      code: 'CANNOT_APPROVE_NON_SKIPPED',
     })
   })
 })

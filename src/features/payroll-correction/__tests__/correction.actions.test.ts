@@ -6,8 +6,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@/features/payroll-correction/services/correction.service', () => ({
   initiateCorrection: vi.fn(),
-  reverseAdjustmentApplication: vi.fn(),
-  approveSkippedAdjustment: vi.fn(),
   recalculateAndCreateRevision: vi.fn(),
   approveRevision: vi.fn(),
   getRevisionHistory: vi.fn(),
