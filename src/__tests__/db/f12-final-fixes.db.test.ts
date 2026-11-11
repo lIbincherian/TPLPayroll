@@ -9,8 +9,8 @@
 // files running at once can have their protocol messages mixed up; see f12-fix-round.db.test.ts.)
 //
 // Skipped (and reported as skipped) when F12_TEST_DB_URL is not set, so the normal unit run needs no database. The URL
-// must point at localhost: these tests write rows, and refuse anything else. The schema must already be pushed
-// (`prisma db push`). Rows use their own employees (TPLF12FX*) and Thursdays from October 2025 to January 2026, and
+// must point at localhost: these tests write rows, and refuse anything else. The schema must already be migrated
+// (`prisma migrate deploy`). Rows use their own employees (TPLF12FX*) and Thursdays from October 2025 to January 2026, and
 // are removed afterwards. The Settings row is put back as it was.
 //
 // What is proved here, in SQL and with the balances read back:

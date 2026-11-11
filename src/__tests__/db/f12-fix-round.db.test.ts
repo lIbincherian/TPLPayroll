@@ -6,7 +6,7 @@
 //
 // Skipped (and reported as skipped) when F12_TEST_DB_URL is not set, so the normal unit run needs no
 // database. The URL must point at localhost: these tests write rows, and refuse anything else.
-// The schema must already be pushed (`prisma db push`). Rows use their own employees (TPLF12DB*) and
+// The schema must already be migrated (`prisma migrate deploy`). Rows use their own employees (TPLF12DB*) and
 // January to March 2026 weeks, and are removed afterwards.
 //
 // Limits of the local database: `prisma dev` serves every client through ONE Postgres session
