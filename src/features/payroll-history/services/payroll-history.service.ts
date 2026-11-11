@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import {
   PayrollHistoryRow,
@@ -11,7 +12,7 @@ export async function searchPayrollHistory(params: { employeeName?: string; empl
     return []
   }
 
-  const whereClause: any = {
+  const whereClause: Prisma.PayrollRunEmployeeWhereInput = {
     payrollRun: { status: { in: ['APPROVED', 'REVISED'] } },
     payrollRevision: { isCurrent: true }
   }

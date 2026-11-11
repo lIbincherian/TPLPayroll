@@ -652,9 +652,9 @@ describe('getDistinctDesignations', () => {
 
   it('returns sorted unique designation strings', async () => {
     vi.mocked(prisma.employee.findMany).mockResolvedValue([
-      { designation: 'Guard' } as any,
-      { designation: 'Manager' } as any,
-      { designation: 'Supervisor' } as any,
+      { designation: 'Guard' } as never,
+      { designation: 'Manager' } as never,
+      { designation: 'Supervisor' } as never,
     ])
     const result = await getDistinctDesignations()
     expect(result).toEqual(['Guard', 'Manager', 'Supervisor'])
@@ -675,8 +675,8 @@ describe('getDistinctSites', () => {
 
   it('returns sorted unique non-null site strings', async () => {
     vi.mocked(prisma.employee.findMany).mockResolvedValue([
-      { site: 'North Gate' } as any,
-      { site: 'South Gate' } as any,
+      { site: 'North Gate' } as never,
+      { site: 'South Gate' } as never,
     ])
     const result = await getDistinctSites()
     expect(result).toEqual(['North Gate', 'South Gate'])
@@ -692,8 +692,8 @@ describe('getDistinctSites', () => {
 
   it('returns empty array when all sites are null', async () => {
     vi.mocked(prisma.employee.findMany).mockResolvedValue([
-      { site: null } as any,
-      { site: null } as any,
+      { site: null } as never,
+      { site: null } as never,
     ])
     const result = await getDistinctSites()
     expect(result).toEqual([])

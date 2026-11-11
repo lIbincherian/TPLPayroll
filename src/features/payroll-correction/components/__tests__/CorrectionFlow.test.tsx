@@ -54,7 +54,7 @@ describe('CorrectionFlow — Attendance Re-upload Integration', () => {
     // Must be a class (not a plain object) because AttendanceDropzone calls `new XMLHttpRequest()`.
     class MockXHR {
       status = 200
-      upload = { onprogress: null as any }
+      upload = { onprogress: null as ((event: ProgressEvent) => void) | null }
       onload: (() => void) | null = null
       onerror: (() => void) | null = null
       open = vi.fn()
@@ -63,7 +63,7 @@ describe('CorrectionFlow — Attendance Re-upload Integration', () => {
         setTimeout(() => this.onload?.(), 0)
       })
     }
-    ;(globalThis as any).XMLHttpRequest = MockXHR
+    vi.stubGlobal('XMLHttpRequest', MockXHR)
   })
 
   // ── Test 1: Renders interactive dropzone when ATTENDANCE is selected ──────
