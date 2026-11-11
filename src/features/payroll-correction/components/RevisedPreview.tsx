@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, CheckCircle, CircleNotch } from '@phosphor-icons/react'
+import { toast } from 'sonner'
 import type { RevisedEmployeeRow } from '@/features/payroll-correction/types/correction.types'
 import type { PayrollSummaryTotals } from '@/features/payroll-generation/types/payroll.types'
 import {
@@ -92,7 +93,10 @@ export function RevisedPreview({
         // The run page is rendered fresh on every request, so no refresh is needed.
         router.push(`/payroll/run/${payrollRunId}`)
       } else if (res.code === 'REVISION_STALE') {
-        // The punches changed after this preview was calculated: go back and approve them again.
+        // Something the preview was calculated from changed (punches, an adjustment or its balance, the correction
+        // types): go back and recalculate. The server's message says which; the app's toaster outlives this page,
+        // so the user reads it on the page they land on.
+        toast.error(res.error, { duration: 10000 })
         router.push(backHref)
       } else {
         setError(res.error)
