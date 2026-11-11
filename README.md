@@ -85,10 +85,10 @@ Wait for the server to start successfully. It is configured to listen on port `6
 
 ### 4. Set Up the Database Schema
 
-Synchronize the database schema with the application without creating migrations files:
+Apply the committed migrations (`prisma/migrations/`) to the local database:
 
 ```bash
-npx prisma db push
+npx prisma migrate deploy
 ```
 
 *(Optional)* You can seed the database with basic test data using the E2E setup utility:
@@ -190,17 +190,21 @@ The development server automatically reloads when you modify files. Edit any fil
 
 ### Database Management
 
-To synchronize schema changes without full migrations:
+The schema is managed with Prisma Migrate. To change it, edit `prisma/schema.prisma`, then create the migration against your local database and commit the generated `prisma/migrations/<timestamp>_<name>/` directory with the schema change:
 
 ```bash
-npx prisma db push
+npx prisma migrate dev --name <describe_the_change>
 ```
 
-To reset the database:
+Against a local `prisma dev` database, `migrate dev` needs `SHADOW_DATABASE_URL` set to that instance's shadow database (see [docs/ci-and-migrations.md](docs/ci-and-migrations.md#changing-the-schema) for how to find it).
+
+To reset your local database to the committed migrations (local only, this drops all data):
 
 ```bash
-npx prisma db push --force-reset
+npx prisma migrate reset
 ```
+
+Never run `prisma db push`, `migrate reset` or `migrate dev` against the Supabase Production or Staging databases. Vercel applies migrations on deploy via `prisma migrate deploy`. See [docs/ci-and-migrations.md](docs/ci-and-migrations.md) for details.
 
 ## Production Deployment
 

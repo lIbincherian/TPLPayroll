@@ -1,0 +1,213 @@
+name: CI
+
+# Required checks for branch protection are the five job names below:
+#   lint-typecheck, unit, migrations, build, e2e
+# Do not rename them or add path filters to the triggers: a skipped required check blocks merges.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CI: "true"
+  NEXT_TELEMETRY_DISABLED: "1"
+  # CI never gets real credentials. No secrets are referenced anywhere in this file, and the
+  # integration variables are empty so the app falls back to its in-process mocks (mock Supabase
+  # storage, mock eTimeOffice API). Every job talks only to its own throwaway Postgres.
+  SUPABASE_URL: ""
+  SUPABASE_SERVICE_ROLE_KEY: ""
+  ETIMEOFFICE_CORPORATE_ID: ""
+  ETIMEOFFICE_USERNAME: ""
+  ETIMEOFFICE_PASSWORD: ""
+  ETIMEOFFICE_BASE_URL: ""
+
+jobs:
+  lint-typecheck:
+    name: lint-typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # tsc needs the generated Prisma client (it is git-ignored, not installed by npm ci).
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: ESLint
+        run: npm run lint
+      - name: Type check
+        run: npx tsc --noEmit
+
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Vitest
+        run: npm run test:run
+
+  migrations:
+    name: migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tpl_payroll_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tpl_payroll_ci
+      # Prisma 7 reads the shadow database from prisma.config.ts; `migrate diff --from-migrations`
+      # replays the migration history into it.
+      SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tpl_payroll_shadow
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The PR guard below diffs against the base branch.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Guard migration history (PRs only)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          range="origin/${BASE_REF}...HEAD"
+
+          # A changed schema.prisma must ship with a new migration directory.
+          if git diff --quiet "$range" -- prisma/schema.prisma; then
+            echo "prisma/schema.prisma is unchanged in this PR."
+          else
+            added="$(git diff --name-only --diff-filter=A "$range" -- 'prisma/migrations/*/migration.sql')"
+            if [ -z "$added" ]; then
+              echo "::error file=prisma/schema.prisma::schema.prisma changed but the PR adds no new directory under prisma/migrations/. Run 'npx prisma migrate dev --name <change>' locally and commit the generated migration."
+              exit 1
+            fi
+            echo "schema.prisma changed; new migration(s):"
+            echo "$added"
+          fi
+
+          # Migrations that may already be applied somewhere are immutable.
+          changed="$(git diff --name-only --diff-filter=MDR "$range" -- 'prisma/migrations/*/migration.sql')"
+          if [ -n "$changed" ]; then
+            echo "::error::Existing migrations must not be edited, renamed or deleted. Add a new migration instead:"
+            echo "$changed"
+            exit 1
+          fi
+
+      - name: Create shadow database
+        run: PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c 'CREATE DATABASE tpl_payroll_shadow'
+
+      - name: Apply migrations to an empty database
+        run: npx prisma migrate deploy
+
+      - name: Migration status
+        run: npx prisma migrate status
+
+      - name: Drift check - the migration history must produce schema.prisma
+        run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code
+
+      - name: Drift check - the migrated database must match schema.prisma
+        run: npx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # `next build` never connects (every data route is dynamic), so no database service is
+      # needed. These URLs only have to parse.
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+      DIRECT_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # `build` is prisma generate + next build. It deliberately does not migrate.
+      - name: Build
+        run: npm run build
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tpl_payroll_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tpl_payroll_e2e
+      DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tpl_payroll_e2e
+      # Dummy value for the in-app cron route; not a real secret.
+      CRON_SECRET: local-cron-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+      # Playwright starts `npm run start`, which serves the production build.
+      - name: Build
+        run: npm run build
+      # setup-db.js truncates and seeds the service database, then Playwright runs.
+      - name: Run e2e tests
+        run: npm run test:e2e
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7

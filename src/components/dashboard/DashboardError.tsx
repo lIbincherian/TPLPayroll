@@ -12,6 +12,7 @@ export function DashboardError() {
         <p className="text-lg font-medium text-zinc-700">Something went wrong</p>
         <p className="text-sm text-zinc-400">We couldn&apos;t load your dashboard data</p>
       </div>
+      {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- deliberate hard reload: this is the error fallback for "/" itself, so a full navigation re-runs the failed server fetch (a <Link> would soft-navigate to the same URL) */}
       <a
         href="/"
         className={[

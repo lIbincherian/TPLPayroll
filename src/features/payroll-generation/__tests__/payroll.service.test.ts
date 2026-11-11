@@ -119,8 +119,15 @@ function makeRecord(overrides: Partial<AttendanceRecord> = {}): AttendanceRecord
     attendanceDate: new Date('2025-03-06'),
     regularHours: 8 as unknown as AttendanceRecord['regularHours'],
     overtimeHours: 0 as unknown as AttendanceRecord['overtimeHours'],
+    beforeNoonIn: null,
+    beforeNoonOut: null,
+    afternoonIn: null,
+    afternoonOut: null,
+    overtimeIn: null,
+    overtimeOut: null,
     sourceSheetName: 'Sheet1',
     sourceEmployeeBlockIndex: 0,
+    verificationDecision: null,
     createdAt: new Date('2025-03-14'),
     ...overrides,
   }
@@ -854,7 +861,8 @@ describe('approvePayroll', () => {
   it('stores correct totals on the run', async () => {
     vi.mocked(prisma.payrollRun.findFirst).mockResolvedValue(null)
 
-    let capturedRunData: Record<string, unknown> | null = null
+    // Assigned inside the mock below; the cast stops TS narrowing the initial null to `never`.
+    let capturedRunData = null as Record<string, unknown> | null
     const createdRun = makePayrollRun({
       totalRegularPay: 40000 as unknown as PayrollRun['totalRegularPay'],
       totalOvertimePay: 5000 as unknown as PayrollRun['totalOvertimePay'],

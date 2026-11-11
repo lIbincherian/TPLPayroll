@@ -32,7 +32,7 @@ function configureFonts() {
     },
   }
   
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- pdfmake is a server-external CommonJS package (next.config serverExternalPackages); keep the runtime require
   const pdfmake = require('pdfmake')
   pdfmake.setFonts(fonts)
   fontsConfigured = true
@@ -40,7 +40,7 @@ function configureFonts() {
 
 async function toPdfBuffer(docDef: TDocumentDefinitions): Promise<Buffer> {
   configureFonts()
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- pdfmake is a server-external CommonJS package (next.config serverExternalPackages); keep the runtime require
   const pdfmake = require('pdfmake')
   const doc = pdfmake.createPdf(docDef)
   return doc.getBuffer()
@@ -373,7 +373,7 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
     'Net Pay',
   ]
 
-  const aoa: any[][] = [
+  const aoa: (string | number)[][] = [
     ['PAYROLL SUMMARY'],
     [`Week: ${weekStartStr} – ${weekEndStr}`],
     [`Generated: ${generatedAtStr}`],

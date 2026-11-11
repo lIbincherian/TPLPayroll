@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import type { Employee, PayrollAdjustment, PayrollAdjustmentApplication } from '@prisma/client'
 
 // ─── Mock Prisma ──────────────────────────────────────────────────────────────
@@ -38,7 +38,29 @@ vi.mock('@/lib/prisma', () => ({
 vi.mock('@/features/payroll-adjustments/services/adjustment-lock.service', () => ({ lockAdjustmentRows: vi.fn() }))
 
 import _prisma from '@/lib/prisma'
-const prisma = _prisma as any
+
+// Loose view of the mocked client declared in vi.mock above: every delegate method is a
+// vitest mock, and these tests feed them minimal fixtures that don't satisfy Prisma's
+// generated return types.
+type LooseMock = Mock<(...args: unknown[]) => unknown>
+type PrismaMock = {
+  employee: Record<'findUnique', LooseMock>
+  payrollAdjustment: Record<'create' | 'findUnique' | 'findMany' | 'count' | 'update', LooseMock>
+  payrollAdjustmentApplication: Record<
+    | 'create'
+    | 'findUnique'
+    | 'findFirst'
+    | 'findMany'
+    | 'update'
+    | 'updateMany'
+    | 'deleteMany'
+    | 'count'
+    | 'aggregate',
+    LooseMock
+  >
+  $transaction: LooseMock
+}
+const prisma = _prisma as unknown as PrismaMock
 import {
   createAdjustment,
   getAdjustmentList,
@@ -154,11 +176,11 @@ describe('createAdjustment — one-time', () => {
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(makeEmployee())
     vi.mocked(prisma.payrollAdjustment.create).mockResolvedValue(adj as never)
     vi.mocked(prisma.payrollAdjustmentApplication.create).mockResolvedValue(app as never)
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises: any) => {
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises: unknown) => {
       if (Array.isArray(promises)) {
         return Promise.all(promises)
       }
-      return promises as any
+      return promises as never
     })
 
     // WHEN
@@ -181,11 +203,11 @@ describe('createAdjustment — one-time', () => {
       capturedAppCreate = args
       return Promise.resolve(makeApplication() as never)
     })
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises: any) => {
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises: unknown) => {
       if (Array.isArray(promises)) {
         return Promise.all(promises)
       }
-      return promises as any
+      return promises as never
     })
 
     await createAdjustment(validOneTimeInput)
@@ -220,11 +242,11 @@ describe('createAdjustment — one-time', () => {
       return Promise.resolve(adj as never)
     })
     vi.mocked(prisma.payrollAdjustmentApplication.create).mockResolvedValue(makeApplication() as never)
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises: any) => {
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises: unknown) => {
       if (Array.isArray(promises)) {
         return Promise.all(promises)
       }
-      return promises as any
+      return promises as never
     })
 
     await createAdjustment({ ...validOneTimeInput, amount: 1250.75 })
@@ -269,11 +291,11 @@ describe('createAdjustment — recurring', () => {
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(makeEmployee())
     vi.mocked(prisma.payrollAdjustment.create).mockResolvedValue(adj as never)
     vi.mocked(prisma.payrollAdjustmentApplication.create).mockResolvedValue(makeApplication() as never)
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises: any) => {
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises: unknown) => {
       if (Array.isArray(promises)) {
         return Promise.all(promises)
       }
-      return promises as any
+      return promises as never
     })
 
     const result = await createAdjustment(input)
@@ -304,11 +326,11 @@ describe('createAdjustment — recurring', () => {
       return Promise.resolve(adj as never)
     })
     vi.mocked(prisma.payrollAdjustmentApplication.create).mockResolvedValue(makeApplication() as never)
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises: any) => {
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises: unknown) => {
       if (Array.isArray(promises)) {
         return Promise.all(promises)
       }
-      return promises as any
+      return promises as never
     })
 
     const result = await createAdjustment(input)
@@ -343,11 +365,11 @@ describe('createAdjustment — recurring', () => {
       return Promise.resolve(adj as never)
     })
     vi.mocked(prisma.payrollAdjustmentApplication.create).mockResolvedValue(makeApplication() as never)
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises: any) => {
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises: unknown) => {
       if (Array.isArray(promises)) {
         return Promise.all(promises)
       }
-      return promises as any
+      return promises as never
     })
 
     const result = await createAdjustment(input)
@@ -1107,7 +1129,7 @@ describe('BF-01 — createAdjustment FIXED_WEEKS splits amount evenly', () => {
       return Promise.resolve(adj as never)
     })
     vi.mocked(prisma.payrollAdjustmentApplication.create).mockResolvedValue(makeApplication() as never)
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises: any) => {
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises: unknown) => {
       if (Array.isArray(promises)) return Promise.all(promises)
       return promises as never
     })
@@ -1145,7 +1167,7 @@ describe('BF-01 — createAdjustment FIXED_WEEKS splits amount evenly', () => {
       return Promise.resolve(adj as never)
     })
     vi.mocked(prisma.payrollAdjustmentApplication.create).mockResolvedValue(makeApplication() as never)
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises: any) => {
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises: unknown) => {
       if (Array.isArray(promises)) return Promise.all(promises)
       return promises as never
     })
@@ -1181,7 +1203,7 @@ describe('BF-01 — createAdjustment FIXED_WEEKS splits amount evenly', () => {
       capturedAppCreate = args
       return Promise.resolve(makeApplication() as never)
     })
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises: any) => {
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises: unknown) => {
       if (Array.isArray(promises)) return Promise.all(promises)
       return promises as never
     })

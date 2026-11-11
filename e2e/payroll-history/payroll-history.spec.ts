@@ -13,7 +13,7 @@ test.beforeAll(async () => {
     await cleanupTestData()
     const seed = await seedApprovedPayrollData({ weekStartISO: WEEK })
     payrollRunId = seed.payrollRunId
-  } catch (err: any) {
+  } catch (err) {
     throw err
   }
 })
