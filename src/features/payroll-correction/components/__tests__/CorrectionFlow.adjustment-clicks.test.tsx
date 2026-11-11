@@ -65,7 +65,9 @@ beforeEach(() => {
   vi.mocked(skipAdjustmentInCorrectionAction).mockResolvedValue({ ok: true, data: { applicationId: 'app-a', approvalStatus: 'SKIPPED' } })
 })
 
-describe('CorrectionFlow: a refused approve or skip is shown, and the row keeps its status', () => {
+// The waits below allow 5 s for a React transition to settle, which is the default test timeout too: on a busy
+// machine (a full parallel run on a small CI runner) the test timed out before its own wait could fail or pass.
+describe('CorrectionFlow: a refused approve or skip is shown, and the row keeps its status', { timeout: 20000 }, () => {
   it('a failed approve shows the server\'s message and the row stays Pending, with both buttons still there', async () => {
     vi.mocked(approveAdjustmentInCorrectionAction).mockResolvedValue({ ok: false, error: NOTHING_LEFT, code: 'ADJUSTMENT_NOT_APPLICABLE' })
     renderFlow()
