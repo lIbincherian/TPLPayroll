@@ -91,11 +91,7 @@ Apply the committed migrations (`prisma/migrations/`) to the local database:
 npx prisma migrate deploy
 ```
 
-*(Optional)* You can seed the database with basic test data using the E2E setup utility:
-
-```bash
-node e2e/utils/setup-db.js
-```
+The e2e suite needs no separate seeding step: its global setup applies the migrations itself and loads its own data (see [e2e/README.md](e2e/README.md)).
 
 ### 5. Run the Development Server
 
@@ -182,7 +178,7 @@ There are two recommended workflows for running E2E tests, depending on your nee
    npm run test:e2e
    ```
 
-Ensure your PostgreSQL database is running (`npx prisma dev`) before running E2E tests. The test suite will automatically set up a test database and seed it.
+Ensure your PostgreSQL database is running (`npx prisma dev`) before running E2E tests. The suite's global setup applies the committed migrations (`prisma migrate deploy`) and then replaces the database's data with its own base, so use a throwaway local database: it refuses any host that is not localhost. A local database that was created earlier with `prisma db push` has no migration history and is refused; reset it with `npx prisma migrate reset --force`. See [e2e/README.md](e2e/README.md).
 
 ### Hot Reload
 
@@ -207,6 +203,8 @@ npx prisma migrate reset
 Never run `prisma db push`, `migrate reset` or `migrate dev` against the Supabase Production or Staging databases. Vercel applies migrations on deploy via `prisma migrate deploy`. See [docs/ci-and-migrations.md](docs/ci-and-migrations.md) for details.
 
 ## Production Deployment
+
+Vercel builds run `vercel-build`, which applies the pending migrations to the environment's own database (Production builds migrate `tpl-payroll`, Preview builds migrate `tpl-payroll-stage`) before `next build`. Nothing else is run by hand: schema changes and their data steps ship as migrations, never as `prisma db push` or loose scripts. Attendance sync (F12) is released this way, as one migration, with Staging first through a Preview build. See [docs/ci-and-migrations.md](docs/ci-and-migrations.md#releasing-f12-etimeoffice-attendance) for the steps, what the migration does to existing data, and what to do if it stops.
 
 ### Build for Production
 

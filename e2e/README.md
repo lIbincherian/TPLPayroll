@@ -17,8 +17,13 @@ npm run test:e2e               # layered suite (database reset, base loaded, spe
 npm run test:e2e:prod-data     # real-data suite (e2e/prod-data), read-only, needs the snapshot
 ```
 
-Needs a local Postgres in `DIRECT_DATABASE_URL` (for example `npx prisma dev`). **Its data is replaced** on every run;
-setup refuses any host that is not localhost. Useful variables: `E2E_PORT` (app port, default 3000; build with
+Needs a local Postgres in `DIRECT_DATABASE_URL` (for example `npx prisma dev`). Setup brings its schema to the committed
+migrations with `prisma migrate deploy` (the command CI and Vercel use; nothing happens when none is pending), and **its
+data is replaced** on every run; setup refuses any host that is not localhost, before it changes anything. A database made
+earlier with `prisma db push` has no migration history and is refused: reset it with `npx prisma migrate reset --force`
+(local only) or use a fresh one. CI starts from an empty migrated database, so it has no snapshot and an empty base.
+
+Useful variables: `E2E_PORT` (app port, default 3000; build with
 `NEXT_PUBLIC_APP_URL=http://localhost:<port>`), `E2E_REUSE_SERVER=0|1`, `E2E_REAL_DATA=0` (empty base even when the
 snapshot exists). Only the `list` reporter is used: `playwright-report/` is tracked in git, and a real-data run must
 not write names or pay there. Failure screenshots go to `test-results/` (git-ignored).

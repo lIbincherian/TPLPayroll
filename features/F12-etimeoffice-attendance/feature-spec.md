@@ -64,7 +64,7 @@ Payroll                 Existing generation flow, adjustments, slips
   - Discarded edits stay in the audit log.
 - An approved week must be reopened before it can be pulled. A week with approved payroll can't be pulled, and changes go through **Correct**.
 - The scheduled sync replaces an earlier pull that has no edits or decisions. If the week has edits or decisions, the sync leaves it alone and shows a notice that newer data may be available.
-- The payroll week start is locked to Thursday. The F10 Settings page shows it read-only and can't change it. If the stored value isn't Thursday, the release changes it to Thursday.
+- The payroll week start is locked to Thursday. The F10 Settings page shows it read-only and can't change it. If the stored value isn't Thursday, the first read of the settings after the release changes it to Thursday (at runtime, not in the migration).
 - A sync or pull fails, and changes nothing, on any of these:
   - a timeout or network error
   - a non-200 status
@@ -204,6 +204,18 @@ These need answers before or during the build:
 
 - Full days that previously had 10:00 and 10:30 punches count 30 minutes more if the API doesn't return them. For example, 07:40–13:04 and 13:56–17:47 is 9.25 hours, up from 8.75, so overtime goes from 0.75 to 1.25.
 - Hours may not match eTimeOffice's own `Work+OT` report. The app's figure is the one used for pay.
+
+## Release
+
+F12 ships as one Prisma migration, `20261111072041_f12_etimeoffice_attendance`, which the deploy applies (`vercel-build` runs `prisma migrate deploy`). Staging goes first: a Preview build migrates `tpl-payroll-stage`, then the merge to `main` migrates `tpl-payroll`. There is no `prisma db push` and no script to run by hand. In one transaction the migration:
+
+- adds the sync columns to `AttendanceUpload`; existing rows become `source = 'EXCEL'` and keep their status;
+- lets `fileName` and `fileType` be empty, adds `PayrollRun.approvedWeekStart`, and adds the punch, decision, code-exception and correction-session tables;
+- stops, changing nothing, if any week has more than one approved payroll run (it lists the weeks);
+- fills `approvedWeekStart` and `activeWeekStart`, keeping one active attendance row per week, then creates the two unique indexes;
+- drops the old upload-session table.
+
+Before the release: run any Excel-era week that still needs payroll (open item 6), and set the eTimeOffice variables and `CRON_SECRET` in Vercel Production and Preview. The steps, the counts to expect, and the recovery if the migration stops are in `docs/ci-and-migrations.md` ("Releasing F12").
 
 ---
 
