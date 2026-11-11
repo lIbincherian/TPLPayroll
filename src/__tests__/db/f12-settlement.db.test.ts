@@ -638,7 +638,7 @@ describe.skipIf(!enabled)('F12 settlement redesign (real database)', { timeout: 
   // ─── The cases of the plan, section 7.4 ────────────────────────────────────
 
   describe('approving or skipping in a correction after a draft', () => {
-    it('approve: the draft row is gone and the pointer cleared; the old draft is REVISION_NOT_FOUND; after recalculating it approves and the balance moves once', async () => {
+    it('approve: the draft row is gone and the pointer cleared; the old draft is REVISION_STALE (a missing draft while the correction is open); after recalculating it approves and the balance moves once', async () => {
       const run = await payrollWeek(W.clickDraft, { adjustment: { kind: 'TOTAL_BALANCE', amount: 500, totalBalance: 2000, weeklyApprove: false } })
       await openCorrection(run.payrollRunId)
       const first = await draft(run.payrollRunId)
@@ -649,7 +649,7 @@ describe.skipIf(!enabled)('F12 settlement redesign (real database)', { timeout: 
       expect((await sessionOf(run.payrollRunId)).draftRevisionId).toBeNull()
       expect(await draftOf(run.payrollRunId)).toBeUndefined()
       expect(await prisma.payrollRunEmployee.count({ where: { payrollRevisionId: first.revisionId } })).toBe(0)
-      await expect(correction.approveRevision(first.revisionId)).rejects.toMatchObject({ code: 'REVISION_NOT_FOUND' })
+      await expect(correction.approveRevision(first.revisionId)).rejects.toMatchObject({ code: 'REVISION_STALE' })
       expect(await adj(run.adjustmentId)).toMatchObject({ remainingBalance: 2000 })
 
       const second = await draft(run.payrollRunId)
@@ -670,7 +670,7 @@ describe.skipIf(!enabled)('F12 settlement redesign (real database)', { timeout: 
       expect((await sessionOf(run.payrollRunId)).draftRevisionId).toBeNull()
       expect(await draftOf(run.payrollRunId)).toBeUndefined()
       expect(await adj(run.adjustmentId)).toMatchObject({ remainingBalance: 1500, skippedCarryForwardCount: 0 })
-      await expect(correction.approveRevision(first.revisionId)).rejects.toMatchObject({ code: 'REVISION_NOT_FOUND' })
+      await expect(correction.approveRevision(first.revisionId)).rejects.toMatchObject({ code: 'REVISION_STALE' })
     })
   })
 

@@ -290,6 +290,7 @@ test.describe('An abandoned correction moves nothing', () => {
 // ─── A draft the user's own click deleted, and a draft that went stale ───────
 
 const STALE_ADJUSTMENTS = 'This preview is out of date: an adjustment or its balance changed after it was calculated. Go back and recalculate.'
+const STALE_DISCARDED = 'This preview is out of date: it was discarded after it was calculated because the correction changed. Go back and recalculate.'
 const CORRECTION_OPEN = 'A payroll correction is open for this week. Finish or cancel it first.'
 
 test.describe('The preview after the adjustments changed under it', () => {
@@ -316,11 +317,13 @@ test.describe('The preview after the adjustments changed under it', () => {
     expect((await getRevisions(payrollRunId)).filter((r) => r.status === 'DRAFT')).toHaveLength(0)
     expect((await getCorrectionSessions(payrollRunId))[0].draftRevisionId).toBeNull()
 
-    // The first tab still shows the old preview. Approving it is refused, the message is on the page, nothing is written.
+    // The first tab still shows the old preview. Approving it is refused as stale (the draft is gone while the correction
+    // is open): the message is a toast, the user lands on the step that recalculates, nothing is written.
     await page.getByRole('button', { name: 'Approve Revision' }).click()
     await page.getByRole('button', { name: 'Confirm Revision' }).click()
-    await expect(page.getByText(/not found/i).first()).toBeVisible({ timeout: 15000 })
-    await expect(page).toHaveURL(new RegExp(`/payroll/run/${payrollRunId}/correct/preview`))
+    await expect(page).toHaveURL(new RegExp(`/payroll/run/${payrollRunId}/correct$`), { timeout: 20000 })
+    await expect(page.locator('[data-sonner-toast]').filter({ hasText: STALE_DISCARDED }).first()).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText(/not found/i)).toHaveCount(0)
     expect(await getPayrollRunStatus(payrollRunId)).toBe('APPROVED')
     expect(await getRevisions(payrollRunId)).toMatchObject([{ revisionNumber: 1, status: 'APPROVED', isCurrent: true }])
     expect(await adjustment(anitaAdjustmentId)).toEqual({ status: 'ACTIVE', remaining: 1500, carried: 0 })

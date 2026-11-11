@@ -79,12 +79,16 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
     startTransition(async () => {
       // Not the weekly review's approve: during a correction this only changes the status; the balance
       // is settled once, when the revision is approved. A refusal (nothing left to deduct, the adjustment is
-      // completed) is shown, and the row keeps the status it had.
-      const res = await approveAdjustmentInCorrectionAction(applicationId)
-      if (res.ok) {
-        setAppStatusOverrides((prev) => ({ ...prev, [applicationId]: 'APPROVED' }))
-      } else {
-        setError(res.error)
+      // completed) or a call that could not be made is shown, and the row keeps the status it had.
+      try {
+        const res = await approveAdjustmentInCorrectionAction(applicationId)
+        if (res.ok) {
+          setAppStatusOverrides((prev) => ({ ...prev, [applicationId]: 'APPROVED' }))
+        } else {
+          setError(res.error)
+        }
+      } catch {
+        setError("Couldn't update this adjustment. Try again.")
       }
     })
   }
@@ -92,11 +96,15 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
   function handleSkipAdjustment(applicationId: string) {
     setError(null)
     startTransition(async () => {
-      const res = await skipAdjustmentInCorrectionAction(applicationId)
-      if (res.ok) {
-        setAppStatusOverrides((prev) => ({ ...prev, [applicationId]: 'SKIPPED' }))
-      } else {
-        setError(res.error)
+      try {
+        const res = await skipAdjustmentInCorrectionAction(applicationId)
+        if (res.ok) {
+          setAppStatusOverrides((prev) => ({ ...prev, [applicationId]: 'SKIPPED' }))
+        } else {
+          setError(res.error)
+        }
+      } catch {
+        setError("Couldn't update this adjustment. Try again.")
       }
     })
   }

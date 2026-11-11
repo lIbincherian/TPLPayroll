@@ -419,15 +419,40 @@ export async function initiateCorrection(
   })
 
   // Load adjustment applications for this week — includes both previously-linked
-  // applications AND new ones created after the payroll was approved (payrollRunId=null)
+  // applications AND new ones created after the payroll was approved (payrollRunId=null).
+  //
+  // While a correction is open, everything that is part of it is listed, whatever its status is now: the
+  // applications the session's snapshot recorded (linked or not) and those created during the correction
+  // (not on a cancelled adjustment). An unlinked application stays unlinked when it is approved or skipped
+  // here, so listing unlinked ones only while PENDING would make the row vanish the moment it is clicked, and
+  // it could neither be seen nor put back short of cancelling the correction.
+  const openSession = await prisma.payrollCorrectionSession.findFirst({
+    where: { payrollRunId: run.id, status: 'IN_PROGRESS' },
+    orderBy: { createdAt: 'desc' },
+    select: { adjustmentSnapshotJson: true },
+  })
+  const snapshotIds = openSession ? parseAdjustmentSnapshot(openSession.adjustmentSnapshotJson).map((entry) => entry.applicationId) : []
   const adjustmentApps = await prisma.payrollAdjustmentApplication.findMany({
-    where: {
-      payrollWeekStartDate: run.payrollWeekStartDate,
-      OR: [
-        { payrollRunId: run.id },
-        { payrollRunId: null, approvalStatus: 'PENDING' },
-      ],
-    },
+    where: openSession
+      ? {
+          AND: [
+            settlementScope(run),
+            {
+              OR: [
+                { payrollRunId: run.id },
+                { id: { in: snapshotIds } },
+                { payrollAdjustment: { status: { not: 'CANCELLED' } } },
+              ],
+            },
+          ],
+        }
+      : {
+          payrollWeekStartDate: run.payrollWeekStartDate,
+          OR: [
+            { payrollRunId: run.id },
+            { payrollRunId: null, approvalStatus: 'PENDING' },
+          ],
+        },
     include: {
       payrollAdjustment: { select: { adjustmentType: true, amount: true, reason: true } },
       employee: { select: { employeeName: true, employeeId: true } },
@@ -947,6 +972,7 @@ const STALE_MESSAGES = {
   PUNCHES: 'This preview is out of date: the punches changed after it was calculated. Approve the punches again.',
   ADJUSTMENTS: 'This preview is out of date: an adjustment or its balance changed after it was calculated. Go back and recalculate.',
   TYPES: 'This preview is out of date: the correction types changed after it was calculated. Go back and recalculate.',
+  DISCARDED: 'This preview is out of date: it was discarded after it was calculated because the correction changed. Go back and recalculate.',
 } as const
 
 function staleRevisionError(reason: keyof typeof STALE_MESSAGES = 'PUNCHES'): CorrectionServiceError {
@@ -976,6 +1002,10 @@ export async function approveRevision(
   })
 
   if (!revision) {
+    // A click in the correction (or saving other types) deletes the draft a stale tab is still showing. While a
+    // correction is open that is a stale preview, not a missing revision: the user recalculates.
+    const open = await prisma.payrollCorrectionSession.findFirst({ where: { status: 'IN_PROGRESS' }, select: { id: true } })
+    if (open) throw staleRevisionError('DISCARDED')
     throw new CorrectionServiceError('REVISION_NOT_FOUND', `Revision "${revisionId}" not found`)
   }
   if (revision.status !== 'DRAFT') {

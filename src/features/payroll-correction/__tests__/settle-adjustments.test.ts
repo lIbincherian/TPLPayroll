@@ -1111,7 +1111,7 @@ describe('approving or skipping in a correction invalidates the draft, in the sa
   it.each([
     ['approve', approveAdjustmentInCorrection],
     ['skip', skipAdjustmentInCorrection],
-  ])('%s after a draft: the draft revision and its employee rows are deleted, the session pointer is cleared, and the old draft id can no longer be approved', async (_name, click) => {
+  ])('%s after a draft: the draft revision and its employee rows are deleted, the session pointer is cleared, and the old draft id is refused as stale', async (_name, click) => {
     seedAdjustment(totalBalance(2000), [pending()])
     await openWithDraft()
     expect(pointer()).toBe(DRAFT)
@@ -1123,7 +1123,8 @@ describe('approving or skipping in a correction invalidates the draft, in the sa
     expect(draftIds()).toEqual([])
     expect(db.rows('payrollRunEmployee').every((r) => r.payrollRevisionId === REV1)).toBe(true)
     const before = db.snapshot()
-    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_NOT_FOUND' })
+    // A missing draft while the correction is open is a stale preview (the user recalculates), not a missing revision.
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE' })
     expect(db.snapshot()).toEqual(before)
     // the run, the current revision and the session are as they were
     expect(db.rows('payrollRun')[0]).toMatchObject({ status: 'APPROVED', currentRevisionNumber: 1 })
