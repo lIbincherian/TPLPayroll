@@ -149,7 +149,9 @@ export class AdjustmentServiceError extends Error {
       | 'APPLICATION_NOT_FOUND'
       | 'INVALID_APPROVAL_STATUS'
       | 'EDIT_NOT_ALLOWED'
-      | 'CANCEL_NOT_ALLOWED',
+      | 'CANCEL_NOT_ALLOWED'
+      | 'CORRECTION_IN_PROGRESS'
+      | 'ADJUSTMENT_NOT_APPLICABLE',
     message: string,
   ) {
     super(message)

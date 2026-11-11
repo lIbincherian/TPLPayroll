@@ -18,12 +18,17 @@ vi.mock('@/lib/prisma', () => ({
       create: vi.fn(),
       findUnique: vi.fn(),
       findFirst: vi.fn(),
-      findMany: vi.fn(),
+      // Also what the guard against a correction reads (the weeks of an adjustment's applications): none by default.
+      findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn(),
       updateMany: vi.fn(),
       deleteMany: vi.fn(),
       count: vi.fn(),
       aggregate: vi.fn(),
+    },
+    // The guard against a correction: no correction is open unless a test says so.
+    payrollCorrectionSession: {
+      findFirst: vi.fn().mockResolvedValue(null),
     },
     $transaction: vi.fn(),
   },

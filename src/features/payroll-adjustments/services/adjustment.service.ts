@@ -493,6 +493,41 @@ export async function removeCarryForward(
   })
 }
 
+// ─── Guards: a week under correction is the correction's ─────────────────────
+
+const CORRECTION_OPEN_MESSAGE = 'A payroll correction is open for this week. Finish or cancel it first.'
+
+/**
+ * While a correction is open for a week its applications are the correction's: it reset them to PENDING and
+ * settles every balance once, when its revision is approved, from the status each ends with. A weekly approve,
+ * skip, edit or cancel in the meantime would move the same balance for a row the correction settles again.
+ * Throws CORRECTION_IN_PROGRESS when an IN_PROGRESS correction session exists for a run of this week.
+ */
+async function assertWeekNotUnderCorrection(weekStart: Date): Promise<void> {
+  const open = await prisma.payrollCorrectionSession.findFirst({
+    where: { status: 'IN_PROGRESS', payrollRun: { payrollWeekStartDate: weekStart } },
+    select: { id: true },
+  })
+  if (open) throw new AdjustmentServiceError('CORRECTION_IN_PROGRESS', CORRECTION_OPEN_MESSAGE)
+}
+
+/** The same, for any week one of the adjustment's applications is in. */
+async function assertAdjustmentNotUnderCorrection(adjustmentId: string): Promise<void> {
+  const applications = await prisma.payrollAdjustmentApplication.findMany({
+    where: { payrollAdjustmentId: adjustmentId },
+    select: { payrollWeekStartDate: true },
+  })
+  if (applications.length === 0) return
+  const open = await prisma.payrollCorrectionSession.findFirst({
+    where: {
+      status: 'IN_PROGRESS',
+      payrollRun: { payrollWeekStartDate: { in: applications.map((application) => application.payrollWeekStartDate) } },
+    },
+    select: { id: true },
+  })
+  if (open) throw new AdjustmentServiceError('CORRECTION_IN_PROGRESS', CORRECTION_OPEN_MESSAGE)
+}
+
 // ─── approveAdjustmentApplication ────────────────────────────────────────────
 
 export async function approveAdjustmentApplication(applicationId: string) {
@@ -510,6 +545,7 @@ export async function approveAdjustmentApplication(applicationId: string) {
       `Application is already ${app.approvalStatus.toLowerCase()}`,
     )
   }
+  await assertWeekNotUnderCorrection(app.payrollWeekStartDate)
 
   const adj = app.payrollAdjustment
   // Cap the applied amount at whatever balance remains
@@ -563,6 +599,8 @@ export async function skipAdjustmentApplication(applicationId: string, db: Adjus
       `Application is already ${app.approvalStatus.toLowerCase()}`,
     )
   }
+  // approvePayroll passes its transaction, for a week that has no run yet and so cannot have a correction.
+  if (db === prisma) await assertWeekNotUnderCorrection(app.payrollWeekStartDate)
 
   const updated = await carryApplicationForward(db, app, app.payrollAdjustment, {
     undoApproval: app.approvalStatus === 'APPROVED',
@@ -644,6 +682,7 @@ export async function updateAdjustment(id: string, input: UpdateAdjustmentInput)
   if (!adj) {
     throw new AdjustmentServiceError('ADJUSTMENT_NOT_FOUND', `Adjustment "${id}" not found`)
   }
+  await assertAdjustmentNotUnderCorrection(id)
 
   const hasApproved = adj.adjustmentApplications.some((a) => a.approvalStatus === 'APPROVED')
   if (hasApproved) {
@@ -731,6 +770,7 @@ export async function cancelAdjustment(id: string) {
   if (!adj) {
     throw new AdjustmentServiceError('ADJUSTMENT_NOT_FOUND', `Adjustment "${id}" not found`)
   }
+  await assertAdjustmentNotUnderCorrection(id)
 
   if (adj.status === 'COMPLETED' || adj.status === 'CANCELLED') {
     throw new AdjustmentServiceError(
