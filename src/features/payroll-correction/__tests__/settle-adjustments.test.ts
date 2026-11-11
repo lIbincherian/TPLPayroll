@@ -1073,3 +1073,807 @@ describe('abandonCorrection puts statuses back and moves no balance', () => {
     expect(auditEntry).not.toHaveBeenCalled() // no punch copy, so no audit rows either
   })
 })
+
+// ═════════════════════════════════════════════════════════════════════════════
+// The settlement redesign: the draft, the plan, the locks and the abandon, end to end against state
+// ═════════════════════════════════════════════════════════════════════════════
+
+const STALE_ADJUSTMENTS = 'This preview is out of date: an adjustment or its balance changed after it was calculated. Go back and recalculate.'
+
+const draftRow = (employeeId = 'emp-1') => db.rows('payrollRunEmployee').find((r) => r.payrollRevisionId === DRAFT && r.employeeId === employeeId)!
+const draftIds = () => db.rows('payrollRevision').filter((r) => r.status === 'DRAFT').map((r) => r.id)
+const pointer = () => db.rows('payrollCorrectionSession').at(-1)!.draftRevisionId
+/** The draft's employee rows only (the revision is already there): `sums` are what each row deducts and adds. */
+function seedDraftRows(paid: string[] = PAID, sums: Sums = new Map()) {
+  db.seed(
+    'payrollRunEmployee',
+    paid.map((employeeId) => ({
+      payrollRunId: RUN,
+      payrollRevisionId: DRAFT,
+      employeeId,
+      netPayable: 3000,
+      additions: sums.get(employeeId)?.additions ?? 0,
+      deductions: sums.get(employeeId)?.deductions ?? 0,
+    })),
+  )
+}
+/** Opens the correction and leaves a draft behind: what the user has once they have recalculated. */
+async function openWithDraft(approve: string[] = [], skip: string[] = []) {
+  await beginCorrection(RUN)
+  for (const id of skip) await skipAdjustmentInCorrection(id)
+  for (const id of approve) await approveAdjustmentInCorrection(id)
+  await draft()
+}
+
+// ─── A click invalidates the draft ───────────────────────────────────────────
+
+describe('approving or skipping in a correction invalidates the draft, in the same transaction', () => {
+  it.each([
+    ['approve', approveAdjustmentInCorrection],
+    ['skip', skipAdjustmentInCorrection],
+  ])('%s after a draft: the draft revision and its employee rows are deleted, the session pointer is cleared, and the old draft id can no longer be approved', async (_name, click) => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await openWithDraft()
+    expect(pointer()).toBe(DRAFT)
+    expect(draftIds()).toEqual([DRAFT])
+
+    await click('app-1')
+
+    expect(pointer()).toBeNull()
+    expect(draftIds()).toEqual([])
+    expect(db.rows('payrollRunEmployee').every((r) => r.payrollRevisionId === REV1)).toBe(true)
+    const before = db.snapshot()
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_NOT_FOUND' })
+    expect(db.snapshot()).toEqual(before)
+    // the run, the current revision and the session are as they were
+    expect(db.rows('payrollRun')[0]).toMatchObject({ status: 'APPROVED', currentRevisionNumber: 1 })
+    expect(db.rows('payrollRevision').find((r) => r.id === REV1)).toMatchObject({ status: 'APPROVED', isCurrent: true })
+    expect(db.rows('payrollCorrectionSession').at(-1)).toMatchObject({ status: 'IN_PROGRESS' })
+  })
+
+  it('a status change that did not invalidate the draft (the removed reverse and approve-skipped paths, or any future one) is still caught by the plan: REVISION_STALE, nothing written', async () => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await beginCorrection(RUN)
+    await approveAdjustmentInCorrection('app-1')
+    await draft() // the draft deducts 500
+    await db.payrollAdjustmentApplication.updateMany({ where: { id: 'app-1' }, data: { approvalStatus: 'SKIPPED', skippedAt: new Date() } })
+    const before = db.snapshot()
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE', message: STALE_ADJUSTMENTS })
+
+    expect(db.snapshot()).toEqual(before)
+    expectApproved(false)
+  })
+
+  it('the same for an application approved behind the draft\'s back: the draft deducted nothing, the plan says 500', async () => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await openWithDraft()
+    expect(draftRow().deductions).toBe(0)
+    await db.payrollAdjustmentApplication.updateMany({ where: { id: 'app-1' }, data: { approvalStatus: 'APPROVED', appliedAt: new Date() } })
+    const before = db.snapshot()
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE', message: STALE_ADJUSTMENTS })
+
+    expect(db.snapshot()).toEqual(before)
+    expect(adjRow().remainingBalance).toBe(2000)
+  })
+
+  it.each([
+    ['approve', 'payrollCorrectionSession.update', approveAdjustmentInCorrection],
+    ['approve', 'payrollRevision.deleteMany', approveAdjustmentInCorrection],
+    ['skip', 'payrollCorrectionSession.update', skipAdjustmentInCorrection],
+    ['skip', 'payrollRunEmployee.deleteMany', skipAdjustmentInCorrection],
+  ])('%s: when %s fails the click is rolled back whole: the status, the draft and the pointer are as they were', async (_name, failing, click) => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await openWithDraft()
+    const before = db.snapshot()
+    db.failOn(failing, new Error('write failed'))
+
+    await expect(click('app-1')).rejects.toThrow('write failed')
+
+    expect(db.snapshot()).toEqual(before)
+    expect(appRow().approvalStatus).toBe('PENDING')
+    expect(pointer()).toBe(DRAFT)
+    expect(draftIds()).toEqual([DRAFT])
+  })
+
+  it('a refused approval leaves the application, the draft and the pointer exactly as they were', async () => {
+    seedAdjustment(oneTime({ status: 'COMPLETED' }), [pending()])
+    await openWithDraft()
+    const before = db.snapshot()
+    db.log.length = 0
+
+    await expect(approveAdjustmentInCorrection('app-1')).rejects.toBeInstanceOf(AdjustmentServiceError)
+
+    expect(db.snapshot()).toEqual(before)
+    expect(db.log.filter((op) => op !== 'lock')).toEqual([])
+    expect(pointer()).toBe(DRAFT)
+  })
+
+  it('a click on a correction with no draft yet has nothing to clear and clears nothing else', async () => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await beginCorrection(RUN)
+
+    await approveAdjustmentInCorrection('app-1')
+
+    expect(pointer()).toBeNull()
+    expect(draftIds()).toEqual([])
+    expect(db.rows('payrollRevision').map((r) => r.id)).toEqual([REV1])
+  })
+})
+
+// ─── The click is refused when the approval could not be applied ─────────────
+
+describe('approving in a correction is refused (ADJUSTMENT_NOT_APPLICABLE) when it could not be applied', () => {
+  async function refused(message: string) {
+    await openWithDraft()
+    const before = db.snapshot()
+    const error = await approveAdjustmentInCorrection('app-1').catch((e) => e)
+    expect(error).toBeInstanceOf(AdjustmentServiceError)
+    expect(error).toMatchObject({ code: 'ADJUSTMENT_NOT_APPLICABLE', message })
+    // the application, the draft and the pointer are untouched, and no balance moved
+    expect(db.snapshot()).toEqual(before)
+    expect(appRow().approvalStatus).toBe('PENDING')
+    expect(pointer()).toBe(DRAFT)
+    expect(draftIds()).toEqual([DRAFT])
+  }
+
+  it('the adjustment is COMPLETED (another week took the last instalment)', async () => {
+    seedAdjustment(totalBalance(0, { status: 'COMPLETED', totalBalance: 1000 }), [pending()])
+
+    await refused('This adjustment is already completed or cancelled.')
+  })
+
+  it('the adjustment is CANCELLED', async () => {
+    seedAdjustment(totalBalance(2000, { status: 'CANCELLED' }), [pending()])
+
+    await refused('This adjustment is already completed or cancelled.')
+  })
+
+  it('nothing is left to deduct (0 left, still ACTIVE)', async () => {
+    seedAdjustment(totalBalance(0), [pending()])
+
+    await refused('Nothing is left to deduct for this adjustment.')
+  })
+
+  it('row k: ONE_TIME skipped in week W (carried to W+1) and skipped again there (carried to W+2): approving W is refused', async () => {
+    const W2 = new Date('2025-07-24T00:00:00.000Z')
+    seedAdjustment(oneTime(), [
+      skippedBefore({ payrollRunId: RUN }),
+      waiting({ approvalStatus: 'SKIPPED', skippedAt: T0, carriedForwardToPayrollWeekStartDate: W2 }),
+      app({ id: 'app-w2', approvalStatus: 'PENDING', payrollRunId: null, payrollWeekStartDate: W2, payrollWeekEndDate: new Date('2025-07-30T00:00:00.000Z'), appliedAt: null }),
+    ])
+
+    await refused('This adjustment was carried to the next week and has been dealt with there.')
+  })
+
+  it('row k, the contrast: with the PENDING at W+1 still waiting, approving W is allowed, and approving the revision takes the carry-forward back (no second deduction later)', async () => {
+    seedAdjustment(oneTime(), [skippedBefore({ payrollRunId: RUN }), waiting()])
+    await beginCorrection(RUN)
+
+    await expect(approveAdjustmentInCorrection('app-1')).resolves.toEqual({ applicationId: 'app-1', approvalStatus: 'APPROVED' })
+    await draft()
+    await approveRevision(DRAFT)
+
+    expect(adjRow().status).toBe('COMPLETED')
+    expect(appRow()).toMatchObject({ approvalStatus: 'APPROVED', carriedForwardToPayrollWeekStartDate: null, appliedAmount: 500 })
+    expect(nextWeek()).toHaveLength(0)
+  })
+
+  it('two ONE_TIME applications of one adjustment: the second approval (by id) is refused at the click; approved the other way round both clicks pass and the draft refuses the pair', async () => {
+    seedAdjustment(oneTime(), [pending({ id: 'app-a' }), pending({ id: 'app-b', employeeId: 'emp-2' })])
+    await beginCorrection(RUN)
+
+    await approveAdjustmentInCorrection('app-a')
+    await expect(approveAdjustmentInCorrection('app-b')).rejects.toMatchObject({ code: 'ADJUSTMENT_NOT_APPLICABLE' })
+    expect(appRow('app-b').approvalStatus).toBe('PENDING')
+
+    // the other way round: the click only reports a problem found for the row it is on, and the draft is checked as a whole
+    await skipAdjustmentInCorrection('app-a')
+    await approveAdjustmentInCorrection('app-b')
+    await approveAdjustmentInCorrection('app-a')
+    const before = db.snapshot()
+    await expect(draft()).rejects.toMatchObject({ code: 'ADJUSTMENT_NOT_APPLICABLE' })
+    expect(db.snapshot()).toEqual(before)
+    expect(adjRow().status).toBe('ACTIVE')
+  })
+})
+
+// ─── The amount: frozen by the draft, not by the click ───────────────────────
+
+describe('the amount an application is applied at', () => {
+  it('skipping after a draft froze 50 puts the 70 back (the adjustment\'s own amount: it is not applied)', async () => {
+    seedAdjustment(totalBalance(50, { amount: 70, totalBalance: 120 }), [pending({ appliedAmount: 70 })])
+    await openWithDraft(['app-1'])
+    expect(appRow().appliedAmount).toBe(50)
+
+    await skipAdjustmentInCorrection('app-1')
+
+    expect(appRow()).toMatchObject({ approvalStatus: 'SKIPPED', appliedAmount: 70 })
+    expect(adjRow()).toMatchObject({ remainingBalance: 50, status: 'ACTIVE' })
+  })
+
+  it('skipping an application that was applied keeps the amount it was applied at (50), it is not reset to the adjustment\'s 70', async () => {
+    seedAdjustment(totalBalance(0, { amount: 70, totalBalance: 120, status: 'COMPLETED' }), [applied({ appliedAmount: 50 })])
+    await beginCorrection(RUN)
+
+    await skipAdjustmentInCorrection('app-1')
+
+    expect(appRow()).toMatchObject({ approvalStatus: 'SKIPPED', appliedAmount: 50 })
+  })
+
+  it('approving again after skipping goes through the freeze again: 70 stored after the click, 50 after the new draft', async () => {
+    seedAdjustment(totalBalance(50, { amount: 70, totalBalance: 120 }), [pending({ appliedAmount: 70 })])
+    await openWithDraft(['app-1'])
+    await skipAdjustmentInCorrection('app-1')
+    await approveAdjustmentInCorrection('app-1')
+    expect(appRow().appliedAmount).toBe(70)
+
+    await draft()
+
+    expect(appRow().appliedAmount).toBe(50)
+    expect(draftRow().deductions).toBe(50)
+  })
+
+  it('a draft that fails its freeze (nothing left) writes no amount and leaves the earlier draft in place', async () => {
+    seedAdjustment(totalBalance(50, { amount: 70, totalBalance: 120 }), [pending({ appliedAmount: 70 })])
+    await openWithDraft(['app-1'])
+    await db.payrollAdjustment.updateMany({ where: { id: 'adj-1' }, data: { remainingBalance: 0, status: 'COMPLETED' } })
+    const before = db.snapshot()
+
+    await expect(draft()).rejects.toMatchObject({ code: 'ADJUSTMENT_NOT_APPLICABLE' })
+
+    expect(db.snapshot()).toEqual(before)
+    expect(appRow().appliedAmount).toBe(50)
+  })
+})
+
+// ─── approveRevision plans again and refuses a draft that differs ────────────
+
+describe('approveRevision refuses a draft that is not what the plan says now (REVISION_STALE), and writes nothing', () => {
+  const capped = (remaining: number, over: Row = {}) => totalBalance(remaining, { amount: 70, totalBalance: 120, ...over })
+
+  it('row c: another week takes 30 after the draft froze 50 (20 left): stale; after recalculating the draft deducts 20, and approving takes the balance to 0, never below', async () => {
+    seedAdjustment(capped(50), [pending({ appliedAmount: 70 })])
+    await openWithDraft(['app-1'])
+    expect(draftRow().deductions).toBe(50)
+    await db.payrollAdjustment.updateMany({ where: { id: 'adj-1' }, data: { remainingBalance: 20 } })
+    const before = db.snapshot()
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE', message: STALE_ADJUSTMENTS })
+
+    expect(db.snapshot()).toEqual(before)
+    expectApproved(false)
+    expect(adjRow()).toMatchObject({ remainingBalance: 20, status: 'ACTIVE' })
+
+    await draft()
+    expect(appRow().appliedAmount).toBe(20)
+    expect(draftRow().deductions).toBe(20)
+    await approveRevision(DRAFT)
+
+    expectApproved(true)
+    expect(adjRow()).toMatchObject({ remainingBalance: 0, status: 'COMPLETED' })
+    expect(appRow()).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 20 })
+  })
+
+  it('row b: another week takes the rest (0 left, COMPLETED): stale; the next recalculation fails with ADJUSTMENT_NOT_APPLICABLE and changes nothing', async () => {
+    seedAdjustment(capped(50), [pending({ appliedAmount: 70 })])
+    await openWithDraft(['app-1'])
+    await db.payrollAdjustment.updateMany({ where: { id: 'adj-1' }, data: { remainingBalance: 0, status: 'COMPLETED' } })
+    const before = db.snapshot()
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE', message: STALE_ADJUSTMENTS })
+    expect(db.snapshot()).toEqual(before)
+
+    await expect(draft()).rejects.toMatchObject({ code: 'ADJUSTMENT_NOT_APPLICABLE', message: 'This adjustment is already completed or cancelled.' })
+    expect(db.snapshot()).toEqual(before)
+    expectApproved(false)
+  })
+
+  it('row b, the way out: the user skips the row; the new draft carries nothing for a COMPLETED adjustment and the approval goes through', async () => {
+    seedAdjustment(capped(50), [pending({ appliedAmount: 70 })])
+    await openWithDraft(['app-1'])
+    await db.payrollAdjustment.updateMany({ where: { id: 'adj-1' }, data: { remainingBalance: 0, status: 'COMPLETED' } })
+
+    await skipAdjustmentInCorrection('app-1')
+    await draft()
+    await approveRevision(DRAFT)
+
+    expectApproved(true)
+    expect(appRow().approvalStatus).toBe('SKIPPED')
+    expect(adjRow()).toMatchObject({ remainingBalance: 0, status: 'COMPLETED', skippedCarryForwardCount: 0 })
+    expect(nextWeek()).toHaveLength(0)
+  })
+
+  it('row d: the balance grew: stale, and the draft that follows deducts the larger amount: 120 -> 50', async () => {
+    seedAdjustment(capped(50), [pending({ appliedAmount: 70 })])
+    await openWithDraft(['app-1'])
+    await db.payrollAdjustment.updateMany({ where: { id: 'adj-1' }, data: { remainingBalance: 120 } })
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE' })
+    await draft()
+    expect(draftRow().deductions).toBe(70)
+    await approveRevision(DRAFT)
+
+    expect(adjRow()).toMatchObject({ remainingBalance: 50, status: 'ACTIVE' })
+  })
+
+  it('an adjustment cancelled after the draft: stale, nothing written', async () => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await openWithDraft(['app-1'])
+    await db.payrollAdjustment.updateMany({ where: { id: 'adj-1' }, data: { status: 'CANCELLED' } })
+    const before = db.snapshot()
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE' })
+
+    expect(db.snapshot()).toEqual(before)
+  })
+
+  it.each([
+    ['the deduction is 0.01 short', { additions: 0, deductions: 499.99 }],
+    ['the deduction is 0.01 over', { additions: 0, deductions: 500.01 }],
+    ['the deduction is missing', { additions: 0, deductions: 0 }],
+    ['it is on the additions side', { additions: 500, deductions: 0 }],
+    ['it is on both sides', { additions: 500, deductions: 500 }],
+  ])('a draft row whose amounts differ from the plan (%s): stale, nothing written', async (_why, wrong) => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await openWithDraft(['app-1'])
+    await db.payrollRunEmployee.deleteMany({ where: { payrollRevisionId: DRAFT } })
+    seedDraftRows(PAID, new Map([['emp-1', wrong]]))
+    const before = db.snapshot()
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE', message: STALE_ADJUSTMENTS })
+
+    expect(db.snapshot()).toEqual(before)
+    expectApproved(false)
+  })
+
+  it('a draft that deducts for an employee the plan has no application for: stale', async () => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await openWithDraft(['app-1'])
+    await db.payrollRunEmployee.deleteMany({ where: { payrollRevisionId: DRAFT } })
+    seedDraftRows(PAID, new Map([['emp-1', { additions: 0, deductions: 500 }], ['emp-2', { additions: 0, deductions: 100 }]]))
+    const before = db.snapshot()
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE' })
+
+    expect(db.snapshot()).toEqual(before)
+  })
+
+  it('who the draft pays is what its own rows say: one that leaves the employee out is consistent, and the approved application is carried, not deducted', async () => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await openWithDraft(['app-1'])
+    await db.payrollRunEmployee.deleteMany({ where: { payrollRevisionId: DRAFT } })
+    seedDraftRows(['emp-2'])
+
+    await approveRevision(DRAFT)
+
+    expectApproved(true)
+    expect(adjRow()).toMatchObject({ remainingBalance: 2000, skippedCarryForwardCount: 1 })
+    expect(appRow().approvalStatus).toBe('SKIPPED')
+    expect(nextWeek()).toHaveLength(1)
+  })
+
+  it('a frozen amount that is not the plan\'s (the draft rows agree with it, the application does not): stale', async () => {
+    seedAdjustment(capped(50), [pending({ appliedAmount: 70 })])
+    await openWithDraft(['app-1'])
+    // the stored amount changed behind the draft (it was frozen at 50): the rows still say 50
+    await db.payrollAdjustmentApplication.updateMany({ where: { id: 'app-1' }, data: { appliedAmount: 70 } })
+    const before = db.snapshot()
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE' })
+
+    expect(db.snapshot()).toEqual(before)
+  })
+
+  it('a draft made without a session: a weekly approval between the draft and the approval makes it stale, and nothing is written', async () => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    const sums = await freezeDraftAdjustmentAmounts(db as never, db.rows('payrollRun')[0] as never, null, new Set(PAID))
+    seedDraft(PAID, sums)
+    expect(draftRow().deductions).toBe(0) // PENDING: not deducted
+    // the weekly review approves it (and moves the balance) meanwhile
+    await db.payrollAdjustmentApplication.updateMany({ where: { id: 'app-1' }, data: { approvalStatus: 'APPROVED', appliedAt: new Date() } })
+    await db.payrollAdjustment.updateMany({ where: { id: 'adj-1' }, data: { remainingBalance: 1500 } })
+    const before = db.snapshot()
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE', message: STALE_ADJUSTMENTS })
+
+    expect(db.snapshot()).toEqual(before)
+    expectApproved(false, false)
+  })
+
+  it('a draft made without a session: a weekly skip between them is stale too', async () => {
+    seedAdjustment(totalBalance(1500), [applied()])
+    const sums = await freezeDraftAdjustmentAmounts(db as never, db.rows('payrollRun')[0] as never, null, new Set(PAID))
+    seedDraft(PAID, sums)
+    expect(draftRow().deductions).toBe(500)
+    await db.payrollAdjustmentApplication.updateMany({
+      where: { id: 'app-1' },
+      data: { approvalStatus: 'SKIPPED', skippedAt: new Date(), carriedForwardToPayrollWeekStartDate: NEXT_START },
+    })
+    const before = db.snapshot()
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE' })
+
+    expect(db.snapshot()).toEqual(before)
+  })
+
+  it('a stale refusal is all or nothing across adjustments: one stale adjustment stops the other from being applied', async () => {
+    seedAdjustment(totalBalance(2000, { id: 'adj-a' }), [pending({ id: 'app-a', payrollAdjustmentId: 'adj-a' })])
+    seedAdjustment(capped(50, { id: 'adj-b', employeeId: 'emp-2' }), [pending({ id: 'app-b', payrollAdjustmentId: 'adj-b', employeeId: 'emp-2', appliedAmount: 70 })])
+    await openWithDraft(['app-a', 'app-b'])
+    await db.payrollAdjustment.updateMany({ where: { id: 'adj-b' }, data: { remainingBalance: 20 } })
+    const before = db.snapshot()
+    db.log.length = 0
+
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE' })
+
+    expect(db.snapshot()).toEqual(before)
+    expect(adjRow('adj-a').remainingBalance).toBe(2000)
+    expect(adjustmentWrites()).toEqual([])
+  })
+})
+
+// ─── Table rows end to end ───────────────────────────────────────────────────
+
+describe('decision table rows, through draft and approval', () => {
+  it('row e: applied 50 (the 70/50 cap) and kept while the balance moved on to 20: the draft deducts 50 and approving writes no adjustment (20 stays 20)', async () => {
+    seedAdjustment(totalBalance(0, { amount: 70, totalBalance: 120, status: 'COMPLETED' }), [applied({ appliedAmount: 50 })])
+    await beginCorrection(RUN)
+    await approveAdjustmentInCorrection('app-1')
+    await db.payrollAdjustment.updateMany({ where: { id: 'adj-1' }, data: { remainingBalance: 20, status: 'ACTIVE' } }) // a skip elsewhere gave 20 back
+    await draft()
+    expect(draftRow().deductions).toBe(50)
+    db.log.length = 0
+
+    await approveRevision(DRAFT)
+
+    expect(adjRow()).toMatchObject({ remainingBalance: 20, status: 'ACTIVE' })
+    expect(appRow()).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 50 })
+    expect(adjustmentWrites()).toEqual([])
+  })
+
+  it('row f: applied 50, skipped now, with 20 left: 70 left, ACTIVE, carried once at the adjustment\'s 70; the draft deducts 0', async () => {
+    seedAdjustment(totalBalance(20, { amount: 70, totalBalance: 120 }), [applied({ appliedAmount: 50 })])
+    await beginCorrection(RUN)
+    await skipAdjustmentInCorrection('app-1')
+    await draft()
+    expect(draftRow().deductions).toBe(0)
+
+    await approveRevision(DRAFT)
+
+    expect(adjRow()).toMatchObject({ remainingBalance: 70, status: 'ACTIVE', skippedCarryForwardCount: 1 })
+    expect(nextWeek()).toHaveLength(1)
+    expect(nextWeek()[0]).toMatchObject({ approvalStatus: 'PENDING', appliedAmount: 70 })
+  })
+
+  it('row h: ADDITION, ONE_TIME 300, newly approved: the draft adds 300, COMPLETED, no balance', async () => {
+    seedAdjustment(oneTime({ adjustmentType: 'ADDITION', amount: 300 }), [pending({ appliedAmount: 300 })])
+    await openWithDraft(['app-1'])
+    expect(draftRow()).toMatchObject({ additions: 300, deductions: 0 })
+
+    await approveRevision(DRAFT)
+
+    expect(adjRow()).toMatchObject({ status: 'COMPLETED', remainingBalance: null })
+    expect(appRow()).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 300 })
+  })
+
+  it('row i: ADDITION, ONE_TIME 300 applied, the employee left out: COMPLETED -> ACTIVE, a PENDING 300 next week, counted once', async () => {
+    seedAdjustment(oneTime({ adjustmentType: 'ADDITION', amount: 300, status: 'COMPLETED', employeeId: LEFT_OUT }), [applied({ employeeId: LEFT_OUT, appliedAmount: 300 })])
+
+    await correct({ paid: PAID })
+
+    expect(adjRow()).toMatchObject({ status: 'ACTIVE', skippedCarryForwardCount: 1 })
+    expect(nextWeek()).toHaveLength(1)
+    expect(nextWeek()[0]).toMatchObject({ approvalStatus: 'PENDING', appliedAmount: 300, employeeId: LEFT_OUT })
+  })
+
+  it('row j: FIXED_WEEKS 200 over 3 (66.67 a week), the third week newly approved with 66.66 left: the draft deducts 66.66, 0 left, COMPLETED by count, nothing scheduled', async () => {
+    seedAdjustment(fixedWeeks(66.66, { amount: 66.67, totalBalance: 200 }), [
+      earlier('app-wk1', new Date('2025-06-26T00:00:00.000Z'), new Date('2025-07-02T00:00:00.000Z')),
+      earlier('app-wk2'),
+      pending({ appliedAmount: 66.67 }),
+    ])
+    await openWithDraft(['app-1'])
+    expect(draftRow().deductions).toBe(66.66)
+
+    await approveRevision(DRAFT)
+
+    expect(adjRow()).toMatchObject({ remainingBalance: 0, status: 'COMPLETED' })
+    expect(appRow().appliedAmount).toBe(66.66)
+    expect(nextWeek()).toHaveLength(0)
+  })
+
+  it('row l: a linked SKIPPED application (carried, count 1), reset to PENDING, the employee left out again: SKIPPED again, count stays 1, still one next-week row', async () => {
+    seedAdjustment(totalBalance(2000, { employeeId: LEFT_OUT, skippedCarryForwardCount: 1 }), [skippedBefore({ employeeId: LEFT_OUT, payrollRunId: RUN }), waiting({ employeeId: LEFT_OUT })])
+
+    await correct({ paid: PAID })
+
+    expect(appRow()).toMatchObject({ approvalStatus: 'SKIPPED', carriedForwardToPayrollWeekStartDate: NEXT_START })
+    expect(adjRow()).toMatchObject({ remainingBalance: 2000, skippedCarryForwardCount: 1 })
+    expect(nextWeek()).toHaveLength(1)
+    expect(adjustmentWrites()).toEqual([])
+    expect(db.log).not.toContain('payrollAdjustmentApplication.create')
+  })
+
+  it('row l, the next week\'s application already approved meanwhile: still no new row, and the approved one is not touched', async () => {
+    seedAdjustment(totalBalance(1500, { employeeId: LEFT_OUT, skippedCarryForwardCount: 1 }), [
+      skippedBefore({ employeeId: LEFT_OUT, payrollRunId: RUN }),
+      waiting({ employeeId: LEFT_OUT, approvalStatus: 'APPROVED', appliedAt: T0 }),
+    ])
+
+    await correct({ paid: PAID })
+
+    expect(adjRow()).toMatchObject({ remainingBalance: 1500, skippedCarryForwardCount: 1 })
+    expect(nextWeek()).toHaveLength(1)
+    expect(nextWeek()[0]).toMatchObject({ approvalStatus: 'APPROVED' })
+    expect(appRow().approvalStatus).toBe('SKIPPED')
+    expect(db.log).not.toContain('payrollAdjustmentApplication.create')
+  })
+
+  it('a SKIPPED application with no carry date recorded (old data), left out in the correction: SKIPPED before still means carried, so it is not carried again', async () => {
+    seedAdjustment(totalBalance(2000, { employeeId: LEFT_OUT, skippedCarryForwardCount: 1 }), [
+      skippedBefore({ employeeId: LEFT_OUT, payrollRunId: RUN, carriedForwardToPayrollWeekStartDate: null }),
+    ])
+
+    await correct({ paid: PAID })
+
+    expect(adjRow()).toMatchObject({ skippedCarryForwardCount: 1 })
+    expect(nextWeek()).toHaveLength(0)
+    expect(appRow().approvalStatus).toBe('SKIPPED')
+  })
+})
+
+// ─── The locks ───────────────────────────────────────────────────────────────
+
+describe('approveRevision takes the adjustment rows after the week row and reads them after the lock', () => {
+  it('locks the scope\'s adjustments after the week lock and before the first adjustment write', async () => {
+    seedAdjustment(totalBalance(2000, { id: 'adj-a' }), [
+      pending({ id: 'app-a', payrollAdjustmentId: 'adj-a' }),
+      pending({ id: 'app-a2', payrollAdjustmentId: 'adj-a', employeeId: 'emp-2' }),
+    ])
+    seedAdjustment(totalBalance(2000, { id: 'adj-b', employeeId: 'emp-2' }), [pending({ id: 'app-b', payrollAdjustmentId: 'adj-b', employeeId: 'emp-2' })])
+    await openWithDraft(['app-a', 'app-b'])
+    db.log.length = 0
+    vi.mocked(lockAdjustmentRows).mockClear()
+
+    await approveRevision(DRAFT)
+
+    expect(lockAdjustmentRows).toHaveBeenCalledTimes(1)
+    const [, ids] = vi.mocked(lockAdjustmentRows).mock.calls[0]
+    expect(new Set(ids)).toEqual(new Set(['adj-a', 'adj-b']))
+    expect(db.log.indexOf('lock')).toBeGreaterThanOrEqual(0)
+    expect(db.log.indexOf('lock-adjustments')).toBeGreaterThan(db.log.indexOf('lock'))
+    expect(db.log.indexOf('payrollAdjustment.update')).toBeGreaterThan(db.log.indexOf('lock-adjustments'))
+  })
+
+  it('a week with no applications asks with an empty list (a no-op in the lock service)', async () => {
+    await beginCorrection(RUN)
+    await draft()
+    vi.mocked(lockAdjustmentRows).mockClear()
+
+    await approveRevision(DRAFT)
+
+    expect(lockAdjustmentRows).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(lockAdjustmentRows).mock.calls[0][1]).toEqual([])
+  })
+
+  it('the balance the plan uses is read after the lock: one that changed while the lock was awaited makes the draft stale instead of overdrawing', async () => {
+    seedAdjustment(totalBalance(50, { amount: 70, totalBalance: 120 }), [pending({ appliedAmount: 70 })])
+    await openWithDraft(['app-1']) // freezes 50
+    // another transaction commits a 30 deduction while this one waits for the row lock
+    vi.mocked(lockAdjustmentRows).mockImplementationOnce((async () => {
+      db.log.push('lock-adjustments')
+      await db.payrollAdjustment.updateMany({ where: { id: 'adj-1' }, data: { remainingBalance: 20 } })
+    }) as never)
+
+    // had the balance been read before the lock the plan would still say 50 (what the draft froze) and the approval would have
+    // gone through, taking 50 off the 20 that is left
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE', message: STALE_ADJUSTMENTS })
+
+    expectApproved(false)
+    expect(appRow().appliedAmount).toBe(50)
+  })
+
+  it('a click never takes an adjustment lock: it writes no adjustment', async () => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await beginCorrection(RUN)
+    vi.mocked(lockAdjustmentRows).mockClear()
+
+    await approveAdjustmentInCorrection('app-1')
+    await skipAdjustmentInCorrection('app-1')
+
+    expect(lockAdjustmentRows).not.toHaveBeenCalled()
+  })
+
+  it('a failing lock stops the approval before anything is promoted or written', async () => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await openWithDraft(['app-1'])
+    const before = db.snapshot()
+    vi.mocked(lockAdjustmentRows).mockRejectedValueOnce(new Error('lock timeout'))
+
+    await expect(approveRevision(DRAFT)).rejects.toThrow('lock timeout')
+
+    expect(db.snapshot()).toEqual(before)
+    expectApproved(false)
+  })
+})
+
+// ─── Abandon ─────────────────────────────────────────────────────────────────
+
+describe('abandonCorrection after the settlement redesign', () => {
+  it('puts back the amount a draft froze: 70 stored, 50 frozen, 70 again after the abandon, and no balance moved', async () => {
+    seedAdjustment(totalBalance(50, { amount: 70, totalBalance: 120 }), [pending({ appliedAmount: 70 })])
+    const adjustmentsBefore = db.rows('payrollAdjustment')
+    await openWithDraft(['app-1'])
+    expect(appRow().appliedAmount).toBe(50)
+
+    await abandonCorrection(RUN)
+
+    expect(appRow()).toMatchObject({ approvalStatus: 'PENDING', appliedAmount: 70 })
+    expect(db.rows('payrollAdjustment')).toEqual(adjustmentsBefore)
+    expect(draftIds()).toEqual([])
+  })
+
+  it('an application created after the correction opened and approved in it is PENDING again, at the adjustment\'s amount, with no times; one that was skipped likewise', async () => {
+    await beginCorrection(RUN)
+    // created after the correction opened (a skip in the week before carries a PENDING into this week)
+    seedAdjustment(totalBalance(2000, { id: 'adj-a' }), [pending({ id: 'app-a', payrollAdjustmentId: 'adj-a', appliedAmount: 500 })])
+    seedAdjustment(totalBalance(2000, { id: 'adj-b', amount: 300, employeeId: 'emp-2' }), [pending({ id: 'app-b', payrollAdjustmentId: 'adj-b', employeeId: 'emp-2', appliedAmount: 300 })])
+    const adjustmentsBefore = db.rows('payrollAdjustment')
+    await approveAdjustmentInCorrection('app-a')
+    await skipAdjustmentInCorrection('app-b')
+    await draft()
+    expect(appRow('app-a')).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 500 })
+    expect(appRow('app-a').appliedAt).toBeInstanceOf(Date)
+
+    await abandonCorrection(RUN)
+
+    expect(appRow('app-a')).toMatchObject({ approvalStatus: 'PENDING', appliedAt: null, skippedAt: null, appliedAmount: 500 })
+    expect(appRow('app-b')).toMatchObject({ approvalStatus: 'PENDING', appliedAt: null, skippedAt: null, appliedAmount: 300 })
+    expect(db.rows('payrollAdjustment')).toEqual(adjustmentsBefore)
+  })
+
+  it('a created application whose frozen amount was capped goes back to the adjustment\'s own amount (70), not the 50 the draft froze', async () => {
+    await beginCorrection(RUN)
+    seedAdjustment(totalBalance(50, { amount: 70, totalBalance: 120 }), [pending({ appliedAmount: 70 })])
+    await approveAdjustmentInCorrection('app-1')
+    await draft()
+    expect(appRow().appliedAmount).toBe(50)
+
+    await abandonCorrection(RUN)
+
+    expect(appRow()).toMatchObject({ approvalStatus: 'PENDING', appliedAmount: 70 })
+  })
+
+  it('writes no adjustment from the day the correction opens to the day it is abandoned, whatever was clicked and drafted in between', async () => {
+    seedAdjustment(totalBalance(1500, { id: 'adj-a' }), [applied({ id: 'app-a', payrollAdjustmentId: 'adj-a' })])
+    seedAdjustment(totalBalance(50, { id: 'adj-b', amount: 70, totalBalance: 120, employeeId: 'emp-2' }), [pending({ id: 'app-b', payrollAdjustmentId: 'adj-b', employeeId: 'emp-2', appliedAmount: 70 })])
+    seedAdjustment(oneTime({ id: 'adj-c', status: 'COMPLETED' }), [applied({ id: 'app-c', payrollAdjustmentId: 'adj-c' })])
+    const adjustmentsBefore = db.rows('payrollAdjustment')
+    const applicationsBefore = db.rows('payrollAdjustmentApplication')
+    db.log.length = 0
+
+    await beginCorrection(RUN)
+    await skipAdjustmentInCorrection('app-a')
+    await approveAdjustmentInCorrection('app-b')
+    await draft()
+    await approveAdjustmentInCorrection('app-a') // another click after the draft
+    await skipAdjustmentInCorrection('app-c')
+    await draft()
+    await abandonCorrection(RUN)
+
+    expect(adjustmentWrites()).toEqual([])
+    expect(db.rows('payrollAdjustment')).toEqual(adjustmentsBefore)
+    expect(db.rows('payrollAdjustmentApplication')).toEqual(applicationsBefore)
+    expect(db.log).not.toContain('payrollAdjustmentApplication.create')
+    expect(db.log).not.toContain('payrollAdjustmentApplication.deleteMany')
+  })
+
+  it('a session opened before the amount was recorded (snapshot entries without appliedAmount) gets its statuses back, and its amount is left alone', async () => {
+    seedAdjustment(totalBalance(50, { amount: 70, totalBalance: 120 }), [pending({ appliedAmount: 70 })])
+    await beginCorrection(RUN)
+    const session = db.rows('payrollCorrectionSession')[0]
+    const older = (session.adjustmentSnapshotJson as Row[]).map((entry) => {
+      const rest = { ...entry }
+      delete rest.appliedAmount
+      delete rest.carriedForwardToPayrollWeekStartDate
+      return rest
+    })
+    await db.payrollCorrectionSession.updateMany({ where: { id: session.id }, data: { adjustmentSnapshotJson: older } })
+    await approveAdjustmentInCorrection('app-1')
+    await draft()
+    expect(appRow().appliedAmount).toBe(50)
+
+    await abandonCorrection(RUN)
+
+    expect(appRow().approvalStatus).toBe('PENDING')
+    expect(appRow().appliedAmount).toBe(50) // there is no recorded amount to put back
+    expect(adjRow().remainingBalance).toBe(50)
+  })
+
+  it('a session with no snapshot at all cannot tell a new row from an old one: it resets none and moves no balance', async () => {
+    await beginCorrection(RUN)
+    seedAdjustment(totalBalance(2000), [pending()])
+    await db.payrollCorrectionSession.updateMany({ where: { status: 'IN_PROGRESS' }, data: { adjustmentSnapshotJson: null } })
+    await approveAdjustmentInCorrection('app-1')
+
+    await abandonCorrection(RUN)
+
+    expect(appRow().approvalStatus).toBe('APPROVED') // left as it is, by design (see abandonCorrection)
+    expect(adjRow().remainingBalance).toBe(2000)
+    expect(db.rows('payrollCorrectionSession')[0]).toMatchObject({ status: 'ABANDONED' })
+  })
+
+  it('a failure resetting a created application rolls the whole abandon back', async () => {
+    await beginCorrection(RUN)
+    seedAdjustment(totalBalance(2000), [pending()])
+    await approveAdjustmentInCorrection('app-1')
+    await draft()
+    const before = db.snapshot()
+    db.failOn('payrollAdjustmentApplication.update', new Error('reset failed'))
+
+    await expect(abandonCorrection(RUN)).rejects.toThrow('reset failed')
+
+    expect(db.snapshot()).toEqual(before)
+    expect(db.rows('payrollCorrectionSession')[0].status).toBe('IN_PROGRESS')
+    expect(draftIds()).toEqual([DRAFT])
+  })
+
+  it('after abandoning an approved new application, a fresh correction approves it as a plain APPLY: 2000 -> 1500', async () => {
+    await beginCorrection(RUN)
+    seedAdjustment(totalBalance(2000), [pending()])
+    await approveAdjustmentInCorrection('app-1')
+    await draft()
+    await abandonCorrection(RUN)
+
+    await correct({ approve: ['app-1'] })
+
+    expect(adjRow()).toMatchObject({ remainingBalance: 1500, status: 'ACTIVE' })
+    expect(appRow()).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 500 })
+  })
+})
+
+// ─── Invariants, across the scenarios ────────────────────────────────────────
+
+describe('invariants after a correction is approved', () => {
+  /** total - remaining = what the APPROVED applications absorbed, for a balance-tracking adjustment; 0 <= remaining <= total. */
+  function expectBalanceConsistent(id = 'adj-1') {
+    const adjustment = adjRow(id)
+    expect(adjustment.remainingBalance).toBeGreaterThanOrEqual(0)
+    expect(adjustment.remainingBalance).toBeLessThanOrEqual(adjustment.totalBalance)
+    const absorbed = appsOf(id).filter((a) => a.approvalStatus === 'APPROVED').reduce((sum, a) => sum + a.appliedAmount, 0)
+    expect(Math.round((adjustment.totalBalance - adjustment.remainingBalance) * 100)).toBe(Math.round(absorbed * 100))
+  }
+  /** At most one instalment waits in the week after, and the count rose by exactly one per application newly carried. */
+  function expectCarriedOnce(count: number, id = 'adj-1') {
+    expect(nextWeek(id).filter((a) => a.approvalStatus === 'PENDING').length).toBeLessThanOrEqual(1)
+    expect(adjRow(id).skippedCarryForwardCount).toBe(count)
+  }
+  /** The 70 an earlier week took off a 120 balance. */
+  const earlierWeekTook70 = () => app({ ...earlier('app-wk1'), appliedAmount: 70 })
+
+  const scenarios: Array<[string, number, () => Promise<void>]> = [
+    ['a pending one approved', 0, async () => { seedAdjustment(totalBalance(2000), [pending()]); await correct({ approve: ['app-1'] }) }],
+    ['an applied one kept', 0, async () => { seedAdjustment(totalBalance(1500), [applied()]); await correct({ approve: ['app-1'] }) }],
+    ['an applied one skipped', 1, async () => { seedAdjustment(totalBalance(1500), [applied()]); await correct({ skip: ['app-1'] }) }],
+    ['an applied one left PENDING', 0, async () => { seedAdjustment(totalBalance(1500), [applied()]); await correct() }],
+    ['an applied one for an employee left out', 1, async () => { seedAdjustment(totalBalance(1500, { employeeId: LEFT_OUT }), [applied({ employeeId: LEFT_OUT })]); await correct({ paid: PAID }) }],
+    ['the 70/50 cap approved', 0, async () => { seedAdjustment(totalBalance(50, { amount: 70, totalBalance: 120 }), [earlierWeekTook70(), pending({ appliedAmount: 70 })]); await correct({ approve: ['app-1'] }) }],
+    ['the 70/50 cap applied and skipped', 1, async () => { seedAdjustment(totalBalance(0, { amount: 70, totalBalance: 120, status: 'COMPLETED' }), [earlierWeekTook70(), applied({ appliedAmount: 50 })]); await correct({ skip: ['app-1'] }) }],
+    ['a give-back capped at the total', 1, async () => { seedAdjustment(totalBalance(100, { amount: 70, totalBalance: 120 }), [applied({ appliedAmount: 50 })]); await correct({ skip: ['app-1'] }) }],
+    ['one skipped before, skipped again', 1, async () => { seedAdjustment(totalBalance(2000, { skippedCarryForwardCount: 1 }), [skippedBefore({ payrollRunId: RUN }), waiting()]); await correct({ skip: ['app-1'] }) }],
+    ['one skipped before, approved now (the count is not taken back, as in the weekly flow)', 1, async () => { seedAdjustment(totalBalance(2000, { skippedCarryForwardCount: 1 }), [skippedBefore({ payrollRunId: RUN }), waiting()]); await correct({ approve: ['app-1'] }) }],
+    ['two applied ones, one skipped and one kept', 1, async () => {
+      seedAdjustment(totalBalance(1000, { id: 'adj-1' }), [applied({ id: 'app-1' }), applied({ id: 'app-2', employeeId: 'emp-2' })])
+      await correct({ skip: ['app-1'], approve: ['app-2'] })
+    }],
+  ]
+
+  it.each(scenarios)('%s: the balance is in range, equals what the approved applications absorbed, and the carry-forward count is %s', async (_name, count, run) => {
+    await run()
+
+    expectBalanceConsistent()
+    expectCarriedOnce(count)
+  })
+})

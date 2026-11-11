@@ -286,3 +286,186 @@ test.describe('An abandoned correction moves nothing', () => {
     expect(await application(rajeshApplicationId)).toEqual({ status: 'PENDING', amount: 500, carriedTo: null })
   })
 })
+
+// ─── A draft the user's own click deleted, and a draft that went stale ───────
+
+const STALE_ADJUSTMENTS = 'This preview is out of date: an adjustment or its balance changed after it was calculated. Go back and recalculate.'
+const CORRECTION_OPEN = 'A payroll correction is open for this week. Finish or cancel it first.'
+
+test.describe('The preview after the adjustments changed under it', () => {
+  test('approve or skip after recalculating (from a second tab): the draft is gone, the old preview is refused and writes nothing, reloading it goes back to the correction, and recalculating again approves once', async ({ page }) => {
+    await openAdjustments(page, 'Clicked after the recalculation')
+    await row(page, 'Anita Sharma').getByRole('button', { name: 'Approve' }).click()
+    await expect(row(page, 'Anita Sharma').getByText('Approved')).toBeVisible({ timeout: 8000 })
+    await row(page, 'Rajesh Iyer').getByRole('button', { name: 'Approve' }).click()
+    await expect(row(page, 'Rajesh Iyer').getByText('Approved')).toBeVisible({ timeout: 8000 })
+    await recalculate(page)
+    const staleDraft = (await getRevisions(payrollRunId)).find((r) => r.status === 'DRAFT')!
+    expect((await getCorrectionSessions(payrollRunId))[0].draftRevisionId).toBe(staleDraft.id)
+    const staleNet = Object.fromEntries((await getRevisionEmployees(staleDraft.id)).map((e) => [e.employeeCode, e.netPayable]))
+    expect(staleNet).toEqual({ [ANITA]: 2750, [RAJESH]: 3700 })
+
+    // A second tab on the correction step: skipping Anita invalidates the draft the first tab is still showing.
+    const tab = await page.context().newPage()
+    await tab.goto(`/payroll/run/${payrollRunId}/correct`)
+    await expect(row(tab, 'Anita Sharma')).toBeVisible({ timeout: 15000 })
+    await settled(tab)
+    await row(tab, 'Anita Sharma').getByRole('button', { name: 'Skip' }).click()
+    await expect(row(tab, 'Anita Sharma').getByText('Skipped')).toBeVisible({ timeout: 8000 })
+    await tab.close()
+    expect((await getRevisions(payrollRunId)).filter((r) => r.status === 'DRAFT')).toHaveLength(0)
+    expect((await getCorrectionSessions(payrollRunId))[0].draftRevisionId).toBeNull()
+
+    // The first tab still shows the old preview. Approving it is refused, the message is on the page, nothing is written.
+    await page.getByRole('button', { name: 'Approve Revision' }).click()
+    await page.getByRole('button', { name: 'Confirm Revision' }).click()
+    await expect(page.getByText(/not found/i).first()).toBeVisible({ timeout: 15000 })
+    await expect(page).toHaveURL(new RegExp(`/payroll/run/${payrollRunId}/correct/preview`))
+    expect(await getPayrollRunStatus(payrollRunId)).toBe('APPROVED')
+    expect(await getRevisions(payrollRunId)).toMatchObject([{ revisionNumber: 1, status: 'APPROVED', isCurrent: true }])
+    expect(await adjustment(anitaAdjustmentId)).toEqual({ status: 'ACTIVE', remaining: 1500, carried: 0 })
+    expect(await adjustment(rajeshAdjustmentId)).toEqual({ status: 'ACTIVE', remaining: 2000, carried: 0 })
+
+    // Opening the preview again goes back to the step that recalculates, where Anita shows the status the click gave her.
+    await page.goto(`/payroll/run/${payrollRunId}/correct/preview`)
+    await expect(page).toHaveURL(new RegExp(`/payroll/run/${payrollRunId}/correct$`), { timeout: 15000 })
+    await expect(page.locator('h1:has-text("Payroll Correction")')).toBeVisible()
+    await expect(row(page, 'Anita Sharma').getByText('Skipped')).toBeVisible()
+
+    // Approve Anita again, recalculate, approve the revision: her applied 500 is kept, Rajesh's 500 comes off once.
+    await row(page, 'Anita Sharma').getByRole('button', { name: 'Approve' }).click()
+    await expect(row(page, 'Anita Sharma').getByText('Approved')).toBeVisible({ timeout: 8000 })
+    await recalculate(page)
+    const draft = (await getRevisions(payrollRunId)).find((r) => r.status === 'DRAFT')!
+    const net = Object.fromEntries((await getRevisionEmployees(draft.id)).map((e) => [e.employeeCode, e.netPayable]))
+    expect(net).toEqual({ [ANITA]: 2750, [RAJESH]: 3700 })
+    await page.getByRole('button', { name: 'Approve Revision' }).click()
+    await page.getByRole('button', { name: 'Confirm Revision' }).click()
+    await expect(page).toHaveURL(new RegExp(`/payroll/run/${payrollRunId}$`), { timeout: 30000 })
+    await settled(page)
+
+    expect(await adjustment(anitaAdjustmentId)).toEqual({ status: 'ACTIVE', remaining: 1500, carried: 0 })
+    expect(await adjustment(rajeshAdjustmentId)).toEqual({ status: 'ACTIVE', remaining: 1500, carried: 0 })
+    expect(await application(anitaApplicationId)).toEqual({ status: 'APPROVED', amount: 500, carriedTo: null })
+    expect(await application(rajeshApplicationId)).toEqual({ status: 'APPROVED', amount: 500, carriedTo: null })
+    expect(await getRevisions(payrollRunId)).toMatchObject([
+      { revisionNumber: 1, status: 'SUPERSEDED' },
+      { revisionNumber: 2, status: 'APPROVED', isCurrent: true },
+    ])
+  })
+
+  test('a balance that changed after the recalculation: approving the preview is refused with the message as a toast, the user lands on the step that recalculates, and the new draft deducts the smaller amount', async ({ page }) => {
+    // Rajesh's deduction is 500 a week but only 50 is left: the draft caps it at 50.
+    await prisma.payrollAdjustment.update({ where: { id: rajeshAdjustmentId }, data: { remainingBalance: 50 } })
+    await openAdjustments(page, 'Capped deduction')
+    await row(page, 'Anita Sharma').getByRole('button', { name: 'Approve' }).click()
+    await expect(row(page, 'Anita Sharma').getByText('Approved')).toBeVisible({ timeout: 8000 })
+    await row(page, 'Rajesh Iyer').getByRole('button', { name: 'Approve' }).click()
+    await expect(row(page, 'Rajesh Iyer').getByText('Approved')).toBeVisible({ timeout: 8000 })
+    expect(await application(rajeshApplicationId)).toEqual({ status: 'APPROVED', amount: 500, carriedTo: null }) // the click stores no amount
+    await recalculate(page)
+    const draft = (await getRevisions(payrollRunId)).find((r) => r.status === 'DRAFT')!
+    const draftNet = Object.fromEntries((await getRevisionEmployees(draft.id)).map((e) => [e.employeeCode, e.netPayable]))
+    expect(draftNet).toEqual({ [ANITA]: 2750, [RAJESH]: 4150 }) // 4200 - 50
+    expect(await application(rajeshApplicationId)).toEqual({ status: 'APPROVED', amount: 50, carriedTo: null }) // frozen by the draft
+
+    // Another week's approval takes 30 of the 50 meanwhile.
+    await prisma.payrollAdjustment.update({ where: { id: rajeshAdjustmentId }, data: { remainingBalance: 20 } })
+
+    await page.getByRole('button', { name: 'Approve Revision' }).click()
+    await page.getByRole('button', { name: 'Confirm Revision' }).click()
+
+    await expect(page).toHaveURL(new RegExp(`/payroll/run/${payrollRunId}/correct$`), { timeout: 20000 })
+    await expect(page.locator('[data-sonner-toast]').filter({ hasText: STALE_ADJUSTMENTS }).first()).toBeVisible({ timeout: 10000 })
+    // nothing was written by the refused approval
+    expect(await getPayrollRunStatus(payrollRunId)).toBe('APPROVED')
+    expect(await getRevisions(payrollRunId)).toMatchObject([{ revisionNumber: 1, status: 'APPROVED', isCurrent: true }, { revisionNumber: 2, status: 'DRAFT' }])
+    expect(await adjustment(rajeshAdjustmentId)).toEqual({ status: 'ACTIVE', remaining: 20, carried: 0 })
+    expect(await adjustment(anitaAdjustmentId)).toEqual({ status: 'ACTIVE', remaining: 1500, carried: 0 })
+
+    // Recalculating freezes 20; approving takes the balance to exactly 0.
+    await expect(page.locator('h1:has-text("Payroll Correction")')).toBeVisible({ timeout: 15000 })
+    await recalculate(page)
+    const second = (await getRevisions(payrollRunId)).find((r) => r.status === 'DRAFT')!
+    const secondNet = Object.fromEntries((await getRevisionEmployees(second.id)).map((e) => [e.employeeCode, e.netPayable]))
+    expect(secondNet).toEqual({ [ANITA]: 2750, [RAJESH]: 4180 }) // 4200 - 20
+    await page.getByRole('button', { name: 'Approve Revision' }).click()
+    await page.getByRole('button', { name: 'Confirm Revision' }).click()
+    await expect(page).toHaveURL(new RegExp(`/payroll/run/${payrollRunId}$`), { timeout: 30000 })
+    await settled(page)
+
+    expect(await adjustment(rajeshAdjustmentId)).toEqual({ status: 'COMPLETED', remaining: 0, carried: 0 })
+    expect(await application(rajeshApplicationId)).toEqual({ status: 'APPROVED', amount: 20, carriedTo: null })
+    expect(await adjustment(anitaAdjustmentId)).toEqual({ status: 'ACTIVE', remaining: 1500, carried: 0 })
+    const run = await prisma.payrollRun.findUniqueOrThrow({ where: { id: payrollRunId } })
+    expect(run.status).toBe('REVISED')
+    expect(Number(run.totalDeductions)).toBe(520) // Anita's 500 kept, Rajesh's 20
+  })
+})
+
+test.describe('The weekly adjustments pages while a correction is open', () => {
+  test('cancelling and editing an adjustment of the week are refused with the message on the page and nothing changes; after the correction is cancelled the same cancel works', async ({ page }) => {
+    await openAdjustments(page, 'Weekly pages must wait')
+
+    // Cancel (Delete): refused, shown above the adjustment.
+    await page.goto(`/adjustments/${rajeshAdjustmentId}`)
+    await expect(page.locator('h1:has-text("Adjustment Detail")')).toBeVisible({ timeout: 15000 })
+    await settled(page)
+    await page.locator('#delete-adjustment-btn').click()
+    await page.locator('#delete-confirm-btn').click()
+    await expect(page.getByText(CORRECTION_OPEN)).toBeVisible({ timeout: 15000 })
+    await expect(page).toHaveURL(new RegExp(`/adjustments/${rajeshAdjustmentId}$`))
+    expect(await adjustment(rajeshAdjustmentId)).toEqual({ status: 'ACTIVE', remaining: 2000, carried: 0 })
+    expect(await application(rajeshApplicationId)).toEqual({ status: 'PENDING', amount: 500, carriedTo: null })
+    expect(await applicationCount(rajeshAdjustmentId)).toBe(1)
+
+    // Edit: refused as well, shown beside the button.
+    await page.goto(`/adjustments/${rajeshAdjustmentId}/edit`)
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeVisible({ timeout: 15000 })
+    await settled(page)
+    await page.getByRole('button', { name: 'Save Changes' }).click()
+    await expect(page.getByText(CORRECTION_OPEN)).toBeVisible({ timeout: 15000 })
+    expect(await adjustment(rajeshAdjustmentId)).toEqual({ status: 'ACTIVE', remaining: 2000, carried: 0 })
+    expect(await application(rajeshApplicationId)).toEqual({ status: 'PENDING', amount: 500, carriedTo: null })
+
+    // The correction is still open, untouched by the refusals.
+    expect((await getCorrectionSessions(payrollRunId))[0].status).toBe('IN_PROGRESS')
+
+    // Cancel the correction: the week is the weekly review's again, and the same cancel works.
+    await page.goto(`/payroll/run/${payrollRunId}/correct`)
+    await page.getByRole('button', { name: 'Cancel Correction' }).click()
+    await expect(page).toHaveURL(new RegExp(`/payroll/run/${payrollRunId}$`), { timeout: 20000 })
+    await settled(page)
+    expect((await getCorrectionSessions(payrollRunId))[0].status).toBe('ABANDONED')
+
+    await page.goto(`/adjustments/${rajeshAdjustmentId}`)
+    await expect(page.locator('h1:has-text("Adjustment Detail")')).toBeVisible({ timeout: 15000 })
+    await settled(page)
+    await page.locator('#delete-adjustment-btn').click()
+    await page.locator('#delete-confirm-btn').click()
+    // Judged by what the cancel did, not by where the page goes next: on the production build the detail page stays on
+    // "Cancelling…" and never navigates to the list even when no correction is involved (the row is cancelled).
+    await expect.poll(async () => (await adjustment(rajeshAdjustmentId)).status, { timeout: 20000 }).toBe('CANCELLED')
+    expect(await applicationCount(rajeshAdjustmentId)).toBe(0) // the pending application is removed
+    await expect(page.getByText(CORRECTION_OPEN)).toHaveCount(0)
+  })
+})
+
+// Last on purpose: the file runs serially, and this one is red while the list hides an approved unlinked application.
+test.describe('The correction step after Back from the preview', () => {
+  test('an application the user approved in this correction is still listed, with its status, when the step is opened again', async ({ page }) => {
+    await openAdjustments(page, 'Back from the preview')
+    await row(page, 'Rajesh Iyer').getByRole('button', { name: 'Approve' }).click()
+    await expect(row(page, 'Rajesh Iyer').getByText('Approved')).toBeVisible({ timeout: 8000 })
+    await recalculate(page)
+
+    // Back from the preview (or any reload of the step): the list is read from the database again.
+    await page.goto(`/payroll/run/${payrollRunId}/correct`)
+    await expect(page.locator('h1:has-text("Payroll Correction")')).toBeVisible({ timeout: 15000 })
+
+    // Rajesh's application was PENDING and never linked to the run; approving it does not link it, and the list shows
+    // an unlinked application only while it is PENDING, so the row the user just approved is gone and cannot be changed.
+    await expect(row(page, 'Rajesh Iyer')).toBeVisible({ timeout: 8000 })
+    await expect(row(page, 'Rajesh Iyer').getByText('Approved')).toBeVisible()
+  })
+})
