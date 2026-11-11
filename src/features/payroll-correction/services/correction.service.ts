@@ -28,6 +28,10 @@ import {
   undoApprovalOnAdjustment,
 } from '@/features/payroll-adjustments/services/adjustment.service'
 import { AdjustmentServiceError } from '@/features/payroll-adjustments/types/adjustment.types'
+import {
+  parseAdjustmentSnapshot,
+  type AdjustmentSnapshotEntry,
+} from '@/features/payroll-correction/services/adjustment-settlement'
 import { auditEntry } from '@/features/attendance-sync/services/attendance-audit.service'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
 import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
@@ -45,24 +49,6 @@ function parseCorrectionTypes(value: unknown): CorrectionType[] {
   if (!Array.isArray(value)) return []
   return value.filter(
     (v): v is CorrectionType => v === 'ADJUSTMENTS' || v === 'ATTENDANCE' || v === 'EMPLOYEE_DATA',
-  )
-}
-
-/** What an adjustment application looked like before the correction reset it. */
-interface AdjustmentSnapshotEntry {
-  applicationId: string
-  approvalStatus: string
-  isReversed: boolean
-  approvedAt: string | null
-  skippedAt: string | null
-  appliedAt: string | null
-}
-
-function parseAdjustmentSnapshot(value: unknown): AdjustmentSnapshotEntry[] {
-  if (!Array.isArray(value)) return []
-  return value.filter(
-    (entry): entry is AdjustmentSnapshotEntry =>
-      typeof entry === 'object' && entry !== null && typeof (entry as AdjustmentSnapshotEntry).applicationId === 'string',
   )
 }
 
