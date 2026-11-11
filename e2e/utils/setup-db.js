@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- plain CommonJS Node script run directly with `node` (package.json is not "type": "module"), so require() is how it imports. */
 require('dotenv').config();
 const { Client } = require('pg');
 

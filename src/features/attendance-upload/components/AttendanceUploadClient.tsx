@@ -163,6 +163,7 @@ export function AttendanceUploadClient({
     } = initialDialogState
 
     // Show loading overlay immediately
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time hydration from server-provided session-resume props (guarded by hydratedFromSession); shows the overlay before the async fetch below
     setDialog({
       type: 'resuming',
       storageKey,

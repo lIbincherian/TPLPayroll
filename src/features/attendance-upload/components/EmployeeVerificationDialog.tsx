@@ -133,6 +133,7 @@ export function EmployeeVerificationDialog({
   // When parent provides a fresh initialState (session resume), re-sync.
   useEffect(() => {
     if (!initialState) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- re-sync local decision state when the parent hands over a fresh initialState (session resume)
     setDecisions(initialState.verificationDecisions ?? {})
     const next: Record<string, UnmatchedDecision> = {}
     for (const [key, id] of Object.entries(initialState.manualMatchDecisions ?? {})) {

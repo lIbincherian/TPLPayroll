@@ -372,6 +372,7 @@ export function ImportPreviewClient() {
     }
     try {
       const data = JSON.parse(raw) as StoredPreviewData
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- sessionStorage is browser-only, so the stored preview can only be hydrated after mount
       setPreviewData(data)
       setValidRows(data.parseResult.validRows)
       setInvalidRows(data.parseResult.invalidRows)
