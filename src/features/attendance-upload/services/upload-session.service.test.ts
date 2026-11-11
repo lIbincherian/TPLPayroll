@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { AttendanceUploadSession } from '@prisma/client'
 import {
   createUploadSession,
   loadUploadSession,
@@ -20,6 +21,21 @@ describe('upload-session.service', () => {
     rejectedBlockKeys: ['Sheet1||3'],
   })
 
+  const makeSession = (overrides: Partial<AttendanceUploadSession> = {}): AttendanceUploadSession => ({
+    id: 'sess-1',
+    storageKey: 'attendance/uuid_x.xlsx',
+    fileName: 'x.xlsx',
+    fileType: 'xlsx',
+    weekStart: '2026-05-04',
+    weekEnd: '2026-05-10',
+    weekSource: 'MANUAL',
+    decisionsJson: JSON.stringify(makeDecisions()),
+    pendingBlockKey: 'Sheet1||5',
+    expiresAt: new Date('2026-05-11T10:30:00.000Z'),
+    createdAt: new Date('2026-05-11T10:00:00.000Z'),
+    ...overrides,
+  })
+
   describe('createUploadSession', () => {
     it('creates a session with expiresAt = now + 30 minutes', async () => {
       const now = new Date('2026-05-11T10:00:00.000Z')
@@ -27,23 +43,11 @@ describe('upload-session.service', () => {
 
       const createSpy = vi
         .spyOn(prisma.attendanceUploadSession, 'create')
-        .mockResolvedValue({
-          id: 'sess-1',
-          storageKey: 'attendance/uuid_x.xlsx',
-          fileName: 'x.xlsx',
-          fileType: 'xlsx',
-          weekStart: '2026-05-04',
-          weekEnd: '2026-05-10',
-          weekSource: 'MANUAL',
-          decisionsJson: JSON.stringify(makeDecisions()),
-          pendingBlockKey: 'Sheet1||5',
-          expiresAt: expectedExpiry,
-          createdAt: now,
-        } as any)
+        .mockResolvedValue(makeSession({ expiresAt: expectedExpiry, createdAt: now }))
 
       vi.spyOn(prisma.attendanceUploadSession, 'deleteMany').mockResolvedValue({
         count: 0,
-      } as any)
+      })
 
       const result = await createUploadSession({
         storageKey: 'attendance/uuid_x.xlsx',
@@ -69,7 +73,7 @@ describe('upload-session.service', () => {
       })
 
       const call = createSpy.mock.calls[0][0]
-      const stored = JSON.parse((call.data as any).decisionsJson)
+      const stored = JSON.parse((call.data as { decisionsJson: string }).decisionsJson)
       expect(stored.verificationDecisions).toEqual({ 'emp-1': 'APPROVED' })
       expect(stored.manualMatchDecisions).toEqual({ 'Sheet1||0': 'emp-2' })
       expect(stored.rejectedBlockKeys).toEqual(['Sheet1||3'])
@@ -78,12 +82,12 @@ describe('upload-session.service', () => {
     it('inline-prunes expired sessions on create (fire-and-forget)', async () => {
       const now = new Date('2026-05-11T10:00:00.000Z')
 
-      vi.spyOn(prisma.attendanceUploadSession, 'create').mockResolvedValue({
-        id: 'sess-1',
-      } as any)
+      vi.spyOn(prisma.attendanceUploadSession, 'create').mockResolvedValue(
+        makeSession({ id: 'sess-1' })
+      )
       const deleteManySpy = vi
         .spyOn(prisma.attendanceUploadSession, 'deleteMany')
-        .mockResolvedValue({ count: 3 } as any)
+        .mockResolvedValue({ count: 3 })
 
       await createUploadSession({
         storageKey: 'attendance/uuid_x.xlsx',
@@ -110,19 +114,9 @@ describe('upload-session.service', () => {
       const now = new Date('2026-05-11T10:00:00.000Z')
       const future = new Date(now.getTime() + 60_000)
 
-      vi.spyOn(prisma.attendanceUploadSession, 'findUnique').mockResolvedValue({
-        id: 'sess-1',
-        tempFilePath: '/tmp/x.xlsx',
-        fileName: 'x.xlsx',
-        fileType: 'xlsx',
-        weekStart: '2026-05-04',
-        weekEnd: '2026-05-10',
-        weekSource: 'MANUAL',
-        decisionsJson: JSON.stringify(makeDecisions()),
-        pendingBlockKey: 'Sheet1||5',
-        expiresAt: future,
-        createdAt: now,
-      } as any)
+      vi.spyOn(prisma.attendanceUploadSession, 'findUnique').mockResolvedValue(
+        makeSession({ expiresAt: future, createdAt: now })
+      )
 
       const result = await loadUploadSession('sess-1', now)
 
@@ -138,12 +132,9 @@ describe('upload-session.service', () => {
       const now = new Date('2026-05-11T10:00:00.000Z')
       const past = new Date(now.getTime() - 60_000)
 
-      vi.spyOn(prisma.attendanceUploadSession, 'findUnique').mockResolvedValue({
-        id: 'sess-1',
-        decisionsJson: '{}',
-        expiresAt: past,
-        weekSource: 'MANUAL',
-      } as any)
+      vi.spyOn(prisma.attendanceUploadSession, 'findUnique').mockResolvedValue(
+        makeSession({ decisionsJson: '{}', expiresAt: past })
+      )
 
       const result = await loadUploadSession('sess-1', now)
       expect(result).toBeNull()
@@ -157,12 +148,9 @@ describe('upload-session.service', () => {
 
     it('returns null when expiresAt equals now (boundary)', async () => {
       const now = new Date('2026-05-11T10:00:00.000Z')
-      vi.spyOn(prisma.attendanceUploadSession, 'findUnique').mockResolvedValue({
-        id: 'sess-1',
-        decisionsJson: '{}',
-        expiresAt: now,
-        weekSource: 'MANUAL',
-      } as any)
+      vi.spyOn(prisma.attendanceUploadSession, 'findUnique').mockResolvedValue(
+        makeSession({ decisionsJson: '{}', expiresAt: now })
+      )
       const result = await loadUploadSession('sess-1', now)
       expect(result).toBeNull()
     })
@@ -171,19 +159,9 @@ describe('upload-session.service', () => {
       const now = new Date('2026-05-11T10:00:00.000Z')
       const future = new Date(now.getTime() + 60_000)
 
-      vi.spyOn(prisma.attendanceUploadSession, 'findUnique').mockResolvedValue({
-        id: 'sess-1',
-        tempFilePath: '/tmp/x.xlsx',
-        fileName: 'x.xlsx',
-        fileType: 'xlsx',
-        weekStart: '2026-05-04',
-        weekEnd: '2026-05-10',
-        weekSource: 'MANUAL',
-        decisionsJson: 'not-json',
-        pendingBlockKey: 'Sheet1||5',
-        expiresAt: future,
-        createdAt: now,
-      } as any)
+      vi.spyOn(prisma.attendanceUploadSession, 'findUnique').mockResolvedValue(
+        makeSession({ decisionsJson: 'not-json', expiresAt: future, createdAt: now })
+      )
 
       const result = await loadUploadSession('sess-1', now)
       expect(result).not.toBeNull()
@@ -199,7 +177,7 @@ describe('upload-session.service', () => {
     it('deletes the session by id', async () => {
       const deleteSpy = vi
         .spyOn(prisma.attendanceUploadSession, 'delete')
-        .mockResolvedValue({ id: 'sess-1' } as any)
+        .mockResolvedValue(makeSession({ id: 'sess-1' }))
 
       await expireUploadSession('sess-1')
 
@@ -220,7 +198,7 @@ describe('upload-session.service', () => {
       const now = new Date('2026-05-11T10:00:00.000Z')
       const deleteManySpy = vi
         .spyOn(prisma.attendanceUploadSession, 'deleteMany')
-        .mockResolvedValue({ count: 5 } as any)
+        .mockResolvedValue({ count: 5 })
 
       const count = await pruneExpiredSessions(now)
 

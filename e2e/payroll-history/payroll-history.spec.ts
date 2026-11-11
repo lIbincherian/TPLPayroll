@@ -8,7 +8,7 @@ test.beforeAll(async () => {
     await cleanupDatabase()
     const seed = await seedApprovedPayrollData()
     payrollRunId = seed.payrollRunId
-  } catch (err: any) {
+  } catch (err) {
     throw err
   }
 })

@@ -78,6 +78,7 @@ export function EmployeeListTable() {
 
   // Clear selections when search, status filter, or page changes
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the row selection whenever the list query (search, filters, sort, page) changes
     setSelectedIds(new Set())
   }, [search, status, designation, site, sortBy, sortOrder, page])
 

@@ -100,6 +100,7 @@ export function CorrectionFlow({ data, weekLabel, initialDialogState }: Correcti
     if (hydratedFromSession.current) return
     if (!initialDialogState) return
     hydratedFromSession.current = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time hydration from server-provided session-resume props (guarded by hydratedFromSession)
     setSelectedTypes(new Set(['ATTENDANCE'])) // Auto-select Attendance option when resuming
     // initialDialogState is lean (no records[]) — records are fetched client-side
     // by the attendanceSession resume flow before CorrectionFlow mounts.

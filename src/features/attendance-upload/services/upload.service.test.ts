@@ -22,7 +22,52 @@ vi.mock('@/lib/prisma', () => ({
 import { replaceAttendanceUpload } from './upload.service'
 import prisma from '@/lib/prisma'
 import * as supabaseStorage from '@/lib/supabase-storage'
+import type { AttendanceUpload } from '@prisma/client'
 import type { MatchedAttendanceRecord } from '@/features/attendance-upload/types/attendance.types'
+
+function makeUpload(overrides: Partial<AttendanceUpload> = {}): AttendanceUpload {
+  return {
+    id: 'upload-1',
+    fileName: 'attendance.xlsx',
+    fileType: 'xlsx',
+    payrollWeekStartDate: new Date('2025-05-01T00:00:00Z'),
+    payrollWeekEndDate: new Date('2025-05-07T00:00:00Z'),
+    payrollWeekSource: 'SHEET_CONTENT',
+    status: 'READY',
+    isActiveForPayrollWeek: true,
+    uploadedBy: null,
+    uploadedAt: new Date('2025-05-08T00:00:00Z'),
+    sourceStorageKey: null,
+    ...overrides,
+  }
+}
+
+function makeMatchedRecord(): MatchedAttendanceRecord {
+  return {
+    employeeName: 'Ravi Kumar',
+    site: null,
+    sourceSheetName: 'Sheet1',
+    sourceEmployeeBlockIndex: 0,
+    totalRegularHours: 8,
+    totalOvertimeHours: 0,
+    dailyHours: [
+      {
+        regularHours: 8,
+        overtimeHours: 0,
+        beforeNoonIn: null,
+        beforeNoonOut: null,
+        afternoonIn: null,
+        afternoonOut: null,
+        overtimeIn: null,
+        overtimeOut: null,
+      },
+    ],
+    parseErrors: [],
+    matchStatus: 'MATCHED',
+    isBlocking: false,
+    employeeDbId: 'emp-1',
+  }
+}
 
 describe('upload.service - replaceAttendanceUpload', () => {
   beforeEach(() => {
@@ -40,13 +85,13 @@ describe('upload.service - replaceAttendanceUpload', () => {
     const payrollWeekStart = new Date('2025-05-01T00:00:00Z')
     const payrollWeekEnd = new Date('2025-05-07T00:00:00Z')
 
-    const previousUpload = {
+    const previousUpload = makeUpload({
       id: oldUploadId,
       sourceStorageKey: 'attendance/old-uuid_attendance.xlsx',
       isActiveForPayrollWeek: true,
       payrollWeekStartDate: payrollWeekStart,
       payrollWeekEndDate: payrollWeekEnd,
-    } as any
+    })
 
     const params = {
       previousUpload,
@@ -55,23 +100,19 @@ describe('upload.service - replaceAttendanceUpload', () => {
       fileType: 'xlsx',
       payrollWeekStartDate: payrollWeekStart,
       payrollWeekEndDate: payrollWeekEnd,
-      payrollWeekSource: 'AUTO' as const,
+      payrollWeekSource: 'SHEET_CONTENT' as const,
       status: 'READY',
-      records: [
-        {
-          employeeDbId: 'emp-1',
-          matchStatus: 'MATCHED',
-          dailyHours: [{ regularHours: 8, overtimeHours: 0 }],
-          sourceSheetName: 'Sheet1',
-          sourceEmployeeBlockIndex: 0,
-        },
-      ] as any,
+      records: [makeMatchedRecord()],
       payrollWeekStartISO: '2025-05-01',
     }
 
-    vi.mocked(prisma.attendanceUpload.update).mockResolvedValue({ id: oldUploadId, isActiveForPayrollWeek: false } as any)
-    vi.mocked(prisma.attendanceUpload.create).mockResolvedValue({ id: 'new-id-1', isActiveForPayrollWeek: true } as any)
-    vi.mocked(prisma.attendanceRecord.createMany).mockResolvedValue({ count: 1 } as any)
+    vi.mocked(prisma.attendanceUpload.update).mockResolvedValue(
+      makeUpload({ id: oldUploadId, isActiveForPayrollWeek: false })
+    )
+    vi.mocked(prisma.attendanceUpload.create).mockResolvedValue(
+      makeUpload({ id: 'new-id-1', isActiveForPayrollWeek: true })
+    )
+    vi.mocked(prisma.attendanceRecord.createMany).mockResolvedValue({ count: 1 })
 
     const result = await replaceAttendanceUpload(params)
 
@@ -100,10 +141,10 @@ describe('upload.service - replaceAttendanceUpload', () => {
   })
 
   it('should still proceed if the previous upload has no Storage key (legacy row)', async () => {
-    const previousUpload = {
+    const previousUpload = makeUpload({
       id: 'old-id',
       sourceStorageKey: null, // legacy row — no storage key
-    } as any
+    })
 
     const params = {
       previousUpload,
@@ -112,14 +153,14 @@ describe('upload.service - replaceAttendanceUpload', () => {
       fileType: 'xlsx',
       payrollWeekStartDate: new Date(),
       payrollWeekEndDate: new Date(),
-      payrollWeekSource: 'AUTO' as const,
+      payrollWeekSource: 'SHEET_CONTENT' as const,
       status: 'READY',
       records: [] as MatchedAttendanceRecord[],
       payrollWeekStartISO: '2025-05-01',
     }
 
-    vi.mocked(prisma.attendanceUpload.update).mockResolvedValue({} as any)
-    vi.mocked(prisma.attendanceUpload.create).mockResolvedValue({ id: 'new-id' } as any)
+    vi.mocked(prisma.attendanceUpload.update).mockResolvedValue(makeUpload({ id: 'old-id' }))
+    vi.mocked(prisma.attendanceUpload.create).mockResolvedValue(makeUpload({ id: 'new-id' }))
 
     await replaceAttendanceUpload(params)
 

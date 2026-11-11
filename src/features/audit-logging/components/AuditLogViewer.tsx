@@ -192,6 +192,7 @@ export function AuditLogViewer() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- show the loading state synchronously when filters or page change, before the fetch starts
     setLoading(true)
     const params = new URLSearchParams()
     if (entityType) params.set('entityType', entityType)

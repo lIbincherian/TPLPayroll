@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest'
+import type { ComponentProps } from 'react'
+import { describe, it, expect, vi, type Mock } from 'vitest'
 import { render, screen, within, fireEvent } from '@testing-library/react'
 import { EmployeeVerificationDialog } from '@/features/attendance-upload/components/EmployeeVerificationDialog'
 import type { MatchedAttendanceRecord } from '@/features/attendance-upload/types/attendance.types'
@@ -50,13 +51,15 @@ const EMPLOYEE_OPTIONS: EmployeeOption[] = [
   { id: 'emp-2', employeeId: 'EMP-002', employeeName: 'Priya Nair' },
 ]
 
+type DialogProps = ComponentProps<typeof EmployeeVerificationDialog>
+
 interface RenderArgs {
   unmatched?: MatchedAttendanceRecord[]
   verifiable?: MatchedAttendanceRecord[]
   pendingOnboardBlockKeys?: string[]
-  onConfirm?: ReturnType<typeof vi.fn>
-  onCancel?: ReturnType<typeof vi.fn>
-  onOnboard?: ReturnType<typeof vi.fn>
+  onConfirm?: Mock<DialogProps['onConfirm']>
+  onCancel?: Mock<DialogProps['onCancel']>
+  onOnboard?: Mock<DialogProps['onOnboard']>
 }
 
 function renderDialog(args: RenderArgs = {}) {
@@ -64,9 +67,9 @@ function renderDialog(args: RenderArgs = {}) {
     unmatched = [makeUnmatched('Unknown Person', 0)],
     verifiable = [],
     pendingOnboardBlockKeys,
-    onConfirm = vi.fn(),
-    onCancel = vi.fn(),
-    onOnboard = vi.fn(),
+    onConfirm = vi.fn<DialogProps['onConfirm']>(),
+    onCancel = vi.fn<DialogProps['onCancel']>(),
+    onOnboard = vi.fn<DialogProps['onOnboard']>(),
   } = args
 
   const utils = render(

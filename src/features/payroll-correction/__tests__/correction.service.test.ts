@@ -322,7 +322,7 @@ describe('recalculateAndCreateRevision', () => {
       if (Array.isArray(promises)) {
         return Promise.all(promises)
       }
-      return promises as any
+      return promises as never
     })
 
     return { newRevision }

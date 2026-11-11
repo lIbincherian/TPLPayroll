@@ -1,9 +1,36 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- plain CommonJS Node script run directly with `node` (package.json is not "type": "module"), so require() is how it imports. */
 require('dotenv').config();
 const { Client } = require('pg');
 
 const connectionString = process.env.DIRECT_DATABASE_URL || process.env.DATABASE_URL || '';
 
+// This script TRUNCATEs the app's tables, so it only ever runs against a local database:
+// a developer's `prisma dev` instance or the Postgres service container in CI.
+// The schema itself must already exist (`npx prisma migrate deploy`); this script never creates it.
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function assertLocalDatabase(url) {
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    throw new Error('DIRECT_DATABASE_URL / DATABASE_URL is missing or not a valid URL.');
+  }
+  if (!LOCAL_HOSTS.has(host)) {
+    throw new Error(
+      `Refusing to truncate and seed a non-local database (host: ${host}). ` +
+        'Point DIRECT_DATABASE_URL at a local Postgres (e.g. `npx prisma dev`) to run the e2e suite.'
+    );
+  }
+}
+
 async function runSetup() {
+  try {
+    assertLocalDatabase(connectionString);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
   console.log(`Using connection string: ${connectionString.split('@')[1] || connectionString}`);
   let retries = 3;
   
@@ -65,6 +92,12 @@ async function runSetup() {
       await client.end();
       break;
     } catch (err) {
+      if (err && err.code === '42P01') {
+        // undefined_table: retrying cannot help, the schema has not been applied to this database.
+        console.error('The database has no schema yet. Run `npx prisma migrate deploy` against it first.', err.message);
+        try { await client.end(); } catch { /* connection already closed */ }
+        process.exit(1);
+      }
       console.error(`Setup attempt failed (retries left: ${retries - 1}):`, err);
       try { await client.end(); } catch (e) {}
       retries--;

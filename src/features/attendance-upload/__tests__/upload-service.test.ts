@@ -17,7 +17,7 @@ vi.mock('@/lib/prisma', () => ({
       if (Array.isArray(promises)) {
         return Promise.all(promises)
       }
-      return promises as any
+      return promises as never
     }),
   },
 }))
@@ -105,10 +105,8 @@ describe('replaceAttendanceUpload', () => {
 
   it('deactivates the previous upload record', async () => {
     const previousUpload = makeUpload()
-    let capturedTxUpdate: ReturnType<typeof vi.fn> | undefined
 
     const txUpdate = vi.fn().mockResolvedValue({ ...previousUpload, isActiveForPayrollWeek: false })
-    capturedTxUpdate = txUpdate
     vi.mocked(prisma.attendanceUpload.update).mockImplementation(txUpdate as never)
     vi.mocked(prisma.attendanceUpload.create).mockResolvedValue({ id: 'upload-new', isActiveForPayrollWeek: true } as never)
     vi.mocked(prisma.attendanceRecord.createMany).mockResolvedValue({ count: 1 } as never)
@@ -126,7 +124,7 @@ describe('replaceAttendanceUpload', () => {
       payrollWeekStartISO: '2025-03-06',
     })
 
-    expect(capturedTxUpdate).toHaveBeenCalledWith(
+    expect(txUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'upload-old' },
         data: expect.objectContaining({ isActiveForPayrollWeek: false }),
@@ -136,10 +134,8 @@ describe('replaceAttendanceUpload', () => {
 
   it('creates new upload record as active with the new storageKey', async () => {
     const previousUpload = makeUpload()
-    let capturedTxCreate: ReturnType<typeof vi.fn> | undefined
 
     const txCreate = vi.fn().mockResolvedValue({ id: 'upload-new', isActiveForPayrollWeek: true })
-    capturedTxCreate = txCreate
     vi.mocked(prisma.attendanceUpload.update).mockResolvedValue({ ...previousUpload, isActiveForPayrollWeek: false } as never)
     vi.mocked(prisma.attendanceUpload.create).mockImplementation(txCreate as never)
     vi.mocked(prisma.attendanceRecord.createMany).mockResolvedValue({ count: 1 } as never)
@@ -157,7 +153,7 @@ describe('replaceAttendanceUpload', () => {
       payrollWeekStartISO: '2025-03-06',
     })
 
-    expect(capturedTxCreate).toHaveBeenCalledWith(
+    expect(txCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           isActiveForPayrollWeek: true,

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- plain CommonJS Node script run directly with `node` (package.json is not "type": "module"), so require() is how it imports. */
 const XLSX = require('xlsx');
 const path = require('path');
 const fs = require('fs');

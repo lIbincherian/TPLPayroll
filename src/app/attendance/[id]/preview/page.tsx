@@ -28,21 +28,21 @@ export default async function AttendancePreviewPage({ params }: Props) {
 
   const total = records.length
   const matched = records.filter((r) => {
-    const status = (r as any).matchStatus
-    const decision = (r as any).verificationDecision
+    const status = r.matchStatus
+    const decision = r.verificationDecision
     return (
       status === 'MATCHED' ||
       status === 'MANUALLY_MATCHED' ||
       ((status === 'INACTIVE' || status === 'RESIGNED_BEFORE_WEEK') && decision === 'APPROVED')
     )
   }).length
-  const unmatched = records.filter((r) => (r as any).matchStatus === 'UNMATCHED').length
+  const unmatched = records.filter((r) => r.matchStatus === 'UNMATCHED').length
   const excluded = records.filter((r) => {
-    const status = (r as any).matchStatus
+    const status = r.matchStatus
     if (status === 'REJECTED_UNMATCHED') return true
     return (
       (status === 'INACTIVE' || status === 'RESIGNED_BEFORE_WEEK') &&
-      (r as any).verificationDecision === 'REJECTED'
+      r.verificationDecision === 'REJECTED'
     )
   }).length
 
@@ -63,7 +63,7 @@ export default async function AttendancePreviewPage({ params }: Props) {
         matched={matched}
         unmatched={unmatched}
         excluded={excluded}
-        records={records as any}
+        records={records}
       />
     </AppShell>
   )

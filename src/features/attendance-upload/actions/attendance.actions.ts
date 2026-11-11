@@ -389,6 +389,9 @@ export interface AttendancePreviewData {
     totalRegularHours: number
     totalOvertimeHours: number
     sourceSheetName: string | null
+    matchStatus?: MatchStatus
+    isBlocking?: boolean
+    verificationDecision?: VerificationDecision | null
   }[]
 }
 
@@ -453,7 +456,7 @@ export async function getAttendanceUploadPreviewAction(
                 sourceSheetName: r.sourceSheetName,
                 matchStatus,
                 isBlocking: matchStatus === 'UNMATCHED',
-                verificationDecision: saved?.verificationDecision ?? null,
+                verificationDecision: (saved?.verificationDecision ?? null) as VerificationDecision | null,
               }
             }),
           },
