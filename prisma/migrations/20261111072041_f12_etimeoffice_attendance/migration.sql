@@ -12,7 +12,7 @@
 -- their status and file columns; only the NOT NULL on fileName and fileType is lifted so eTimeOffice weeks,
 -- which have no file, fit the same table. Existing "AttendanceRecord" rows are not touched.
 --
--- If a deploy fails at the guard in step 1 below, nothing was changed; see docs/ci-and-migrations.md
+-- If a deploy fails at the guard in the data steps below, nothing was changed; see docs/ci-and-migrations.md
 -- ("Releasing F12") for how to fix the data and deploy again.
 
 -- AlterTable
