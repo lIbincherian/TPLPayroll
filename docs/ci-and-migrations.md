@@ -87,12 +87,36 @@ Settings to apply on `main`:
 - require these status checks: `lint-typecheck`, `unit`, `migrations`, `build`, `e2e`;
 - require branches to be up to date before merging;
 - no force pushes, no branch deletion;
-- apply to administrators as well (remove `enforce_admins` below if you want an escape hatch).
+- apply to administrators as well (set `enforce_admins` to `false` below if you want an escape hatch; the field is required, so don't remove it).
 
-This needs admin rights on the repository. Apply it once CI has run on a PR so the check names exist:
+This needs admin rights on the repository. Apply it once CI has run on a PR so the check names exist.
+
+PowerShell:
+
+```powershell
+$repo = gh repo view --json nameWithOwner -q .nameWithOwner
+@'
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": ["lint-typecheck", "unit", "migrations", "build", "e2e"]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 0
+  },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+'@ | gh api --method PUT "repos/$repo/branches/main/protection" --input -
+```
+
+bash (macOS, Linux, Git Bash):
 
 ```bash
-gh api --method PUT "repos/$(gh repo view --json nameWithOwner -q .nameWithOwner)/branches/main/protection" --input - <<'JSON'
+repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+gh api --method PUT "repos/$repo/branches/main/protection" --input - <<'JSON'
 {
   "required_status_checks": {
     "strict": true,
@@ -108,5 +132,7 @@ gh api --method PUT "repos/$(gh repo view --json nameWithOwner -q .nameWithOwner
 }
 JSON
 ```
+
+Check it took effect: `gh api "repos/$repo/branches/main/protection" -q .required_status_checks.contexts` should list the five checks.
 
 `required_approving_review_count: 0` requires a pull request without requiring a second person to approve it. The call replaces the whole protection rule for `main`, so re-run it with the full body if you change one setting.
