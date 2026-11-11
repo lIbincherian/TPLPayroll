@@ -24,6 +24,7 @@ vi.mock('@/lib/prisma', () => ({
 }))
 
 import prisma from '@/lib/prisma'
+import { plainPromiseMock } from '@/__tests__/helpers/plain-promise-mock'
 import {
   bulkUpdateStatus,
   bulkUpdateHourlyRate,
@@ -80,28 +81,28 @@ function setupTransactionMock() {
   const capturedWageCreates: { data: Record<string, unknown> }[] = []
   const capturedWageUpdates: { where: Record<string, unknown>; data: Record<string, unknown> }[] = []
 
-  vi.mocked(prisma.employee.update).mockImplementation(async (args) => {
+  plainPromiseMock(prisma.employee.update).mockImplementation(async (args) => {
     capturedUpdates.push({ id: (args as { where: { id: string } }).where.id, data: (args as { data: Record<string, unknown> }).data })
     return makeEmployee({ ...(args as { data: Record<string, unknown> }).data, id: (args as { where: { id: string } }).where.id })
   })
 
-  vi.mocked(prisma.employeeWageHistory.create).mockImplementation(async (args) => {
+  plainPromiseMock(prisma.employeeWageHistory.create).mockImplementation(async (args) => {
     capturedWageCreates.push(args as { data: Record<string, unknown> })
     return { id: 'new-wh-' + capturedWageCreates.length, ...(args as { data: Record<string, unknown> }).data } as EmployeeWageHistory
   })
 
-  vi.mocked(prisma.employeeWageHistory.updateMany).mockImplementation(async (args) => {
+  plainPromiseMock(prisma.employeeWageHistory.updateMany).mockImplementation(async (args) => {
     capturedWageUpdates.push(args as { where: Record<string, unknown>; data: Record<string, unknown> })
     return { count: 1 }
   })
 
-  vi.mocked(prisma.auditLog.create).mockImplementation(async (args) => {
+  plainPromiseMock(prisma.auditLog.create).mockImplementation(async (args) => {
     capturedAuditLogs.push(args as { data: Record<string, unknown> })
     return {} as AuditLog
   })
 
   vi.mocked(prisma.$transaction).mockImplementation(async (promises) =>
-    Promise.all(promises as Promise<unknown>[])
+    Promise.all(promises as unknown as Promise<unknown>[])
   )
 
   return { capturedUpdates, capturedAuditLogs, capturedWageCreates, capturedWageUpdates }
@@ -124,7 +125,7 @@ describe('bulkUpdateStatus — Resigned', () => {
     ]
     const resignDate = new Date('2026-06-01')
 
-    vi.mocked(prisma.employee.findUnique).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employee.findUnique).mockImplementation(async (args) => {
       const id = (args as { where: { id: string } }).where.id
       return employees.find((e) => e.id === id) ?? null
     })
@@ -152,7 +153,7 @@ describe('bulkUpdateStatus — Resigned', () => {
       makeEmployee({ id: 'uuid-3', employeeId: 'EMP-003' }),
     ]
 
-    vi.mocked(prisma.employee.findUnique).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employee.findUnique).mockImplementation(async (args) => {
       const id = (args as { where: { id: string } }).where.id
       return employees.find((e) => e.id === id) ?? null
     })
@@ -174,7 +175,7 @@ describe('bulkUpdateStatus — Resigned', () => {
 
   it('handles partial failure when an employee does not exist', async () => {
     // GIVEN: uuid-1 exists, uuid-2 exists, uuid-GHOST does not
-    vi.mocked(prisma.employee.findUnique).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employee.findUnique).mockImplementation(async (args) => {
       const id = (args as { where: { id: string } }).where.id
       if (id === 'uuid-1') return makeEmployee({ id: 'uuid-1' })
       if (id === 'uuid-2') return makeEmployee({ id: 'uuid-2' })
@@ -213,7 +214,7 @@ describe('bulkUpdateStatus — Inactive', () => {
       makeEmployee({ id: 'uuid-4', isActive: true }),
     ]
 
-    vi.mocked(prisma.employee.findUnique).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employee.findUnique).mockImplementation(async (args) => {
       const id = (args as { where: { id: string } }).where.id
       return employees.find((e) => e.id === id) ?? null
     })
@@ -238,7 +239,7 @@ describe('bulkUpdateStatus — Inactive', () => {
       makeEmployee({ id: 'uuid-3', isActive: false }), // already inactive
     ]
 
-    vi.mocked(prisma.employee.findUnique).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employee.findUnique).mockImplementation(async (args) => {
       const id = (args as { where: { id: string } }).where.id
       return employees.find((e) => e.id === id) ?? null
     })
@@ -261,7 +262,7 @@ describe('bulkUpdateStatus — Inactive', () => {
       makeEmployee({ id: 'uuid-3', isActive: false }), // already inactive — skipped
     ]
 
-    vi.mocked(prisma.employee.findUnique).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employee.findUnique).mockImplementation(async (args) => {
       const id = (args as { where: { id: string } }).where.id
       return employees.find((e) => e.id === id) ?? null
     })
@@ -299,12 +300,12 @@ describe('bulkUpdateHourlyRate', () => {
       makeWageHistory({ id: 'wh-3', employeeId: 'uuid-3', hourlyRate: 70 as unknown as EmployeeWageHistory['hourlyRate'], weeklySalary: 15000 as unknown as EmployeeWageHistory['weeklySalary'] }),
     ]
 
-    vi.mocked(prisma.employee.findUnique).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employee.findUnique).mockImplementation(async (args) => {
       const id = (args as { where: { id: string } }).where.id
       return employees.find((e) => e.id === id) ?? null
     })
 
-    vi.mocked(prisma.employeeWageHistory.findMany).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employeeWageHistory.findMany).mockImplementation(async (args) => {
       const empId = (args as { where: { employeeId: string } }).where.employeeId
       return wages.filter((w) => w.employeeId === empId)
     })
@@ -337,12 +338,12 @@ describe('bulkUpdateHourlyRate', () => {
       makeWageHistory({ employeeId: 'uuid-3', hourlyRate: 70 as unknown as EmployeeWageHistory['hourlyRate'] }),
     ]
 
-    vi.mocked(prisma.employee.findUnique).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employee.findUnique).mockImplementation(async (args) => {
       const id = (args as { where: { id: string } }).where.id
       return employees.find((e) => e.id === id) ?? null
     })
 
-    vi.mocked(prisma.employeeWageHistory.findMany).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employeeWageHistory.findMany).mockImplementation(async (args) => {
       const empId = (args as { where: { employeeId: string } }).where.employeeId
       return wages.filter((w) => w.employeeId === empId)
     })
@@ -393,12 +394,12 @@ describe('bulkUpdateHourlyRate', () => {
       makeWageHistory({ employeeId: 'uuid-3', hourlyRate: 70 as unknown as EmployeeWageHistory['hourlyRate'] }),
     ]
 
-    vi.mocked(prisma.employee.findUnique).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employee.findUnique).mockImplementation(async (args) => {
       const id = (args as { where: { id: string } }).where.id
       return employees.find((e) => e.id === id) ?? null
     })
 
-    vi.mocked(prisma.employeeWageHistory.findMany).mockImplementation(async (args) => {
+    plainPromiseMock(prisma.employeeWageHistory.findMany).mockImplementation(async (args) => {
       const empId = (args as { where: { employeeId: string } }).where.employeeId
       return wages.filter((w) => w.employeeId === empId)
     })

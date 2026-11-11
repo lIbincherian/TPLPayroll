@@ -4,7 +4,7 @@ import {
   deleteFile,
   ATTENDANCE_BUCKET,
 } from '@/lib/supabase-storage'
-import type { AttendanceUpload } from '@prisma/client'
+import type { AttendanceUpload, Prisma } from '@prisma/client'
 import type {
   MatchedAttendanceRecord,
   PayrollWeekSource,
@@ -43,7 +43,7 @@ export async function createAttendanceUpload(
   const uploadId = randomUUID()
   const rowsToInsert = buildAttendanceRecords(uploadId, records, payrollWeekStartISO)
 
-  const promises: any[] = [
+  const promises: Prisma.PrismaPromise<unknown>[] = [
     prisma.attendanceUpload.create({
       data: {
         id: uploadId,
@@ -101,7 +101,7 @@ export async function replaceAttendanceUpload(
     createParams.payrollWeekStartISO
   )
 
-  const promises: any[] = [
+  const promises: Prisma.PrismaPromise<unknown>[] = [
     // Deactivate old upload
     prisma.attendanceUpload.update({
       where: { id: previousUpload.id },

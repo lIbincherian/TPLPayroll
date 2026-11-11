@@ -39,6 +39,7 @@ vi.mock('@/features/payroll-adjustments/services/adjustment.service', () => ({
 }))
 
 import prisma from '@/lib/prisma'
+import { plainPromiseMock } from '@/__tests__/helpers/plain-promise-mock'
 import { getAdjustmentsForWeekReview } from '@/features/payroll-adjustments/services/adjustment.service'
 import {
   calculateRegularPay,
@@ -69,7 +70,7 @@ function makeUpload(overrides: Partial<AttendanceUpload> = {}): AttendanceUpload
     isActiveForPayrollWeek: true,
     uploadedBy: null,
     uploadedAt: new Date('2025-03-14'),
-    sourceFilePath: '/tmp/attendance.xlsx',
+    sourceStorageKey: 'attendance/attendance.xlsx',
     ...overrides,
   }
 }
@@ -82,8 +83,15 @@ function makeRecord(overrides: Partial<AttendanceRecord> = {}): AttendanceRecord
     attendanceDate: new Date('2025-03-06'),
     regularHours: 8 as unknown as AttendanceRecord['regularHours'],
     overtimeHours: 0 as unknown as AttendanceRecord['overtimeHours'],
+    beforeNoonIn: null,
+    beforeNoonOut: null,
+    afternoonIn: null,
+    afternoonOut: null,
+    overtimeIn: null,
+    overtimeOut: null,
     sourceSheetName: 'Sheet1',
     sourceEmployeeBlockIndex: 0,
+    verificationDecision: null,
     createdAt: new Date('2025-03-14'),
     ...overrides,
   }
@@ -375,14 +383,14 @@ describe('approvePayroll', () => {
 
     vi.mocked(prisma.payrollRun.create).mockResolvedValue(createdRun)
     vi.mocked(prisma.payrollRevision.create).mockResolvedValue(createdRevision)
-    vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 1 } as any)
-    vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 } as any)
+    vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 1 })
+    vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 })
 
     vi.mocked(prisma.$transaction).mockImplementation(async (promises) => {
       if (Array.isArray(promises)) {
         return Promise.all(promises)
       }
-      return promises as any
+      return promises as never
     })
 
     const summary = makeSummary()
@@ -397,7 +405,8 @@ describe('approvePayroll', () => {
   it('stores correct totals on the run', async () => {
     vi.mocked(prisma.payrollRun.findFirst).mockResolvedValue(null)
 
-    let capturedRunData: Record<string, unknown> | null = null
+    // Assigned inside the mock below; the cast stops TS narrowing the initial null to `never`.
+    let capturedRunData = null as Record<string, unknown> | null
     const createdRun = makePayrollRun({
       totalRegularPay: 40000 as unknown as PayrollRun['totalRegularPay'],
       totalOvertimePay: 5000 as unknown as PayrollRun['totalOvertimePay'],
@@ -409,19 +418,19 @@ describe('approvePayroll', () => {
       totalNetPayable: 44000 as unknown as PayrollRevision['totalNetPayable'],
     })
 
-    vi.mocked(prisma.payrollRun.create).mockImplementation(async ({ data }: any) => {
-      capturedRunData = data
+    plainPromiseMock(prisma.payrollRun.create).mockImplementation(async (args) => {
+      capturedRunData = (args as { data: Record<string, unknown> }).data
       return createdRun
     })
     vi.mocked(prisma.payrollRevision.create).mockResolvedValue(createdRevision)
-    vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 15 } as any)
-    vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 } as any)
+    vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 15 })
+    vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 })
 
     vi.mocked(prisma.$transaction).mockImplementation(async (promises) => {
       if (Array.isArray(promises)) {
         return Promise.all(promises)
       }
-      return promises as any
+      return promises as never
     })
 
     const summary = makeSummary({
