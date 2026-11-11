@@ -8,7 +8,8 @@ import type { MemoryDb } from '@/features/payroll-adjustments/__tests__/support/
 //    writes one DISCARD audit entry that keeps the edits (under `discarded.edits` only).
 //  - A draft is calculated from the copy only when Attendance is selected; otherwise from the approved records.
 //  - approveRevision promotes the copy (and rebuilds the records and the left-out count) only when Attendance
-//    is selected; a copy left over without it is thrown away, and the live punches and records stay as they are.
+//    is selected; a copy left over without it makes the draft stale (the types changed after it was calculated),
+//    and nothing is written: the copy, the live punches and the records stay as they are.
 //
 // The real correction service runs against an in-memory database (the real audit writer too, so the audit rows
 // are rows and roll back with the transaction); only the week lock and the punch review are stubbed.
@@ -18,6 +19,7 @@ vi.mock('@/lib/prisma', async () => {
   return { default: createMemoryDb() }
 })
 vi.mock('@/features/attendance-sync/services/week-lock.service', () => ({ lockWeekRow: vi.fn() }))
+vi.mock('@/features/payroll-adjustments/services/adjustment-lock.service', () => ({ lockAdjustmentRows: vi.fn() }))
 vi.mock('@/features/attendance-sync/services/punch-review.service', () => ({ getPunchReview: vi.fn() }))
 
 import prismaImport from '@/lib/prisma'
@@ -117,7 +119,7 @@ async function editAnitaOut() {
 
 async function seedDraft() {
   db.seed('payrollRevision', [{ id: DRAFT, payrollRunId: RUN, revisionNumber: 2, status: 'DRAFT', isCurrent: false, totalNetPayable: 9100 }])
-  db.seed('payrollRunEmployee', [{ payrollRunId: RUN, payrollRevisionId: DRAFT, employeeId: 'emp-1', netPayable: 5100 }])
+  db.seed('payrollRunEmployee', [{ payrollRunId: RUN, payrollRevisionId: DRAFT, employeeId: 'emp-1', netPayable: 5100, additions: 0, deductions: 0 }])
   await db.payrollCorrectionSession.updateMany({ where: { status: 'IN_PROGRESS' }, data: { draftRevisionId: DRAFT } })
 }
 
@@ -394,27 +396,24 @@ describe('approveRevision promotes the copied punches only when Attendance is se
     expect(audits()[0].detailsJson.summary).toBe('Correction applied as revision 2')
   })
 
-  it('Attendance not selected but a copy is still there: it is deleted and audited, the live punches, the records and the left-out count stay as they were', async () => {
+  it('Attendance not selected but a copy is still there: the draft is stale (types), and nothing is written: the copy, the live punches, the records and the left-out count stay as they were', async () => {
     await openWithCopy()
     await editAnitaOut()
     await seedDraft()
     await db.payrollCorrectionSession.updateMany({ where: { status: 'IN_PROGRESS' }, data: { correctionTypesJson: ['ADJUSTMENTS'] } })
-    const liveBefore = live()
-    const recordsBefore = db.rows('attendanceRecord')
+    const before = db.snapshot()
 
-    await approveRevision(DRAFT)
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({
+      code: 'REVISION_STALE',
+      message: 'This preview is out of date: the correction types changed after it was calculated. Go back and recalculate.',
+    })
 
-    expect(clones()).toHaveLength(0)
-    expect(live()).toEqual(liveBefore)
-    expect(db.rows('attendanceRecord')).toEqual(recordsBefore)
-    expect(db.rows('attendanceUpload')[0].approvedLeftOutCount).toBe(5)
+    expect(db.snapshot()).toEqual(before)
+    expect(clones()).toHaveLength(4) // the copy and its edits are still there, to be dropped or used when the types are saved again
     expect(getPunchReview).not.toHaveBeenCalled()
-    expect(session()).toMatchObject({ status: 'APPLIED' })
-    expect(audits()).toHaveLength(1) // only the discard; no "Correction applied" entry
-    expect(audits()[0]).toMatchObject({ actionType: 'DISCARD' })
-    expect(audits()[0].detailsJson.summary).toBe('Discarded punch edits (Attendance not selected): 1 punch edit(s)')
-    expect(audits()[0].detailsJson.discarded.edits).toHaveLength(1)
-    expect(db.rows('payrollRun')[0]).toMatchObject({ status: 'REVISED', currentRevisionNumber: 2 })
+    expect(audits()).toHaveLength(0)
+    expect(session()).toMatchObject({ status: 'IN_PROGRESS', draftRevisionId: DRAFT })
+    expect(db.rows('payrollRun')[0]).toMatchObject({ status: 'APPROVED', currentRevisionNumber: 1 })
   })
 
   it('an adjustments-only correction (no copy at all) leaves punches, records and the left-out count alone and writes no audit entry', async () => {

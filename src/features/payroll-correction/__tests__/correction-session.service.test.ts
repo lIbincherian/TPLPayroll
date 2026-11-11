@@ -29,6 +29,7 @@ vi.mock('@/features/attendance-sync/services/punch-review.service', () => ({ get
 vi.mock('@/features/attendance-sync/services/attendance-audit.service', () => ({ auditEntry: vi.fn() }))
 // approveRevision locks the week row first (SELECT ... FOR UPDATE), and carries forward left-out adjustments.
 vi.mock('@/features/attendance-sync/services/week-lock.service', () => ({ lockWeekRow: vi.fn() }))
+vi.mock('@/features/payroll-adjustments/services/adjustment-lock.service', () => ({ lockAdjustmentRows: vi.fn() }))
 vi.mock('@/features/payroll-adjustments/services/adjustment.service', () => ({ skipAdjustmentApplication: vi.fn() }))
 
 // Plain arithmetic stand-ins for the payroll maths; this file is about which hours go in.
@@ -869,7 +870,10 @@ describe('approveRevision for an attendance correction', () => {
       { employeeId: EMPLOYEE_ONE.id, decision: 'APPROVED' },
     ])
     // Everyone in the draft is paid, so no adjustment is carried forward.
-    tx.payrollRunEmployee.findMany.mockResolvedValue([{ employeeId: EMPLOYEE_ONE.id }, { employeeId: EMPLOYEE_TWO.id }])
+    tx.payrollRunEmployee.findMany.mockResolvedValue([
+      { employeeId: EMPLOYEE_ONE.id, additions: 0, deductions: 0 },
+      { employeeId: EMPLOYEE_TWO.id, additions: 0, deductions: 0 },
+    ])
     tx.payrollAdjustmentApplication.findMany.mockResolvedValue([])
     tx.payrollRevision.updateMany.mockResolvedValue({ count: 1 })
   }

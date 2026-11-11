@@ -61,6 +61,9 @@ vi.mock('@/features/attendance-sync/services/attendance-audit.service', () => ({
 vi.mock('@/features/attendance-sync/services/week-lock.service', () => ({
   lockWeekRow: vi.fn(),
 }))
+vi.mock('@/features/payroll-adjustments/services/adjustment-lock.service', () => ({
+  lockAdjustmentRows: vi.fn(),
+}))
 vi.mock('@/features/payroll-adjustments/services/adjustment.service', () => ({
   skipAdjustmentApplication: vi.fn(),
 }))
@@ -492,7 +495,7 @@ describe('approveRevision', () => {
     vi.mocked(prisma.payrollRevision.updateMany).mockResolvedValue({ count: 1 } as never)
     vi.mocked(prisma.payrollRun.update).mockResolvedValue(makePayrollRun() as never)
     // Everyone in the draft is paid, so no adjustment is carried forward.
-    vi.mocked(prisma.payrollRunEmployee.findMany).mockResolvedValue([{ employeeId: 'emp-uuid-1' }] as never)
+    vi.mocked(prisma.payrollRunEmployee.findMany).mockResolvedValue([{ employeeId: 'emp-uuid-1', additions: 0, deductions: 0 }] as never)
     vi.mocked(prisma.payrollAdjustmentApplication.findMany).mockResolvedValue([])
     vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 } as never)
 

@@ -20,19 +20,19 @@ import {
   calculateOvertimePay,
   calculateNetPayable,
 } from '@/features/payroll-generation/services/payroll.service'
-import {
-  amountToApply,
-  applyApprovalToAdjustment,
-  carryApplicationForward,
-  removeCarryForward,
-  undoApprovalOnAdjustment,
-} from '@/features/payroll-adjustments/services/adjustment.service'
+import { amountToApply } from '@/features/payroll-adjustments/services/adjustment.service'
 import { AdjustmentServiceError } from '@/features/payroll-adjustments/types/adjustment.types'
 import {
+  applySettlement,
+  draftMatchesPlan,
   freezeDraftAdjustmentAmounts,
+  loadSettlementInput,
   parseAdjustmentSnapshot,
+  planSettlement,
+  settlementScope,
   type AdjustmentSnapshotEntry,
 } from '@/features/payroll-correction/services/adjustment-settlement'
+import { lockAdjustmentRows } from '@/features/payroll-adjustments/services/adjustment-lock.service'
 import { auditEntry } from '@/features/attendance-sync/services/attendance-audit.service'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
 import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
@@ -610,76 +610,6 @@ export async function skipAdjustmentInCorrection(
   return { applicationId, approvalStatus: 'SKIPPED' }
 }
 
-// ─── settleAdjustmentBalances ─────────────────────────────────────────────────
-
-/**
- * The one place a correction moves an adjustment's balance. For each of the week's applications it
- * compares how it was before the correction (the session snapshot: did the original approval apply
- * it?) with how it ends up, and does the net:
- *
- *   before \ after | APPROVED, employee paid | SKIPPED, or employee left out   | PENDING, employee paid
- *   applied        | nothing                 | balance back, carry forward     | balance back, stays PENDING
- *   not applied    | apply it now            | carry forward, no balance change | nothing
- *
- * An employee the revision leaves out is not paid, so their pending or approved application ends SKIPPED
- * (carried to the next week). A pending application of a paid employee is left as it is, the way
- * approvePayroll leaves one. Without a snapshot (a draft made without a session, where nothing was reset)
- * the application's own status says whether it was applied. Runs in approveRevision's transaction, under the lock.
- */
-async function settleAdjustmentBalances(
-  tx: Prisma.TransactionClient,
-  run: { id: string; payrollWeekStartDate: Date },
-  paidEmployeeIds: Set<string>,
-  snapshot: AdjustmentSnapshotEntry[] | null,
-): Promise<void> {
-  const before = new Map((snapshot ?? []).map((entry) => [entry.applicationId, entry.approvalStatus]))
-
-  const applications = await tx.payrollAdjustmentApplication.findMany({
-    where: {
-      payrollWeekStartDate: run.payrollWeekStartDate,
-      OR: [{ payrollRunId: run.id }, { payrollRunId: null }],
-      payrollAdjustment: { status: { not: 'CANCELLED' } },
-    },
-    select: { id: true, employeeId: true, approvalStatus: true },
-  })
-
-  for (const { id, employeeId, approvalStatus } of applications) {
-    const wasApplied = snapshot ? before.get(id) === 'APPROVED' : approvalStatus === 'APPROVED'
-    const wasSkipped = snapshot ? before.get(id) === 'SKIPPED' : approvalStatus === 'SKIPPED'
-    const after = paidEmployeeIds.has(employeeId) ? approvalStatus : 'SKIPPED'
-
-    // The cells of the table that do nothing.
-    if (after === 'APPROVED' && wasApplied) continue
-    if (after === 'PENDING' && !wasApplied) continue
-    if (after === 'SKIPPED' && approvalStatus === 'SKIPPED' && wasSkipped) continue
-
-    const app = await tx.payrollAdjustmentApplication.findUnique({
-      where: { id },
-      include: { payrollAdjustment: true },
-    })
-    if (!app) continue
-    const adj = app.payrollAdjustment
-
-    if (after === 'SKIPPED') {
-      await carryApplicationForward(tx, app, adj, { undoApproval: wasApplied })
-    } else if (after === 'APPROVED') {
-      // Not applied before, approved now: take it off the balance at the amount the draft used. A
-      // carry-forward made when it was skipped before this correction is taken back.
-      if (app.carriedForwardToPayrollWeekStartDate) {
-        await removeCarryForward(tx, app, adj)
-        await tx.payrollAdjustmentApplication.update({
-          where: { id },
-          data: { carriedForwardToPayrollWeekStartDate: null },
-        })
-      }
-      await applyApprovalToAdjustment(tx, app, adj, Number(app.appliedAmount))
-    } else {
-      // Applied before, pending for a paid employee now: not paid in the revision, so not on the balance.
-      await undoApprovalOnAdjustment(tx, app, adj)
-    }
-  }
-}
-
 // ─── recalculateAndCreateRevision ─────────────────────────────────────────────
 
 /**
@@ -1039,11 +969,14 @@ export async function approveCorrectionPunches(payrollRunId: string): Promise<Cr
 
 // ─── approveRevision ──────────────────────────────────────────────────────────
 
-function staleRevisionError(): CorrectionServiceError {
-  return new CorrectionServiceError(
-    'REVISION_STALE',
-    'This preview is out of date: the punches changed after it was calculated. Approve the punches again.',
-  )
+const STALE_MESSAGES = {
+  PUNCHES: 'This preview is out of date: the punches changed after it was calculated. Approve the punches again.',
+  ADJUSTMENTS: 'This preview is out of date: an adjustment or its balance changed after it was calculated. Go back and recalculate.',
+  TYPES: 'This preview is out of date: the correction types changed after it was calculated. Go back and recalculate.',
+} as const
+
+function staleRevisionError(reason: keyof typeof STALE_MESSAGES = 'PUNCHES'): CorrectionServiceError {
+  return new CorrectionServiceError('REVISION_STALE', STALE_MESSAGES[reason])
 }
 
 /**
@@ -1051,7 +984,7 @@ function staleRevisionError(): CorrectionServiceError {
  * revision, the one it replaces is superseded, the run takes the new totals, the week's
  * adjustment applications move to the new revision (those of employees the revision leaves out
  * are carried forward instead, and every application's net effect on its adjustment's balance is
- * settled once), and, for an attendance correction, the corrected punches and
+ * settled once, from the amounts the draft deducts), and, for an attendance correction, the corrected punches and
  * attendance records replace the live ones. If anything fails the current revision stays
  * exactly as it was.
  *
@@ -1107,11 +1040,10 @@ export async function approveRevision(
           : null
 
         clonedPunches = await tx.attendancePunch.count({ where: { correctionId: session.id } })
-        // The copied punches are promoted only when Attendance is part of this correction. A copy
-        // that is still there without it (the types changed after the copy) is thrown away instead.
+        // The copied punches are promoted only when Attendance is part of this correction. A copy that is
+        // still there without it means the types changed after the draft was calculated from it.
         if (clonedPunches > 0 && !parseCorrectionTypes(current.correctionTypesJson).includes('ATTENDANCE')) {
-          await dropPunchCopy(tx, session, run.payrollWeekStartDate, 'Discarded punch edits (Attendance not selected)')
-          clonedPunches = 0
+          throw staleRevisionError('TYPES')
         }
         if (clonedPunches > 0) {
           const review = await getPunchReview(
@@ -1137,6 +1069,29 @@ export async function approveRevision(
         // with a draft being written or with another promotion.
         await lockWeekRow(tx, { weekStart: run.payrollWeekStartDate })
       }
+
+      // The settlement this draft implies, planned from the database now: the adjustment rows are locked first
+      // (after the week's, in id order) and read after, so no balance moves between the plan and its writes.
+      // The draft is approved only if what it deducts and pays is what that plan says (to the paisa), and the
+      // amounts frozen into the applications are still the plan's. Anything that changed a status, a balance or
+      // a correction type since the draft was calculated makes it stale.
+      const draftRows = await tx.payrollRunEmployee.findMany({
+        where: { payrollRevisionId: revisionId },
+        select: { employeeId: true, additions: true, deductions: true },
+      })
+      const inScope = await tx.payrollAdjustmentApplication.findMany({
+        where: settlementScope(run),
+        select: { payrollAdjustmentId: true },
+      })
+      await lockAdjustmentRows(tx, inScope.map((row) => row.payrollAdjustmentId))
+      const { applications, adjustmentsWithNextWeekPending } = await loadSettlementInput(tx, run)
+      const { plans, problems } = planSettlement({
+        applications,
+        snapshot,
+        paidEmployeeIds: new Set(draftRows.map((row) => row.employeeId)),
+        adjustmentsWithNextWeekPending,
+      })
+      if (!draftMatchesPlan(plans, problems, applications, draftRows)) throw staleRevisionError('ADJUSTMENTS')
 
       // Only one caller can promote the draft (guards a double approve).
       const promoted = await tx.payrollRevision.updateMany({
@@ -1165,14 +1120,10 @@ export async function approveRevision(
         },
       })
 
-      // Settle every application's effect on its adjustment's balance (see settleAdjustmentBalances); an
+      // Settle every application's effect on its adjustment's balance (see adjustment-settlement.ts); an
       // employee the new revision leaves out is not paid this week, so their adjustments are carried to the
       // next week. This runs before the link step below, which would otherwise point them at the new revision.
-      const paid = await tx.payrollRunEmployee.findMany({
-        where: { payrollRevisionId: revisionId },
-        select: { employeeId: true },
-      })
-      await settleAdjustmentBalances(tx, run, new Set(paid.map((p) => p.employeeId)), snapshot)
+      await applySettlement(tx, plans, applications, snapshot)
 
       // Update adjustment applications to point to the new revision ID.
       // Also link any newly approved applications that weren't previously attached.

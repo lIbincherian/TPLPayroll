@@ -1,4 +1,10 @@
 import type { Prisma } from '@prisma/client'
+import {
+  applyApprovalToAdjustment,
+  carryApplicationForward,
+  removeCarryForward,
+  undoApprovalOnAdjustment,
+} from '@/features/payroll-adjustments/services/adjustment.service'
 import { CorrectionServiceError } from '@/features/payroll-correction/types/correction.types'
 
 // How a correction settles the week's adjustment applications against their adjustments' balances.
@@ -289,20 +295,24 @@ export function draftMatchesPlan(
   return true
 }
 
+/** The applications a correction of this run settles: the run's week, on the run or not yet linked to any. */
+export function settlementScope(run: { id: string; payrollWeekStartDate: Date }): Prisma.PayrollAdjustmentApplicationWhereInput {
+  return {
+    payrollWeekStartDate: run.payrollWeekStartDate,
+    OR: [{ payrollRunId: run.id }, { payrollRunId: null }],
+  }
+}
+
 /**
- * The applications a correction of this run settles: the run's week, on the run or not yet linked to any.
- * One query for them (with their adjustments) and one for the adjustments that have a PENDING application in
- * the week after, which is where a skip carried them to.
+ * The applications of `settlementScope` with their adjustments, and the adjustments that have a PENDING
+ * application in the week after, which is where a skip carried them to: two queries.
  */
 export async function loadSettlementInput(
   tx: Prisma.TransactionClient,
   run: { id: string; payrollWeekStartDate: Date },
 ): Promise<{ applications: SettlementApplication[]; adjustmentsWithNextWeekPending: Set<string> }> {
   const applications = await tx.payrollAdjustmentApplication.findMany({
-    where: {
-      payrollWeekStartDate: run.payrollWeekStartDate,
-      OR: [{ payrollRunId: run.id }, { payrollRunId: null }],
-    },
+    where: settlementScope(run),
     include: { payrollAdjustment: true },
   })
   const waiting = await tx.payrollAdjustmentApplication.findMany({
@@ -359,4 +369,77 @@ export async function freezeDraftAdjustmentAmounts(
   return new Map(
     [...sumsInPaise(plans)].map(([employeeId, sum]) => [employeeId, { additions: sum.additions / 100, deductions: sum.deductions / 100 }]),
   )
+}
+
+/**
+ * Writes the effects of the table above. Runs in approveRevision's transaction, under the week lock and the
+ * adjustment row locks, with the plan that was just checked against the draft.
+ *
+ * Plans go in plan order, so the give-backs of an adjustment come before its applications. An adjustment that
+ * an earlier plan wrote is read again before the next plan uses it (the effect helpers take the balance from
+ * the row they are given); one that was not is the row loaded with the applications, so unchanged applications
+ * cost no query.
+ */
+export async function applySettlement(
+  tx: Prisma.TransactionClient,
+  plans: ApplicationPlan[],
+  applications: SettlementApplication[],
+  snapshot: AdjustmentSnapshotEntry[] | null,
+): Promise<void> {
+  const byId = new Map(applications.map((app) => [app.id, app]))
+  const entries = new Map((snapshot ?? []).map((entry) => [entry.applicationId, entry]))
+  const written = new Set<string>()
+
+  for (const plan of plans) {
+    if (plan.cell === 'KEEP' || plan.cell === 'NONE' || plan.cell === 'INERT') continue
+    const app = byId.get(plan.applicationId)!
+
+    if (plan.cell === 'SKIP_ONLY') {
+      // Already carried (or the adjustment is not active): the status is all there is to put right.
+      if (app.approvalStatus !== 'SKIPPED') {
+        const skippedAt = entries.get(app.id)?.skippedAt
+        await tx.payrollAdjustmentApplication.update({
+          where: { id: app.id },
+          data: { approvalStatus: 'SKIPPED', skippedAt: skippedAt ? new Date(skippedAt) : new Date() },
+        })
+      }
+      continue
+    }
+
+    const adj = written.has(plan.adjustmentId)
+      ? await tx.payrollAdjustment.findUniqueOrThrow({ where: { id: plan.adjustmentId } })
+      : app.payrollAdjustment
+
+    switch (plan.cell) {
+      case 'APPLY':
+        // A carry-forward made when it was skipped before this correction is taken back; the application is applied now.
+        if (app.carriedForwardToPayrollWeekStartDate) {
+          await removeCarryForward(tx, app, adj)
+          await tx.payrollAdjustmentApplication.update({
+            where: { id: app.id },
+            data: { carriedForwardToPayrollWeekStartDate: null },
+          })
+        }
+        await applyApprovalToAdjustment(tx, app, adj, plan.newAmount)
+        break
+      case 'UNAPPLY_CARRY':
+        await carryApplicationForward(tx, { ...app, appliedAmount: plan.originalAmount }, adj, { undoApproval: true })
+        break
+      case 'UNAPPLY_SKIP':
+        // Applied before, skipped now, and it was carried before it was applied: no second carry-forward.
+        await tx.payrollAdjustmentApplication.update({
+          where: { id: app.id },
+          data: { approvalStatus: 'SKIPPED', skippedAt: new Date() },
+        })
+        await undoApprovalOnAdjustment(tx, { appliedAmount: plan.originalAmount }, adj)
+        break
+      case 'UNAPPLY_PENDING':
+        await undoApprovalOnAdjustment(tx, { appliedAmount: plan.originalAmount }, adj)
+        break
+      case 'CARRY':
+        await carryApplicationForward(tx, app, adj, { undoApproval: false })
+        break
+    }
+    written.add(plan.adjustmentId)
+  }
 }

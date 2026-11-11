@@ -3,11 +3,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MemoryDb } from '@/features/payroll-adjustments/__tests__/support/memory-db'
 
 // The correction's money path, run end to end against an in-memory database (the REAL adjustment and
-// correction services; only the week lock, the punch review and the audit writer are stubbed):
+// correction services; only the week lock, the adjustment row lock, the punch review and the audit writer are
+// stubbed):
 //
-//   beginCorrection        snapshots how each of the week's applications is, then resets them to PENDING
+//   beginCorrection        snapshots how each of the week's applications is (status, amount, carry-forward),
+//                          then resets them to PENDING
 //   approve/skip in it     change a status only (never an adjustment's balance)
-//   approveRevision        settles every application's net effect on its adjustment's balance, once:
+//   the draft              plans the settlement for the employees it pays and freezes what it deducts into the
+//                          applications; its rows carry those amounts (`draft()` below does what the
+//                          recalculation does)
+//   approveRevision        plans again under the locks, refuses a draft that differs from the plan
+//                          (REVISION_STALE), then settles every application's net effect on its adjustment's
+//                          balance, once:
 //
 //     before \ after | APPROVED, paid | SKIPPED, or employee left out | PENDING, paid
 //     applied        | nothing        | balance back, carry forward    | balance back, stays PENDING
@@ -22,12 +29,15 @@ vi.mock('@/lib/prisma', async () => {
   return { default: createMemoryDb() }
 })
 vi.mock('@/features/attendance-sync/services/week-lock.service', () => ({ lockWeekRow: vi.fn() }))
+vi.mock('@/features/payroll-adjustments/services/adjustment-lock.service', () => ({ lockAdjustmentRows: vi.fn() }))
 vi.mock('@/features/attendance-sync/services/punch-review.service', () => ({ getPunchReview: vi.fn() }))
 vi.mock('@/features/attendance-sync/services/attendance-audit.service', () => ({ auditEntry: vi.fn() }))
 
 import prismaImport from '@/lib/prisma'
 import { lockWeekRow } from '@/features/attendance-sync/services/week-lock.service'
 import { auditEntry } from '@/features/attendance-sync/services/attendance-audit.service'
+import { lockAdjustmentRows } from '@/features/payroll-adjustments/services/adjustment-lock.service'
+import { freezeDraftAdjustmentAmounts, parseAdjustmentSnapshot } from '@/features/payroll-correction/services/adjustment-settlement'
 import {
   abandonCorrection,
   approveAdjustmentInCorrection,
@@ -162,17 +172,41 @@ function seedAdjustment(adjustment: Row, applications: Row[]) {
   db.seed('payrollAdjustmentApplication', applications)
 }
 
-/** The draft revision a correction's "recalculate" would have saved, paying `paid`. */
-function seedDraft(paid: string[] = PAID) {
+type Sums = Map<string, { additions: number; deductions: number }>
+
+/** The draft revision a correction's "recalculate" would have saved, paying `paid`; `sums` are what its rows deduct and add. */
+function seedDraft(paid: string[] = PAID, sums: Sums = new Map()) {
   db.seed('payrollRevision', [{ id: DRAFT, payrollRunId: RUN, revisionNumber: 2, status: 'DRAFT', isCurrent: false, totalDeductions: 0, totalNetPayable: 9000 }])
   db.seed(
     'payrollRunEmployee',
-    paid.map((employeeId) => ({ payrollRunId: RUN, payrollRevisionId: DRAFT, employeeId, netPayable: 3000 })),
+    paid.map((employeeId) => ({
+      payrollRunId: RUN,
+      payrollRevisionId: DRAFT,
+      employeeId,
+      netPayable: 3000,
+      additions: sums.get(employeeId)?.additions ?? 0,
+      deductions: sums.get(employeeId)?.deductions ?? 0,
+    })),
   )
 }
 
 async function pointSessionAtDraft() {
   await db.payrollCorrectionSession.updateMany({ where: { payrollRunId: RUN, status: 'IN_PROGRESS' }, data: { draftRevisionId: DRAFT } })
+}
+
+/**
+ * What recalculateAndCreateRevision does for the adjustments, inside its transaction: plan the settlement for the
+ * employees the draft pays, freeze what it deducts into the applications, and save the draft whose rows carry
+ * those sums (replacing an earlier draft). Then the session points at it.
+ */
+async function draft(paid: string[] = PAID) {
+  const session = await db.payrollCorrectionSession.findFirst({ where: { payrollRunId: RUN, status: 'IN_PROGRESS' } })
+  const snapshot = session && Array.isArray(session.adjustmentSnapshotJson) ? parseAdjustmentSnapshot(session.adjustmentSnapshotJson) : null
+  const sums = await freezeDraftAdjustmentAmounts(db as never, db.rows('payrollRun')[0] as never, snapshot, new Set(paid))
+  await db.payrollRunEmployee.deleteMany({ where: { payrollRevisionId: DRAFT } })
+  await db.payrollRevision.deleteMany({ where: { id: DRAFT } })
+  seedDraft(paid, sums)
+  await pointSessionAtDraft()
 }
 
 interface Correction {
@@ -186,8 +220,7 @@ async function correct({ skip = [], approve = [], paid = PAID }: Correction = {}
   await beginCorrection(RUN)
   for (const id of skip) await skipAdjustmentInCorrection(id)
   for (const id of approve) await approveAdjustmentInCorrection(id)
-  seedDraft(paid)
-  await pointSessionAtDraft()
+  await draft(paid)
   const result = await approveRevision(DRAFT)
   expectApproved(true)
   return result
@@ -217,6 +250,9 @@ beforeEach(() => {
   vi.mocked(lockWeekRow).mockImplementation((async () => {
     db.log.push('lock')
     return { id: UPLOAD, source: 'ETIMEOFFICE', status: 'APPROVED', syncLockedAt: null, approvedAt: T0, payrollWeekStartDate: WEEK_START }
+  }) as never)
+  vi.mocked(lockAdjustmentRows).mockImplementation((async () => {
+    db.log.push('lock-adjustments')
   }) as never)
 })
 
@@ -439,19 +475,27 @@ describe('approveRevision, not applied before and now APPROVED: it is applied no
     expect(adjRow()).toMatchObject({ remainingBalance: 0, status: 'COMPLETED' })
   })
 
-  it('takes off exactly what was stored (and so what the draft paid), even if the balance moved meanwhile: stored 50, the balance then rises to 120 -> 70, not 120 - 70', async () => {
+  it('row d: a balance that moved after the draft froze 50 makes the draft stale (nothing written); recalculated, it takes 70 off: 120 -> 50', async () => {
     seedAdjustment(totalBalance(50, { amount: 70, totalBalance: 120 }), [pending({ appliedAmount: 70 })])
     await beginCorrection(RUN)
-    await approveAdjustmentInCorrection('app-1') // stored 50: the draft would pay 50
+    await approveAdjustmentInCorrection('app-1')
+    await draft() // freezes 50: the draft deducts 50
     expect(appRow().appliedAmount).toBe(50)
     // another week's application of the same adjustment is skipped meanwhile, which gives balance back
     await db.payrollAdjustment.updateMany({ where: { id: 'adj-1' }, data: { remainingBalance: 120 } })
-    seedDraft()
-    await pointSessionAtDraft()
+    const before = db.snapshot()
 
+    await expect(approveRevision(DRAFT)).rejects.toMatchObject({ code: 'REVISION_STALE' })
+
+    expect(db.snapshot()).toEqual(before)
+    expectApproved(false)
+
+    await draft() // recalculated: the plan now says 70
+    expect(appRow().appliedAmount).toBe(70)
     await approveRevision(DRAFT)
 
-    expect(adjRow()).toMatchObject({ remainingBalance: 70, status: 'ACTIVE' })
+    expectApproved(true)
+    expect(adjRow()).toMatchObject({ remainingBalance: 50, status: 'ACTIVE' })
   })
 
   it('FIXED_WEEKS week 1 of 3 (1500 left): 500 taken off, 1000 left, ACTIVE, a PENDING 500 is scheduled for the next week', async () => {
@@ -509,8 +553,7 @@ describe('approveRevision, not applied before and now APPROVED: it is applied no
     await beginCorrection(RUN)
     seedAdjustment(totalBalance(2000), [pending()])
     await approveAdjustmentInCorrection('app-1')
-    seedDraft()
-    await pointSessionAtDraft()
+    await draft()
 
     await approveRevision(DRAFT)
 
@@ -610,7 +653,9 @@ describe('approveRevision, not applied before and now SKIPPED or left out: carri
 
 describe('approveRevision with no snapshot (a draft made without a session): the application\'s own status says whether it was applied', () => {
   async function approveWithoutSession(paid: string[] = PAID) {
-    seedDraft(paid)
+    // No session, so no snapshot: the plan reads each application's own status.
+    const sums = await freezeDraftAdjustmentAmounts(db as never, db.rows('payrollRun')[0] as never, null, new Set(paid))
+    seedDraft(paid, sums)
     const result = await approveRevision(DRAFT)
     expectApproved(true, false)
     return result
@@ -681,8 +726,7 @@ describe('approveRevision with no snapshot (a draft made without a session): the
     await db.payrollCorrectionSession.updateMany({ where: { status: 'IN_PROGRESS' }, data: { adjustmentSnapshotJson: null } })
     // beginCorrection reset the application to PENDING; an older session never reset it, so put it back as it was
     await db.payrollAdjustmentApplication.updateMany({ where: { id: 'app-1' }, data: { approvalStatus: 'APPROVED' } })
-    seedDraft(PAID)
-    await pointSessionAtDraft()
+    await draft(PAID)
 
     await approveRevision(DRAFT)
 
@@ -714,8 +758,7 @@ describe('approveRevision settles once and either does everything or nothing', (
     seedAdjustment(totalBalance(2000), [pending()])
     await beginCorrection(RUN)
     await approveAdjustmentInCorrection('app-1')
-    seedDraft()
-    await pointSessionAtDraft()
+    await draft()
     const before = db.snapshot()
     db.failOn('payrollAdjustment.update', new Error('balance write failed'))
 
@@ -735,8 +778,7 @@ describe('approveRevision settles once and either does everything or nothing', (
     await beginCorrection(RUN)
     await approveAdjustmentInCorrection('app-a')
     await approveAdjustmentInCorrection('app-b')
-    seedDraft()
-    await pointSessionAtDraft()
+    await draft()
     const before = db.snapshot()
     db.failOn('payrollAdjustment.update', new Error('second balance write failed'), 1)
     db.log.length = 0
@@ -753,8 +795,7 @@ describe('approveRevision settles once and either does everything or nothing', (
     seedAdjustment(totalBalance(2000), [pending()])
     await beginCorrection(RUN)
     await skipAdjustmentInCorrection('app-1')
-    seedDraft()
-    await pointSessionAtDraft()
+    await draft()
     const before = db.snapshot()
     db.failOn('payrollAdjustmentApplication.create', new Error('insert failed'))
 
@@ -767,8 +808,7 @@ describe('approveRevision settles once and either does everything or nothing', (
     seedAdjustment(totalBalance(2000), [pending()])
     await beginCorrection(RUN)
     await approveAdjustmentInCorrection('app-1')
-    seedDraft()
-    await pointSessionAtDraft()
+    await draft()
     db.log.length = 0
 
     await approveRevision(DRAFT)
