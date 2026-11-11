@@ -820,6 +820,9 @@ describe('approveRevision settles once and either does everything or nothing', (
 
 // ─── Approve and skip inside a correction: status only ────────────────────────
 
+/** What a click writes besides the application: it deletes the draft and clears the session's pointer to it. */
+const INVALIDATES_THE_DRAFT = ['payrollRunEmployee.deleteMany', 'payrollRevision.deleteMany', 'payrollCorrectionSession.update']
+
 describe('approveAdjustmentInCorrection / skipAdjustmentInCorrection change a status and nothing else', () => {
   it('skip: PENDING -> SKIPPED with a time; the adjustment is not written and no application is created or deleted', async () => {
     seedAdjustment(totalBalance(2000), [pending()])
@@ -833,20 +836,25 @@ describe('approveAdjustmentInCorrection / skipAdjustmentInCorrection change a st
     expect(appRow().skippedAt).toBeInstanceOf(Date)
     expect(db.rows('payrollAdjustment')).toEqual(before)
     expect(appsOf()).toHaveLength(1)
-    expect(db.log).toEqual(['lock', 'payrollAdjustmentApplication.update'])
+    expect(db.log).toEqual(['lock', 'payrollAdjustmentApplication.update', ...INVALIDATES_THE_DRAFT])
   })
 
-  it('approve of an application that was not applied: stored at what an approval would apply now (the 70/50 cap: 50), balance untouched', async () => {
+  it('approve of an application that was not applied: the click does not write the amount (the 70/50 cap: 70 stays), the recalculation freezes 50, balance untouched', async () => {
     seedAdjustment(totalBalance(50, { amount: 70, totalBalance: 120 }), [pending({ appliedAmount: 70 })])
     await beginCorrection(RUN)
     db.log.length = 0
 
     await expect(approveAdjustmentInCorrection('app-1')).resolves.toEqual({ applicationId: 'app-1', approvalStatus: 'APPROVED' })
 
-    expect(appRow()).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 50 })
+    expect(appRow()).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 70 })
     expect(appRow().appliedAt).toBeInstanceOf(Date)
     expect(adjRow()).toMatchObject({ remainingBalance: 50, status: 'ACTIVE' })
-    expect(db.log).toEqual(['lock', 'payrollAdjustmentApplication.update'])
+    expect(db.log).toEqual(['lock', 'payrollAdjustmentApplication.update', ...INVALIDATES_THE_DRAFT])
+
+    await draft()
+
+    expect(appRow().appliedAmount).toBe(50)
+    expect(adjRow()).toMatchObject({ remainingBalance: 50, status: 'ACTIVE' })
   })
 
   it('approve of an application that was applied: keeps the amount it was applied at (50), not a fresh min(70, 0) = 0', async () => {
@@ -901,7 +909,7 @@ describe('approveAdjustmentInCorrection / skipAdjustmentInCorrection change a st
     const twice = await skipAdjustmentInCorrection('app-1').catch((e) => e)
     expect(twice).toMatchObject({ code: 'INVALID_APPROVAL_STATUS', message: 'Application is already skipped' })
     expect(appRow().approvalStatus).toBe('SKIPPED')
-    expect(db.log.filter((op) => op.endsWith('.update'))).toEqual(['payrollAdjustmentApplication.update']) // only the one skip above
+    expect(db.log.filter((op) => op === 'payrollAdjustmentApplication.update')).toHaveLength(1) // only the one skip above
   })
 
   it('an application that does not exist is APPLICATION_NOT_FOUND', async () => {

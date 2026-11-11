@@ -20,7 +20,6 @@ import {
   calculateOvertimePay,
   calculateNetPayable,
 } from '@/features/payroll-generation/services/payroll.service'
-import { amountToApply } from '@/features/payroll-adjustments/services/adjustment.service'
 import { AdjustmentServiceError } from '@/features/payroll-adjustments/types/adjustment.types'
 import {
   applySettlement,
@@ -28,6 +27,7 @@ import {
   freezeDraftAdjustmentAmounts,
   loadSettlementInput,
   parseAdjustmentSnapshot,
+  planProblemMessage,
   planSettlement,
   settlementScope,
   type AdjustmentSnapshotEntry,
@@ -278,7 +278,9 @@ export async function getActiveCorrection(payrollRunId: string): Promise<Correct
  * Save the reason and types, and copy the week's approved punches so they can be edited
  * apart from the live set. The live punches and attendance records stay untouched until
  * the revision is approved. Excel-era runs have no punches to copy. Saving types without
- * Attendance deletes a copy made earlier (see `dropPunchCopy`).
+ * Attendance deletes a copy made earlier (see `dropPunchCopy`). Saving a different set of types than the
+ * session had (or deleting the copy) also deletes the draft and clears the session's draft pointer: a draft
+ * is calculated for the types it was saved with, and approving it under others would settle the wrong thing.
  *
  * The transaction locks the week's row first and then checks whether the copy exists, so two
  * concurrent calls cannot both copy (the clone set would hold every punch twice).
@@ -319,15 +321,21 @@ export async function startAttendanceCorrection(
         droppedCopy = (
           await dropPunchCopy(tx, session, upload.payrollWeekStartDate, 'Discarded punch edits (Attendance unticked)')
         ).hadCopy
-        if (droppedCopy) await deleteDraftRevisions(tx, payrollRunId)
       }
+
+      // A draft was calculated for the types the session had. Different types (as sets) make it stale, so it goes.
+      const previousTypes = new Set(parseCorrectionTypes(current.correctionTypesJson))
+      const nextTypes = new Set(types)
+      const typesChanged = previousTypes.size !== nextTypes.size || [...nextTypes].some((type) => !previousTypes.has(type))
+      const dropDraft = droppedCopy || (typesChanged && current.draftRevisionId !== null)
+      if (dropDraft) await deleteDraftRevisions(tx, payrollRunId)
 
       await tx.payrollCorrectionSession.update({
         where: { id: session.id },
         data: {
           correctionReason: input.reason,
           correctionTypesJson: types,
-          ...(droppedCopy ? { draftRevisionId: null } : {}),
+          ...(dropDraft ? { draftRevisionId: null } : {}),
         },
       })
       if (!wantsAttendance) return
@@ -522,10 +530,17 @@ export async function approveSkippedAdjustment(
 // ─── approving and skipping an application during a correction ────────────────
 
 /**
- * While a correction is open, approving or skipping an adjustment application changes only its status
- * (and, for an approval, the amount it will be applied at). Nothing is done to the adjustment itself:
- * `approveRevision` settles the balance once, from the session's snapshot of how each application was
- * before the correction against how it ends up. Abandoning therefore has no balance to put back.
+ * While a correction is open, approving or skipping an adjustment application changes only its status.
+ * Nothing is done to the adjustment, and the amount an approval will deduct is not decided here: the
+ * recalculation freezes it (capped at what is left of the balance) and `approveRevision` settles the
+ * balance once, from the snapshot of how each application was before the correction against how it ends up.
+ * Abandoning therefore has no balance to put back.
+ *
+ * Both clicks invalidate the draft (it was calculated with the status the application had), in the same
+ * transaction: the draft revision and its employee rows are deleted and the session's draft pointer cleared,
+ * so the next approval needs a recalculation. An approval is refused when it could not be applied (the
+ * adjustment is completed or cancelled, nothing is left to deduct, or a ONE_TIME carried forward and
+ * already dealt with in the next week): ADJUSTMENT_NOT_APPLICABLE.
  *
  * It takes the week's row lock, like approveRevision and abandonCorrection, so a click cannot land
  * between their reads and writes.
@@ -569,28 +584,43 @@ async function setApplicationStatusInCorrection(applicationId: string, next: 'AP
         )
       }
 
+      const snapshot = Array.isArray(current.adjustmentSnapshotJson)
+        ? parseAdjustmentSnapshot(current.adjustmentSnapshotJson)
+        : null
+      const entry = snapshot?.find((e) => e.applicationId === applicationId)
+
       if (next === 'SKIPPED') {
         await tx.payrollAdjustmentApplication.update({
           where: { id: applicationId },
-          data: { approvalStatus: 'SKIPPED', skippedAt: new Date() },
+          data: {
+            approvalStatus: 'SKIPPED',
+            skippedAt: new Date(),
+            // An amount an earlier recalculation froze must not stay on a row that is not applied.
+            ...(entry?.approvalStatus === 'APPROVED' ? {} : { appliedAmount: entry?.appliedAmount ?? Number(app.payrollAdjustment.amount) }),
+          },
         })
-        return
+      } else {
+        // Could it be applied? Plan the week with this application approved (every employee of the week paid).
+        const input = await loadSettlementInput(tx, { id: current.payrollRunId, payrollWeekStartDate: found.payrollWeekStartDate })
+        const applications = input.applications.map((a) => (a.id === applicationId ? { ...a, approvalStatus: 'APPROVED' } : a))
+        const { problems } = planSettlement({
+          applications,
+          snapshot,
+          paidEmployeeIds: new Set(applications.map((a) => a.employeeId)),
+          adjustmentsWithNextWeekPending: input.adjustmentsWithNextWeekPending,
+        })
+        const problem = problems.find((p) => p.applicationId === applicationId)
+        if (problem) throw new AdjustmentServiceError('ADJUSTMENT_NOT_APPLICABLE', planProblemMessage(problem.reason))
+
+        await tx.payrollAdjustmentApplication.update({
+          where: { id: applicationId },
+          data: { approvalStatus: 'APPROVED', appliedAt: new Date() },
+        })
       }
 
-      // An application the original approval applied keeps the amount it was applied at. Any other is
-      // approved at what an approval would apply now (capped at the balance), so the draft revision is
-      // calculated from the amount approveRevision will take off the balance.
-      const wasApplied = parseAdjustmentSnapshot(current.adjustmentSnapshotJson).some(
-        (entry) => entry.applicationId === applicationId && entry.approvalStatus === 'APPROVED',
-      )
-      await tx.payrollAdjustmentApplication.update({
-        where: { id: applicationId },
-        data: {
-          approvalStatus: 'APPROVED',
-          appliedAt: new Date(),
-          ...(wasApplied ? {} : { appliedAmount: amountToApply(app.payrollAdjustment) }),
-        },
-      })
+      // The draft was calculated before this click.
+      await deleteDraftRevisions(tx, current.payrollRunId)
+      await tx.payrollCorrectionSession.update({ where: { id: open.id }, data: { draftRevisionId: null } })
     },
     { timeout: TRANSACTION_TIMEOUT_MS },
   )

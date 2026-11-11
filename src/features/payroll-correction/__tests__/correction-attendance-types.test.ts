@@ -192,15 +192,16 @@ describe('startAttendanceCorrection with Attendance unticked after the punches w
     expect(audits()[0].detailsJson.discarded.edits).toEqual([])
   })
 
-  it('with no copy (never ticked) it writes no audit entry and leaves a draft and its pointer alone', async () => {
+  it('with no copy (never ticked) it writes no audit entry, and saving the same types again leaves a draft and its pointer alone', async () => {
     await beginCorrection(RUN)
+    await startAttendanceCorrection(RUN, { types: ['ADJUSTMENTS'], reason: 'adjustments only' })
     await seedDraft()
 
-    await startAttendanceCorrection(RUN, { types: ['ADJUSTMENTS'], reason: 'adjustments only' })
+    await startAttendanceCorrection(RUN, { types: ['ADJUSTMENTS'], reason: 'adjustments only, reworded' })
 
     expect(audits()).toHaveLength(0)
     expect(revisionIds()).toEqual([REV1, DRAFT])
-    expect(session()).toMatchObject({ draftRevisionId: DRAFT, correctionTypesJson: ['ADJUSTMENTS'] })
+    expect(session()).toMatchObject({ draftRevisionId: DRAFT, correctionTypesJson: ['ADJUSTMENTS'], correctionReason: 'adjustments only, reworded' })
     expect(clones()).toHaveLength(0)
   })
 
@@ -216,16 +217,24 @@ describe('startAttendanceCorrection with Attendance unticked after the punches w
     expect(audits()).toHaveLength(1) // only the earlier discard
   })
 
-  it('keeping Attendance ticked keeps the copy, its edits and its draft, and audits nothing', async () => {
+  it('keeping Attendance ticked keeps the copy and its edits and audits nothing; the same types keep the draft, a different set clears it', async () => {
     await openWithCopy()
     await editAnitaOut()
     await seedDraft()
 
+    await startAttendanceCorrection(RUN, { types: ['ATTENDANCE'], reason: 'same types' })
+
+    expect(clones()).toHaveLength(4)
+    expect(session().draftRevisionId).toBe(DRAFT)
+    expect(revisionIds()).toEqual([REV1, DRAFT])
+
+    // Ticking another type changes the set: the draft was calculated for the old one, so it goes (the copy stays).
     await startAttendanceCorrection(RUN, { types: ['ATTENDANCE', 'ADJUSTMENTS'], reason: 'both' })
 
     expect(clones()).toHaveLength(4)
     expect(clones().find((r) => r.employeeId === 'emp-1' && r.position === 'OUT')!.currentTime).toBe('19:00')
-    expect(session().draftRevisionId).toBe(DRAFT)
+    expect(session()).toMatchObject({ draftRevisionId: null, correctionTypesJson: ['ATTENDANCE', 'ADJUSTMENTS'] })
+    expect(revisionIds()).toEqual([REV1])
     expect(audits()).toHaveLength(0)
   })
 
