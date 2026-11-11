@@ -113,13 +113,19 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
       // longer approved, goes back to the first step, which says why.
       if (result.code === 'ATTENDANCE_CHANGED' || result.code === 'ATTENDANCE_NOT_APPROVED') {
         setSummary(null)
-        const [current, pending] = await Promise.all([
-          checkAttendanceReadinessAction(weekStart, weekEnd),
-          getPendingAdjustmentsForWeekAction(weekStart, weekEnd),
-        ])
-        if (current.ok) setReadiness(current.data)
-        if (pending.ok) setAdjustments(pending.data)
-        setStep(current.ok && current.data.ready && pending.ok ? 1 : 0)
+        try {
+          const [current, pending] = await Promise.all([
+            checkAttendanceReadinessAction(weekStart, weekEnd),
+            getPendingAdjustmentsForWeekAction(weekStart, weekEnd),
+          ])
+          if (current.ok) setReadiness(current.data)
+          if (pending.ok) setAdjustments(pending.data)
+          setStep(current.ok && current.data.ready && pending.ok ? 1 : 0)
+        } catch {
+          // The reload itself failed (e.g. a network error): never leave the user on the dead summary.
+          // The first step reloads attendance and shows the approval error above it.
+          setStep(0)
+        }
       }
     }
   }
