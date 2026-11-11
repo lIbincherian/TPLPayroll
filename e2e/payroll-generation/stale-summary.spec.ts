@@ -122,7 +122,13 @@ test.describe('E2E: a payroll summary for attendance that changed', () => {
     await page.getByRole('button', { name: 'Approve Payroll' }).click()
     await page.getByRole('button', { name: 'Confirm Approval' }).click()
     await expect(page.getByRole('alert').filter({ hasText: "Attendance for this week isn't approved yet" })).toBeVisible({ timeout: 15000 })
-    await expect(page.locator('h2:has-text("Review Adjustments")')).toBeVisible()
+    // The flow reloaded the attendance: the week is no longer approved, so it is not ready and the user is on the
+    // first step, which says why and links to the punches (not on the adjustments step, which needs approved attendance).
+    await expect(page.locator('h2:has-text("Verify Attendance")')).toBeVisible()
+    await expect(page.getByRole('link', { name: /Review punches/ })).toHaveAttribute('href', `/attendance/${W}/review`)
+    await expect(page.locator('h2:has-text("Review Adjustments")')).toHaveCount(0)
+    await expect(page.locator('h2:has-text("Payroll Summary")')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Approve Payroll' })).toHaveCount(0)
     await settled(page)
     expect(await prisma.payrollRun.count({ where: { payrollWeekStartDate: new Date(`${W}T00:00:00Z`) } })).toBe(0)
   })
