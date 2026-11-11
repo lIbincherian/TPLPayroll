@@ -357,7 +357,7 @@ describe.skipIf(!enabled)('F12 final fixes (real database)', { timeout: 120000 }
     })
   })
 
-  describe('not applied before, now APPROVED: applied now, at the stored amount', () => {
+  describe('not applied before, now APPROVED: applied now, at the amount the draft froze', () => {
     const week = W.notAppliedApprove
     let run: Awaited<ReturnType<typeof payrollWeek>>
     let capped: { adjustmentId: string; applicationId: string }
@@ -379,20 +379,23 @@ describe.skipIf(!enabled)('F12 final fixes (real database)', { timeout: 120000 }
       expect(await adj(run.adjustmentId)).toMatchObject({ remainingBalance: 2000 })
     })
 
-    it('approving both in the correction stores 500 and 50 (the 70/50 cap) and moves no balance yet', async () => {
+    it('approving both in the correction changes the statuses only (no amount, no balance): the 70/50 one still has its 70', async () => {
       await openCorrection(run.payrollRunId)
 
       await correction.approveAdjustmentInCorrection(run.applicationId)
       await correction.approveAdjustmentInCorrection(capped.applicationId)
 
       expect(await app(run.applicationId)).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 500 })
-      expect(await app(capped.applicationId)).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 50 })
+      expect(await app(capped.applicationId)).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 70 })
       expect(await adj(run.adjustmentId)).toMatchObject({ remainingBalance: 2000, status: 'ACTIVE' })
       expect(await adj(capped.adjustmentId)).toMatchObject({ remainingBalance: 50, status: 'ACTIVE' })
     })
 
-    it('the draft deducts exactly the stored amounts, and approving the revision takes exactly those off: 1500, and 0 / COMPLETED', async () => {
+    it('the draft freezes 500 and 50 (the 70/50 cap) and deducts exactly those, and approving the revision takes exactly those off: 1500, and 0 / COMPLETED', async () => {
       const d = await draft(run.payrollRunId)
+      expect(await app(run.applicationId)).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 500 })
+      expect(await app(capped.applicationId)).toMatchObject({ approvalStatus: 'APPROVED', appliedAmount: 50 })
+      expect(await adj(capped.adjustmentId)).toMatchObject({ remainingBalance: 50, status: 'ACTIVE' }) // freezing moves no balance
       expect(await revisionDeductions(d.revisionId, empA.id)).toBe(500)
       expect(await revisionDeductions(d.revisionId, empB.id)).toBe(50)
 
