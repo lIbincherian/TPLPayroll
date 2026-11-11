@@ -12,7 +12,10 @@ import { Prisma } from '@prisma/client'
  * week's row first, then adjustment rows in id order (one statement, ORDER BY id, so two callers cannot lock
  * the same pair the opposite way round).
  */
-export async function lockAdjustmentRows(tx: Prisma.TransactionClient, adjustmentIds: string[]): Promise<void> {
+export async function lockAdjustmentRows(
+  tx: Pick<Prisma.TransactionClient, '$queryRaw'>,
+  adjustmentIds: string[],
+): Promise<void> {
   const ids = [...new Set(adjustmentIds)]
   if (ids.length === 0) return
   await tx.$queryRaw`SELECT id FROM "PayrollAdjustment" WHERE id IN (${Prisma.join(ids)}) ORDER BY id FOR UPDATE`

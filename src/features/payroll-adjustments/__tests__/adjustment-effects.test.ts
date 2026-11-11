@@ -12,6 +12,8 @@ vi.mock('@/lib/prisma', async () => {
   const { createMemoryDb } = await import('@/features/payroll-adjustments/__tests__/support/memory-db')
   return { default: createMemoryDb() }
 })
+// The adjustment's row lock needs a real database; the memory database has no raw queries.
+vi.mock('@/features/payroll-adjustments/services/adjustment-lock.service', () => ({ lockAdjustmentRows: vi.fn() }))
 
 import prismaImport from '@/lib/prisma'
 import {

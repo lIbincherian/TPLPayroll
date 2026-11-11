@@ -393,6 +393,8 @@ export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePa
 
         // Carry forward first. Skipping moves a left-out employee's pending or approved
         // application to the next week, so the link step below can never attach it to this run.
+        // Each skip takes its adjustment's row lock, after this week's row; in adjustment id order, like every
+        // other writer of several adjustments, so two of them cannot wait on each other.
         const leftOutApplications = await tx.payrollAdjustmentApplication.findMany({
           where: {
             payrollWeekStartDate: weekStart,
@@ -402,6 +404,7 @@ export async function approvePayroll(summary: PayrollSummary): Promise<ApprovePa
             payrollAdjustment: { status: { not: 'CANCELLED' } },
           },
           select: { id: true },
+          orderBy: [{ payrollAdjustmentId: 'asc' }, { id: 'asc' }],
         })
         for (const application of leftOutApplications) {
           await skipAdjustmentApplication(application.id, tx)

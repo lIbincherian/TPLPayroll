@@ -1068,6 +1068,8 @@ describe('approvePayroll', () => {
           payrollAdjustment: { status: { not: 'CANCELLED' } },
         },
         select: { id: true },
+        // the skips lock their adjustments' rows, in adjustment id order
+        orderBy: [{ payrollAdjustmentId: 'asc' }, { id: 'asc' }],
       })
     })
 
