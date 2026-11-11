@@ -93,7 +93,7 @@ const round2 = (value: number): number => Math.round(value * 100) / 100
 const toPaise = (value: number): number => Math.round(value * 100)
 
 /** Same arithmetic as the adjustment service's carry-forward, so "the week after" means the same week in both. */
-export function addDays(date: Date, days: number): Date {
+function addDays(date: Date, days: number): Date {
   const d = new Date(date)
   d.setDate(d.getDate() + days)
   return d
