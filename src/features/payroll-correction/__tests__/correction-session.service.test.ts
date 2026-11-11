@@ -280,6 +280,8 @@ describe('beginCorrection', () => {
         approvedAt: new Date('2025-03-14T10:00:00Z'),
         skippedAt: null,
         appliedAt: new Date('2025-03-14T10:00:00Z'),
+        appliedAmount: 500,
+        carriedForwardToPayrollWeekStartDate: null,
       },
       {
         id: 'app-2',
@@ -288,6 +290,8 @@ describe('beginCorrection', () => {
         approvedAt: null,
         skippedAt: new Date('2025-03-14T11:00:00Z'),
         appliedAt: null,
+        appliedAmount: 70,
+        carriedForwardToPayrollWeekStartDate: new Date('2025-03-13T00:00:00Z'),
       },
     ] as never)
     tx.payrollCorrectionSession.create.mockResolvedValue(makeSession())
@@ -311,6 +315,8 @@ describe('beginCorrection', () => {
             approvedAt: '2025-03-14T10:00:00.000Z',
             skippedAt: null,
             appliedAt: '2025-03-14T10:00:00.000Z',
+            appliedAmount: 500,
+            carriedForwardToPayrollWeekStartDate: null,
           },
           {
             applicationId: 'app-2',
@@ -319,6 +325,8 @@ describe('beginCorrection', () => {
             approvedAt: null,
             skippedAt: '2025-03-14T11:00:00.000Z',
             appliedAt: null,
+            appliedAmount: 70,
+            carriedForwardToPayrollWeekStartDate: '2025-03-13T00:00:00.000Z',
           },
         ],
       }),
@@ -1040,7 +1048,9 @@ describe('abandonCorrection', () => {
       approvedAt: '2025-03-14T10:00:00.000Z',
       skippedAt: null,
       appliedAt: '2025-03-14T10:00:00.000Z',
+      appliedAmount: 500,
     },
+    // Opened before the amount was recorded: its status is restored, its amount is left alone.
     { applicationId: 'app-2', approvalStatus: 'SKIPPED', isReversed: true, approvedAt: null, skippedAt: '2025-03-14T11:00:00.000Z', appliedAt: null },
   ]
 
@@ -1087,6 +1097,8 @@ describe('abandonCorrection', () => {
     // Found before the transaction, and read again inside it once the week row is locked.
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(session as never)
     tx.payrollCorrectionSession.findUnique.mockResolvedValue(session)
+    // No application was created after the correction opened.
+    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([])
   }
 
   it('needs a correction in progress', async () => {
@@ -1155,6 +1167,7 @@ describe('abandonCorrection', () => {
         approvedAt: new Date('2025-03-14T10:00:00.000Z'),
         skippedAt: null,
         appliedAt: new Date('2025-03-14T10:00:00.000Z'),
+        appliedAmount: 500,
       },
     })
     expect(tx.payrollAdjustmentApplication.updateMany).toHaveBeenCalledWith({

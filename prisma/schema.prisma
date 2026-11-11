@@ -165,7 +165,7 @@ model PayrollCorrectionSession {
   status                 String // 'IN_PROGRESS' | 'APPLIED' | 'ABANDONED'
   correctionReason       String?
   correctionTypesJson    Json // CorrectionType[]
-  adjustmentSnapshotJson Json? // [{ applicationId, approvalStatus, isReversed, approvedAt, skippedAt, appliedAt }]
+  adjustmentSnapshotJson Json? // [{ applicationId, approvalStatus, isReversed, approvedAt, skippedAt, appliedAt, appliedAmount?, carriedForwardToPayrollWeekStartDate? }]
   draftRevisionId        String?
   createdAt              DateTime  @default(now())
   appliedAt              DateTime?

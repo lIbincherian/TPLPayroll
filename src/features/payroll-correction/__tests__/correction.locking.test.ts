@@ -288,6 +288,8 @@ describe('item 13: beginCorrection takes the week lock before it looks for, snap
     approvedAt: new Date('2025-03-14T10:00:00Z'),
     skippedAt: null,
     appliedAt: new Date('2025-03-14T10:00:00Z'),
+    appliedAmount: 500,
+    carriedForwardToPayrollWeekStartDate: null,
   })
 
   /** Pre-checks all pass (no session yet); the transaction client sees no session either, unless a test says so. */
@@ -363,7 +365,16 @@ describe('item 13: beginCorrection takes the week lock before it looks for, snap
     expect(tx.payrollAdjustmentApplication.findMany).toHaveBeenCalledTimes(1)
     expect(tx.payrollAdjustmentApplication.findMany).toHaveBeenCalledWith({
       where: { OR: [{ payrollRunId: RUN_ID }, { payrollWeekStartDate: WEEK_START, payrollRunId: null }] },
-      select: { id: true, approvalStatus: true, isReversed: true, approvedAt: true, skippedAt: true, appliedAt: true },
+      select: {
+        id: true,
+        approvalStatus: true,
+        isReversed: true,
+        approvedAt: true,
+        skippedAt: true,
+        appliedAt: true,
+        appliedAmount: true,
+        carriedForwardToPayrollWeekStartDate: true,
+      },
     })
     const { data } = tx.payrollCorrectionSession.create.mock.calls[0][0]
     expect((data.adjustmentSnapshotJson as Array<{ applicationId: string }>).map((e) => e.applicationId)).toEqual(['tx-app-1'])
@@ -711,6 +722,8 @@ describe('item 15: abandonCorrection discards under the week lock', () => {
     // Found before the transaction, and read again inside it once the week row is locked.
     vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(before as never)
     tx.payrollCorrectionSession.findUnique.mockResolvedValue(locked)
+    // No application was created after the correction opened.
+    tx.payrollAdjustmentApplication.findMany.mockResolvedValue([])
     setPunches(tx, [row('c-1', { clonedFromPunchId: 'p-1', currentTime: '18:00' })], [row('p-1')])
     return tx
   }

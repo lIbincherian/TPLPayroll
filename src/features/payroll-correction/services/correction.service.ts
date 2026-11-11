@@ -215,6 +215,8 @@ export async function beginCorrection(payrollRunId: string): Promise<BeginCorrec
           approvedAt: true,
           skippedAt: true,
           appliedAt: true,
+          appliedAmount: true,
+          carriedForwardToPayrollWeekStartDate: true,
         },
       })
       const adjustmentSnapshot: AdjustmentSnapshotEntry[] = applications.map((app) => ({
@@ -224,6 +226,8 @@ export async function beginCorrection(payrollRunId: string): Promise<BeginCorrec
         approvedAt: app.approvedAt?.toISOString() ?? null,
         skippedAt: app.skippedAt?.toISOString() ?? null,
         appliedAt: app.appliedAt?.toISOString() ?? null,
+        appliedAmount: Number(app.appliedAmount),
+        carriedForwardToPayrollWeekStartDate: app.carriedForwardToPayrollWeekStartDate?.toISOString() ?? null,
       }))
 
       const created = await tx.payrollCorrectionSession.create({
@@ -1426,6 +1430,35 @@ export async function abandonCorrection(payrollRunId: string): Promise<AbandonCo
             approvedAt: entry.approvedAt ? new Date(entry.approvedAt) : null,
             skippedAt: entry.skippedAt ? new Date(entry.skippedAt) : null,
             appliedAt: entry.appliedAt ? new Date(entry.appliedAt) : null,
+            // A session opened before the amount was recorded has none to put back.
+            ...(typeof entry.appliedAmount === 'number' ? { appliedAmount: entry.appliedAmount } : {}),
+          },
+        })
+      }
+
+      // Applications created after the correction opened (a skip in the week before carries one into this week)
+      // are not in the snapshot. Approving or skipping one in the correction left it APPROVED or SKIPPED with no
+      // balance move, so it goes back to PENDING at the adjustment's amount. A session with no snapshot at all
+      // (opened before snapshots) cannot tell a new row from an old one, so it resets none.
+      const created = Array.isArray(current.adjustmentSnapshotJson)
+        ? await tx.payrollAdjustmentApplication.findMany({
+            where: {
+              payrollWeekStartDate: session.attendanceUpload.payrollWeekStartDate,
+              payrollRunId: null,
+              id: { notIn: snapshot.map((entry) => entry.applicationId) },
+              approvalStatus: { in: ['APPROVED', 'SKIPPED'] },
+            },
+            include: { payrollAdjustment: true },
+          })
+        : []
+      for (const app of created) {
+        await tx.payrollAdjustmentApplication.update({
+          where: { id: app.id },
+          data: {
+            approvalStatus: 'PENDING',
+            appliedAt: null,
+            skippedAt: null,
+            appliedAmount: Number(app.payrollAdjustment.amount),
           },
         })
       }
