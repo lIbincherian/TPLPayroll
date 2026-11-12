@@ -10,7 +10,7 @@ import {
   type SlipAttendanceSource,
 } from '@/features/payroll-reports/types/report.types'
 import { formatPunchesCell, pairsFromStoredPunches } from '@/features/attendance-sync/lib/hours'
-import { toISODate } from '@/features/attendance-sync/lib/week'
+import { paymentReference, toISODate } from '@/features/attendance-sync/lib/week'
 
 let fontsConfigured = false
 
@@ -329,7 +329,7 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
               designation: true,
               site: true,
               gPay: true,
-              bankAccount: true,
+              phone: true,
             },
           },
         },
@@ -361,19 +361,33 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
     year: 'numeric',
   })
 
+  const salaryDateFormat: Intl.DateTimeFormatOptions = {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }
+  const salaryFromStr = run.payrollWeekStartDate.toLocaleDateString('en-GB', salaryDateFormat)
+  const salaryToStr = run.payrollWeekEndDate.toLocaleDateString('en-GB', salaryDateFormat)
+  const weekStartISO = toISODate(run.payrollWeekStartDate)
+
   const headers = [
-    'ID',
-    'Employee',
-    'GPay',
-    'Bank Acct',
-    'Regular Pay',
-    'OT Pay',
-    'Additions',
-    'Deductions',
+    'Sl No.',
+    'Emp ID',
+    'Emp Name',
+    'GPay No.',
+    'WhatsApp No.',
+    'Paid Name (if diff.)',
+    'Salary from',
+    'Salary to',
+    'Reg. Hrs Pay',
+    'Overtime Hrs Pay',
     'Net Pay',
+    'Payment Date',
+    'Payment Reference',
   ]
 
-  const aoa: (string | number)[][] = [
+  const aoa: (string | number | null)[][] = [
     ['PAYROLL SUMMARY'],
     [`Week: ${weekStartStr} – ${weekEndStr}`],
     [`Generated: ${generatedAtStr}`],
@@ -381,17 +395,22 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
     headers,
   ]
 
-  run.runEmployees.forEach((re) => {
+  // null leaves Paid Name and Payment Date as empty cells (no value)
+  run.runEmployees.forEach((re, i) => {
     aoa.push([
+      i + 1,
       re.employee.employeeId,
       re.employee.employeeName,
-      re.employee.gPay ?? '-',
-      re.employee.bankAccount ?? '-',
+      re.employee.gPay || '-',
+      re.employee.phone || '-',
+      null, // Paid Name (if diff.)
+      salaryFromStr,
+      salaryToStr,
       Number(re.regularPay),
       Number(re.overtimePay),
-      Number(re.additions),
-      Number(re.deductions),
       Number(re.netPayable),
+      null, // Payment Date
+      paymentReference(weekStartISO, re.employee.employeeId),
     ])
   })
 
@@ -401,10 +420,12 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
     '',
     '',
     '',
-    0, // Regular Pay
-    0, // OT Pay
-    0, // Additions
-    0, // Deductions
+    '',
+    '',
+    '',
+    '',
+    0, // Reg. Hrs Pay
+    0, // Overtime Hrs Pay
     0, // Net Pay
   ])
 
@@ -434,21 +455,19 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
   }
 
   // Format the columns:
-  formatCol('E', true) // Regular Pay
-  formatCol('F', true) // OT Pay
-  formatCol('G', true) // Additions
-  formatCol('H', true) // Deductions
-  formatCol('I', true) // Net Pay
+  formatCol('I', true) // Reg. Hrs Pay
+  formatCol('J', true) // Overtime Hrs Pay
+  formatCol('K', true) // Net Pay
 
   // Setup merges
   ws['!merges'] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }, // Merge Title
-    { s: { r: 1, c: 0 }, e: { r: 1, c: 8 } }, // Merge Week range
-    { s: { r: 2, c: 0 }, e: { r: 2, c: 8 } }, // Merge Generated date
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 12 } }, // Merge Title
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 12 } }, // Merge Week range
+    { s: { r: 2, c: 0 }, e: { r: 2, c: 12 } }, // Merge Generated date
   ]
 
   // Auto-fit column widths
-  const maxCols = 9
+  const maxCols = 13
   const wcols = Array(maxCols).fill(0).map(() => ({ wch: 10 }))
   for (let r = 0; r < aoa.length; r++) {
     for (let c = 0; c < maxCols; c++) {
@@ -456,7 +475,7 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
       if (val !== undefined && val !== null) {
         let strLen = String(val).length
         if (typeof val === 'number') {
-          if (c >= 4 && c <= 8) {
+          if (c >= 8 && c <= 10) {
             strLen += 5 // for "₹" and decimals/commas formatting
           }
         }
@@ -466,10 +485,12 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
       }
     }
   }
-  wcols[0].wch = Math.max(wcols[0].wch, 8)  // ID
-  wcols[1].wch = Math.max(wcols[1].wch, 22) // Employee Name
-  wcols[2].wch = Math.max(wcols[2].wch, 12) // GPay
-  wcols[3].wch = Math.max(wcols[3].wch, 16) // Bank Acct
+  wcols[1].wch = Math.max(wcols[1].wch, 12) // Emp ID
+  wcols[2].wch = Math.max(wcols[2].wch, 22) // Emp Name
+  wcols[3].wch = Math.max(wcols[3].wch, 12) // GPay No.
+  wcols[4].wch = Math.max(wcols[4].wch, 12) // WhatsApp No.
+  wcols[5].wch = Math.max(wcols[5].wch, 20) // Paid Name (if diff.)
+  wcols[11].wch = Math.max(wcols[11].wch, 14) // Payment Date
   ws['!cols'] = wcols
 
   const wb = XLSX.utils.book_new()

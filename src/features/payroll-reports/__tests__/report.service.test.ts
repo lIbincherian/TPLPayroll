@@ -62,6 +62,7 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 
+import * as XLSX from 'xlsx'
 import prisma from '@/lib/prisma'
 import {
   formatSlipDate,
@@ -92,6 +93,7 @@ function makeEmployee(overrides: Partial<{
   designation: string
   site: string | null
   gPay: string | null
+  phone: string | null
   bankAccount: string | null
 }> = {}) {
   return {
@@ -101,6 +103,7 @@ function makeEmployee(overrides: Partial<{
     designation: 'Guard',
     site: 'Site A',
     gPay: '9876543210',
+    phone: '9123456780',
     bankAccount: 'ACC123456',
     ...overrides,
   }
@@ -495,6 +498,54 @@ describe('generatePayrollSummaryXlsx', () => {
     expect(result.buffer.length).toBeGreaterThan(0)
     expect(result.fileName).toMatch(/^payroll_summary_/)
     expect(result.fileName).toMatch(/\.xlsx$/)
+  })
+
+  it('writes the 13 payment columns, one row per employee and totals for the pay columns', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makePayrollRun() as never)
+
+    const { buffer } = await generatePayrollSummaryXlsx('run-uuid-1')
+    // sheetStubs keeps formula-only cells, which carry no cached value
+    const ws = XLSX.read(buffer, { type: 'buffer', sheetStubs: true }).Sheets.Summary
+    const cell = (ref: string) => ws[ref]?.v
+
+    const headers = 'ABCDEFGHIJKLM'.split('').map((col) => cell(`${col}5`))
+    expect(headers).toEqual([
+      'Sl No.',
+      'Emp ID',
+      'Emp Name',
+      'GPay No.',
+      'WhatsApp No.',
+      'Paid Name (if diff.)',
+      'Salary from',
+      'Salary to',
+      'Reg. Hrs Pay',
+      'Overtime Hrs Pay',
+      'Net Pay',
+      'Payment Date',
+      'Payment Reference',
+    ])
+    expect(headers).not.toContain('Additions')
+    expect(headers).not.toContain('Deductions')
+    expect(headers).not.toContain('Bank Acct')
+    expect(cell('N5')).toBeUndefined()
+
+    expect(cell('A6')).toBe(1)
+    expect(cell('B6')).toBe('EMP-001')
+    expect(cell('D6')).toBe('9876543210')
+    expect(cell('E6')).toBe('9123456780')
+    expect(ws.F6).toBeUndefined()
+    expect(cell('G6')).toBe('06 Mar 2025')
+    expect(cell('H6')).toBe('12 Mar 2025')
+    expect(cell('I6')).toBe(2875)
+    expect(cell('J6')).toBe(375)
+    expect(cell('K6')).toBe(2950)
+    expect(ws.L6).toBeUndefined()
+    expect(cell('M6')).toBe('2025-10-EMP-001')
+
+    expect(cell('A7')).toBe('TOTALS')
+    expect(ws.I7.f).toBe('SUM(I6:I6)')
+    expect(ws.J7.f).toBe('SUM(J6:J6)')
+    expect(ws.K7.f).toBe('SUM(K6:K6)')
   })
 
   it('throws PAYROLL_RUN_NOT_FOUND when run does not exist', async () => {
