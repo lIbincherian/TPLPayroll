@@ -33,12 +33,10 @@ const SUMMARY: PayrollSummary = {
   attendanceApprovedAt: new Date('2026-11-12T08:00:00.000Z'),
   employees: [employee('TPLGOASHT231', '9123456780'), employee('TPLGOASHT232', '  ')],
   totals: {
-    totalEmployees: 2,
     totalRegularHours: 80,
     totalOvertimeHours: 4,
     totalRegularPay: 5000,
     totalOvertimePay: 250,
-    totalGrossPay: 5250,
     totalAdditions: 200,
     totalDeductions: 100,
     totalNetPayable: 5350,
