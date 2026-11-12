@@ -97,7 +97,7 @@ describe('createEmployee', () => {
   it('saves employee and returns record', async () => {
     // GIVEN valid employee data
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(null) // no duplicate
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as Promise<unknown>[]))
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
     vi.mocked(prisma.employee.create).mockResolvedValue(makeEmployee())
     vi.mocked(prisma.employeeWageHistory.create).mockResolvedValue(makeWageHistory())
     vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
@@ -136,7 +136,7 @@ describe('createEmployee', () => {
   it('creates initial wage history with weeklySalary and hourlyRate', async () => {
     // GIVEN valid input with salary = 12000, hourlyRate = 62.50
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(null)
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as Promise<unknown>[]))
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
     vi.mocked(prisma.employee.create).mockResolvedValue(makeEmployee())
     vi.mocked(prisma.employeeWageHistory.create).mockResolvedValue(makeWageHistory())
     vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
@@ -158,7 +158,7 @@ describe('createEmployee', () => {
   it('creates audit log with actionType CREATE and entityType EMPLOYEE', async () => {
     // GIVEN valid input
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(null)
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as Promise<unknown>[]))
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
     vi.mocked(prisma.employee.create).mockResolvedValue(makeEmployee())
     vi.mocked(prisma.employeeWageHistory.create).mockResolvedValue(makeWageHistory())
     vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
@@ -429,7 +429,7 @@ describe('updateEmployee', () => {
     // GIVEN EMP-042 with phone = 9876543210
     const existing = makeEmployee({ phone: '9876543210' })
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(existing)
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as Promise<unknown>[]))
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
     vi.mocked(prisma.employee.update).mockResolvedValue(makeEmployee({ phone: '1111111111' }))
     vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([makeWageHistory()])
     vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
@@ -444,7 +444,7 @@ describe('updateEmployee', () => {
     const existingWage = makeWageHistory({ weeklySalary: 12000 as unknown as EmployeeWageHistory['weeklySalary'] })
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(existing)
     vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([existingWage])
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as Promise<unknown>[]))
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
     vi.mocked(prisma.employee.update).mockResolvedValue(existing)
     vi.mocked(prisma.employeeWageHistory.updateMany).mockResolvedValue({ count: 1 })
     vi.mocked(prisma.employeeWageHistory.create).mockResolvedValue(makeWageHistory())
@@ -465,7 +465,7 @@ describe('updateEmployee', () => {
     const existingWage = makeWageHistory()
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(existing)
     vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([existingWage])
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as Promise<unknown>[]))
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
     vi.mocked(prisma.employee.update).mockResolvedValue(existing)
     vi.mocked(prisma.employeeWageHistory.updateMany).mockResolvedValue({ count: 1 })
     vi.mocked(prisma.employeeWageHistory.create).mockResolvedValue(makeWageHistory())
@@ -488,7 +488,7 @@ describe('updateEmployee', () => {
     const existing = makeEmployee()
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(existing)
     vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([makeWageHistory()])
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as Promise<unknown>[]))
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
     vi.mocked(prisma.employee.update).mockResolvedValue(existing)
     vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
 
@@ -508,7 +508,7 @@ describe('updateEmployee', () => {
     const existing = makeEmployee()
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(existing)
     vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([makeWageHistory()])
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as Promise<unknown>[]))
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
     vi.mocked(prisma.employee.update).mockResolvedValue(existing)
     vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
 
@@ -531,7 +531,7 @@ describe('updateEmployee — deactivate / reactivate', () => {
     const existing = makeEmployee({ isActive: true })
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(existing)
     vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([makeWageHistory()])
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as Promise<unknown>[]))
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
     vi.mocked(prisma.employee.update).mockResolvedValue(makeEmployee({ isActive: false }))
     vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
 
@@ -544,7 +544,7 @@ describe('updateEmployee — deactivate / reactivate', () => {
     const existing = makeEmployee({ isActive: false })
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(existing)
     vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([makeWageHistory()])
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as Promise<unknown>[]))
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
     vi.mocked(prisma.employee.update).mockResolvedValue(makeEmployee({ isActive: true }))
     vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
 
@@ -567,7 +567,7 @@ describe('updateEmployee — resignation date', () => {
     const existing = makeEmployee({ dateOfResignation: null })
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(existing)
     vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([makeWageHistory()])
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as Promise<unknown>[]))
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
     vi.mocked(prisma.employee.update).mockResolvedValue(makeEmployee({ dateOfResignation: new Date('2025-06-15') }))
     vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
 
@@ -652,9 +652,9 @@ describe('getDistinctDesignations', () => {
 
   it('returns sorted unique designation strings', async () => {
     vi.mocked(prisma.employee.findMany).mockResolvedValue([
-      { designation: 'Guard' } as any,
-      { designation: 'Manager' } as any,
-      { designation: 'Supervisor' } as any,
+      { designation: 'Guard' } as never,
+      { designation: 'Manager' } as never,
+      { designation: 'Supervisor' } as never,
     ])
     const result = await getDistinctDesignations()
     expect(result).toEqual(['Guard', 'Manager', 'Supervisor'])
@@ -675,8 +675,8 @@ describe('getDistinctSites', () => {
 
   it('returns sorted unique non-null site strings', async () => {
     vi.mocked(prisma.employee.findMany).mockResolvedValue([
-      { site: 'North Gate' } as any,
-      { site: 'South Gate' } as any,
+      { site: 'North Gate' } as never,
+      { site: 'South Gate' } as never,
     ])
     const result = await getDistinctSites()
     expect(result).toEqual(['North Gate', 'South Gate'])
@@ -692,8 +692,8 @@ describe('getDistinctSites', () => {
 
   it('returns empty array when all sites are null', async () => {
     vi.mocked(prisma.employee.findMany).mockResolvedValue([
-      { site: null } as any,
-      { site: null } as any,
+      { site: null } as never,
+      { site: null } as never,
     ])
     const result = await getDistinctSites()
     expect(result).toEqual([])

@@ -21,6 +21,7 @@ import {
   matchCodeAction,
   rematchWeekCodesAction,
   setEmployeeDecisionAction,
+  unignoreCodeAction,
 } from '../actions/attendance-sync.actions'
 import { formatDate, formatHours, plural } from '../lib/format'
 import { formatWeekLabel } from '../lib/week'
@@ -28,10 +29,12 @@ import type {
   AttendanceWeekStatus,
   EmployeeCheck as EmployeeCheckData,
   EmployeeDecisionValue,
+  IgnoreScope,
 } from '../types/attendance-sync.types'
 import { EmployeeCombobox } from './EmployeeCombobox'
 
 type CheckCode = EmployeeCheckData['codes'][number]
+type IgnoredCode = EmployeeCheckData['ignoredCodes'][number]
 type CheckDecision = EmployeeCheckData['decisions'][number]
 
 const LABEL = 'text-xs font-medium uppercase tracking-wider text-zinc-500'
@@ -118,10 +121,12 @@ interface CodeRowProps {
   disabled: boolean
   busy: boolean
   confirmingIgnore: boolean
+  /** Which ignore button was pressed while the request runs. */
+  ignoringScope: IgnoreScope | null
   onMatch: (employeeDbId: string) => void
   onAskIgnore: () => void
   onCancelIgnore: () => void
-  onIgnore: () => void
+  onIgnore: (scope: IgnoreScope) => void
 }
 
 function CodeRow({
@@ -131,6 +136,7 @@ function CodeRow({
   disabled,
   busy,
   confirmingIgnore,
+  ignoringScope,
   onMatch,
   onAskIgnore,
   onCancelIgnore,
@@ -193,33 +199,47 @@ function CodeRow({
           <div
             role="alertdialog"
             aria-label={`Ignore code ${code.empCode}`}
-            className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-amber-200/60 bg-amber-50 px-3 py-2"
+            className="space-y-2 rounded-xl border border-amber-200/60 bg-amber-50 px-3 py-2"
           >
             <p className="text-xs text-amber-800">
-              Leave {plural(code.punchCount, 'punch', 'punches')} out of payroll? The code stays ignored in future weeks.
+              Leave {plural(code.punchCount, 'punch', 'punches')} out of payroll?
             </p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                className="rounded-xl bg-zinc-900 text-white hover:bg-zinc-800"
+                onClick={() => onIgnore('WEEK')}
+                disabled={busy}
+                data-testid={`ignore-week-${code.empCode}`}
+              >
+                {ignoringScope === 'WEEK' ? <SpinnerGap size={14} className="animate-spin" /> : null}
+                Ignore this week
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
                 className="rounded-xl"
+                onClick={() => onIgnore('ALWAYS')}
+                disabled={busy}
+                data-testid={`ignore-always-${code.empCode}`}
+              >
+                {ignoringScope === 'ALWAYS' ? <SpinnerGap size={14} className="animate-spin" /> : null}
+                Ignore every week
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="rounded-xl text-zinc-600"
                 onClick={onCancelIgnore}
                 disabled={busy}
                 data-testid={`cancel-ignore-${code.empCode}`}
               >
                 Cancel
               </Button>
-              <Button
-                size="sm"
-                className="rounded-xl bg-zinc-900 text-white hover:bg-zinc-800"
-                onClick={onIgnore}
-                disabled={busy}
-                data-testid={`confirm-ignore-${code.empCode}`}
-              >
-                {busy ? <SpinnerGap size={14} className="animate-spin" /> : null}
-                Ignore code
-              </Button>
             </div>
+            <p className="text-xs text-amber-800/80" data-testid={`ignore-help-${code.empCode}`}>
+              This week: the code&apos;s punches are left out of this week only. Every week: it is skipped in future pulls too.
+            </p>
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
@@ -258,6 +278,83 @@ function CodeRow({
           </div>
         )}
       </div>
+    </li>
+  )
+}
+
+// ─── One ignored code ─────────────────────────────────────────────────────────
+
+interface IgnoredRowProps {
+  code: IgnoredCode
+  disabled: boolean
+  busy: boolean
+  confirming: boolean
+  onStop: () => void
+  onCancel: () => void
+}
+
+function IgnoredRow({ code, disabled, busy, confirming, onStop, onCancel }: IgnoredRowProps) {
+  const everyWeek = code.scope === 'ALWAYS'
+
+  return (
+    <li
+      data-testid={`ignored-code-${code.empCode}`}
+      className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-zinc-100 py-3"
+    >
+      <span className="w-20 font-mono text-sm font-medium text-zinc-900">{code.empCode}</span>
+      <span className="text-sm text-zinc-600">{code.empName ?? '—'}</span>
+      <span className="text-sm text-zinc-500">{plural(code.punchCount, 'punch', 'punches')}</span>
+      <span
+        data-testid={`ignored-scope-${code.empCode}`}
+        data-scope={code.scope}
+        className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-600"
+      >
+        {everyWeek ? 'Every week' : 'This week only'}
+      </span>
+      {confirming ? (
+        <div
+          role="alertdialog"
+          aria-label={`Stop ignoring code ${code.empCode}`}
+          className="flex w-full flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-amber-200/60 bg-amber-50 px-3 py-2"
+        >
+          <p className="text-xs text-amber-800">Stop ignoring {code.empCode} in future weeks too?</p>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="rounded-xl text-zinc-600"
+              onClick={onCancel}
+              disabled={busy}
+              data-testid={`cancel-unignore-${code.empCode}`}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="rounded-xl bg-zinc-900 text-white hover:bg-zinc-800"
+              onClick={onStop}
+              disabled={busy}
+              data-testid={`confirm-unignore-${code.empCode}`}
+            >
+              {busy ? <SpinnerGap size={14} className="animate-spin" /> : null}
+              Stop ignoring
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          className="rounded-xl sm:ml-auto"
+          onClick={onStop}
+          disabled={disabled || busy}
+          aria-label={`Stop ignoring code ${code.empCode}`}
+          data-testid={`unignore-${code.empCode}`}
+        >
+          {busy ? <SpinnerGap size={14} className="animate-spin" /> : null}
+          Stop ignoring
+        </Button>
+      )}
     </li>
   )
 }
@@ -341,6 +438,8 @@ export function EmployeeCheck({ initial, status }: EmployeeCheckProps) {
   const [data, setData] = useState(initial)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [confirmIgnore, setConfirmIgnore] = useState<string | null>(null)
+  const [ignoringScope, setIgnoringScope] = useState<IgnoreScope | null>(null)
+  const [confirmUnignore, setConfirmUnignore] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rechecking, setRechecking] = useState(initial.codes.length > 0 && !readOnly)
 
@@ -409,13 +508,46 @@ export function EmployeeCheck({ initial, status }: EmployeeCheckProps) {
     if (done) await refresh()
   }
 
-  async function handleIgnore(code: CheckCode) {
+  async function handleIgnore(code: CheckCode, scope: IgnoreScope) {
+    setIgnoringScope(scope)
     const done = await run(code.empCode, async () => {
-      const res = await ignoreCodeAction(weekId, code.empCode)
-      if (res.ok) toast.success(`Code ${code.empCode} ignored`, { description: 'It stays ignored in future weeks.' })
+      const res = await ignoreCodeAction(weekId, code.empCode, scope)
+      if (res.ok) {
+        toast.success(
+          scope === 'WEEK' ? `Code ${code.empCode} ignored for this week` : `Code ${code.empCode} ignored`,
+          {
+            description:
+              scope === 'WEEK'
+                ? 'It will be asked about again in later weeks.'
+                : 'It stays ignored in future weeks.',
+          },
+        )
+      }
       return res
     })
+    setIgnoringScope(null)
     setConfirmIgnore(null)
+    if (done) await refresh()
+  }
+
+  /** Week-only ignores stop at once; an every-week ignore asks first, because future pulls will ask about the code again. */
+  async function handleStopIgnoring(code: IgnoredCode) {
+    if (code.scope === 'ALWAYS' && confirmUnignore !== code.empCode) {
+      setConfirmUnignore(code.empCode)
+      return
+    }
+    const done = await run(code.empCode, async () => {
+      const res = await unignoreCodeAction(weekId, code.empCode)
+      if (res.ok) {
+        if (res.data.outcome.status === 'MATCHED') {
+          toast.success(`Code ${code.empCode} matched to ${res.data.outcome.employeeCode}`)
+        } else {
+          toast.info(`Code ${code.empCode} is back under Codes to fix`)
+        }
+      }
+      return res
+    })
+    setConfirmUnignore(null)
     if (done) await refresh()
   }
 
@@ -503,17 +635,19 @@ export function EmployeeCheck({ initial, status }: EmployeeCheckProps) {
                 disabled={readOnly}
                 busy={busyKey === code.empCode}
                 confirmingIgnore={confirmIgnore === code.empCode}
+                ignoringScope={busyKey === code.empCode ? ignoringScope : null}
                 onMatch={(employeeDbId) => void handleMatch(code, employeeDbId)}
                 onAskIgnore={() => setConfirmIgnore(code.empCode)}
                 onCancelIgnore={() => setConfirmIgnore(null)}
-                onIgnore={() => void handleIgnore(code)}
+                onIgnore={(scope) => void handleIgnore(code, scope)}
               />
             ))}
           </ul>
           <p className="mt-4 flex items-start gap-2 text-sm text-zinc-500">
             <Info size={16} className="mt-0.5 shrink-0 text-zinc-500" />
-            Names are shown for reference only. Codes match on the digits at the end of the Employee ID. A match or an
-            ignored code is saved and applies to future weeks.
+            Names are shown for reference only. Codes match on the digits at the end of the Employee ID. A match is
+            saved and applies to future weeks. An ignored code is left out of this week, and out of future weeks too
+            if you choose Ignore every week.
           </p>
         </section>
       )}
@@ -523,18 +657,18 @@ export function EmployeeCheck({ initial, status }: EmployeeCheckProps) {
           <h2 id="ignored-heading" className="text-sm font-medium text-zinc-900">
             Ignored codes
           </h2>
-          <p className="mt-1 text-sm text-zinc-500">Their punches are left out of payroll.</p>
+          <p className="mt-1 text-sm text-zinc-500">Their punches are left out of this week&apos;s payroll.</p>
           <ul className="mt-3">
             {data.ignoredCodes.map((code) => (
-              <li
+              <IgnoredRow
                 key={code.empCode}
-                data-testid={`ignored-code-${code.empCode}`}
-                className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-zinc-100 py-3"
-              >
-                <span className="w-20 font-mono text-sm font-medium text-zinc-900">{code.empCode}</span>
-                <span className="text-sm text-zinc-600">{code.empName ?? '—'}</span>
-                <span className="text-sm text-zinc-500">{plural(code.punchCount, 'punch', 'punches')}</span>
-              </li>
+                code={code}
+                disabled={readOnly}
+                busy={busyKey === code.empCode}
+                confirming={confirmUnignore === code.empCode}
+                onStop={() => void handleStopIgnoring(code)}
+                onCancel={() => setConfirmUnignore(null)}
+              />
             ))}
           </ul>
         </section>

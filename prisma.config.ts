@@ -11,6 +11,9 @@ export default defineConfig({
   datasource: {
     // Use DIRECT_DATABASE_URL for direct pg connection (Prisma v7 + local dev server)
     url: process.env["DIRECT_DATABASE_URL"] ?? process.env["DATABASE_URL"],
+    // Only `prisma migrate dev` and `prisma migrate diff --from-migrations` read this
+    // (CI uses it for the drift check). `migrate deploy` never needs a shadow database.
+    shadowDatabaseUrl: process.env["SHADOW_DATABASE_URL"],
   },
 });
 

@@ -6,7 +6,7 @@
 //     npx vitest run src/__tests__/db/f12-settlement.db.test.ts --no-file-parallelism
 //
 // Skipped (and reported as skipped) when F12_TEST_DB_URL is not set. The URL must point at localhost: these tests
-// write rows, and refuse anything else. The schema must already be pushed (`prisma db push`). Rows use their own
+// write rows, and refuse anything else. The schema must already be migrated (`prisma migrate deploy`). Rows use their own
 // employees (TPLF12ST*) and Thursdays from January 2024 on (each case has its own weeks, none used by the other
 // DB suites), and are removed afterwards.
 //

@@ -1,7 +1,5 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 import 'dotenv/config'
-import crypto from 'crypto'
-import fs from 'fs'
 import path from 'path'
 import { execFileSync } from 'child_process'
 import { Client } from 'pg'
@@ -11,7 +9,7 @@ import { FAR_FUTURE_START, PRE_HISTORY_END, TEST_EMPLOYEE_PREFIX } from './test-
 // Playwright global setup: gets the local database into the state every e2e run starts from.
 //
 //   1. refuse any database that is not on localhost (this setup replaces the data in it);
-//   2. make sure the schema is pushed (skipped when this exact schema was already pushed);
+//   2. bring the schema to the committed migrations with `prisma migrate deploy` (a no-op when nothing is pending);
 //   3. load the BASE: real production data from e2e/prod-snapshot/ when it exists (copied from a prepared
 //      in-database copy, a few seconds), otherwise an empty database, so the suite still works for anyone
 //      without the data;
@@ -45,28 +43,37 @@ async function connect(url: string): Promise<Client> {
   return client
 }
 
-/** Push the Prisma schema, unless this exact schema file was already pushed to this database. */
-async function ensureSchema(url: string): Promise<'pushed' | 'already-pushed'> {
-  const hash = crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT, 'prisma', 'schema.prisma'))).digest('hex')
-  const client = await connect(url)
+/**
+ * Apply the committed migrations with `prisma migrate deploy`, the same command Vercel and CI use, so the e2e
+ * database is shaped by the migrations and not by schema.prisma. A database that has nothing pending is left
+ * alone. A database that was not created by migrations (an old `prisma db push` one) or that holds a failed
+ * migration is refused with the way out; this setup never drops or rewrites a schema.
+ */
+function ensureSchema(url: string): 'migrated' {
   try {
-    await client.query('CREATE SCHEMA IF NOT EXISTS e2e_state')
-    await client.query('CREATE TABLE IF NOT EXISTS e2e_state.schema_push (hash text PRIMARY KEY)')
-    const pushed = await client.query('SELECT 1 FROM e2e_state.schema_push WHERE hash = $1', [hash])
-    const tables = await client.query(`SELECT to_regclass('public."Employee"') AS employee, to_regclass('public."AuditLog"') AS audit`)
-    if (pushed.rowCount && tables.rows[0].employee && tables.rows[0].audit) return 'already-pushed'
-
-    execFileSync(process.execPath, [path.join(ROOT, 'node_modules', 'prisma', 'build', 'index.js'), 'db', 'push', '--accept-data-loss'], {
+    execFileSync(process.execPath, [path.join(ROOT, 'node_modules', 'prisma', 'build', 'index.js'), 'migrate', 'deploy'], {
       cwd: ROOT,
       env: { ...process.env, DATABASE_URL: url, DIRECT_DATABASE_URL: url },
       stdio: 'pipe',
     })
-    await client.query('DELETE FROM e2e_state.schema_push')
-    await client.query('INSERT INTO e2e_state.schema_push (hash) VALUES ($1)', [hash])
-    return 'pushed'
-  } finally {
-    await client.end()
+  } catch (error) {
+    const out = `${(error as { stdout?: Buffer }).stdout ?? ''}${(error as { stderr?: Buffer }).stderr ?? ''}`
+    if (/P3005/.test(out)) {
+      throw new Error(
+        'E2E: this local database has tables but no migration history (it was made with `prisma db push`). Reset it so the ' +
+          'migrations create it: `npx prisma migrate reset --force` (local only, drops all its data), or use a fresh database.',
+      )
+    }
+    const tail = out.trim().split('\n').slice(-12).join('\n')
+    if (/P3009|P3018/.test(out)) {
+      throw new Error(
+        'E2E: a migration failed on this local database. Reset it (`npx prisma migrate reset --force`, local only) or fix the ' +
+          `cause and run \`npx prisma migrate resolve --rolled-back <name>\`.\n${tail}`,
+      )
+    }
+    throw new Error(`E2E: \`prisma migrate deploy\` failed.\n${tail}`)
   }
+  return 'migrated'
 }
 
 async function publicTables(client: Client): Promise<string[]> {
@@ -129,8 +136,7 @@ export default async function globalSetup(): Promise<void> {
   const port = new URL(url).port
   log(`database ${host}${port ? `:${port}` : ''} (local). Its data is replaced for this run.`)
 
-  const schema = await ensureSchema(url)
-  log(`schema: ${schema}`)
+  log(`schema: ${ensureSchema(url)} (prisma migrate deploy)`)
 
   const useRealData = loader.snapshotAvailable() && process.env.E2E_REAL_DATA !== '0'
   let baseKind: 'real-data' | 'empty'

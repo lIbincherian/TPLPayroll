@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { PrismaClient } from '@prisma/client'
+import { PrismaClient, type PayrollRevision } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
 import { deleteTestNamespace, reservedFromISO } from './test-data'
@@ -986,7 +986,7 @@ export async function seedApprovedPayrollForCorrection(): Promise<{
   uploadId: string;
 }> {
   const client = {
-    query: async (sql: string, params: any[] = []) => {
+    query: async (sql: string, params: unknown[] = []) => {
       await prisma.$executeRawUnsafe(sql, ...params);
     }
   };
@@ -1138,7 +1138,7 @@ export async function seedApprovedPayrollForCorrection(): Promise<{
 // ─── F08 verification helpers ─────────────────────────────────────────────────
 
 export async function getRevisionCount(payrollRunId: string): Promise<number> {
-  const result = await prisma.$queryRawUnsafe<any[]>(
+  const result = await prisma.$queryRawUnsafe<{ cnt: bigint | number | string }[]>(
     'SELECT COUNT(*) as cnt FROM "PayrollRevision" WHERE "payrollRunId" = $1',
     payrollRunId
   )
@@ -1146,7 +1146,7 @@ export async function getRevisionCount(payrollRunId: string): Promise<number> {
 }
 
 export async function getCurrentRevision(payrollRunId: string) {
-  const result = await prisma.$queryRawUnsafe<any[]>(
+  const result = await prisma.$queryRawUnsafe<PayrollRevision[]>(
     'SELECT * FROM "PayrollRevision" WHERE "payrollRunId" = $1 AND "isCurrent" = true LIMIT 1',
     payrollRunId
   )
@@ -1154,7 +1154,7 @@ export async function getCurrentRevision(payrollRunId: string) {
 }
 
 export async function getPayrollRunStatus(payrollRunId: string) {
-  const result = await prisma.$queryRawUnsafe<any[]>(
+  const result = await prisma.$queryRawUnsafe<{ status: string }[]>(
     'SELECT status FROM "PayrollRun" WHERE id = $1',
     payrollRunId
   )

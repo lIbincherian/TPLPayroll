@@ -177,7 +177,7 @@ describe('F09 — Payroll History Service', () => {
           attendanceRecords: [
             { attendanceDate: new Date('2025-03-06'), regularHours: new MockDecimal(8), overtimeHours: new MockDecimal(2) },
             { attendanceDate: new Date('2025-03-07'), regularHours: new MockDecimal(8), overtimeHours: new MockDecimal(0) },
-          ] as any[]
+          ]
         },
         payrollRun: {
           ...makeRunEmployee().payrollRun,
@@ -192,7 +192,7 @@ describe('F09 — Payroll History Service', () => {
               appliedAmount: new MockDecimal(2150),
               payrollAdjustment: { adjustmentType: 'DEDUCTION', reason: 'Advance recovery' }
             }
-          ] as any[]
+          ]
         }
       } as never)
 

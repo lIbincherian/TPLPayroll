@@ -316,7 +316,7 @@ describe('buildSlipData', () => {
     const runEmployee = makeRunEmployee({ employee: makeEmployee({ id: 'emp-uuid-1' }) })
     const attendanceRecords = [
       ...makeAttendanceRecords('emp-uuid-1'),
-      { employeeId: 'emp-uuid-2', attendanceDate: new Date('2025-03-06'), regularHours: 8, overtimeHours: 0, beforeNoonIn: null, beforeNoonOut: null, afternoonIn: null, afternoonOut: null, overtimeIn: null, overtimeOut: null } as any,
+      { employeeId: 'emp-uuid-2', attendanceDate: new Date('2025-03-06'), regularHours: 8, overtimeHours: 0, beforeNoonIn: null, beforeNoonOut: null, afternoonIn: null, afternoonOut: null, overtimeIn: null, overtimeOut: null },
     ]
 
     const slip = buildSlipData({

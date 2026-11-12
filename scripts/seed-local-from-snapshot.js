@@ -3,12 +3,14 @@
 // scripts/export-prod-snapshot.js). Refuses any database that is not on localhost, so it can never touch
 // Supabase. It replaces everything in the local database's public tables.
 //
-// The snapshot may come from an older schema (production has not had the F12 `prisma db push` yet):
+// The snapshot may come from an older schema (production has not had the F12 migration yet):
 //   - tables that no longer exist locally (e.g. AttendanceUploadSession) are skipped;
 //   - snapshot columns that no longer exist locally are dropped;
 //   - local columns missing from the snapshot take their default (e.g. AttendanceUpload.source = 'EXCEL').
-// With --backfill it then runs the F12 backfill scripts against the same local database, which rehearses the
-// production release on real data.
+// The local database must already be migrated (`prisma migrate deploy`). With --backfill it then runs the F12
+// backfill scripts, which do what the F12 migration's data steps do on a real deploy, so the e2e base looks like
+// production after the release. To rehearse the migration itself on this data, load the snapshot into a database
+// that has only 0_init applied and run `prisma migrate deploy` (docs/ci-and-migrations.md, "Releasing F12").
 //
 // How it loads (fast): one `INSERT ... SELECT FROM jsonb_populate_recordset(null::"Table", $1)` per table
 // (chunked for the big ones) instead of thousands of VALUES tuples with one bind parameter each. The same

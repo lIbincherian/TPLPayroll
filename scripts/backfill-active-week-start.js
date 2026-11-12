@@ -1,7 +1,12 @@
 /* eslint-disable @typescript-eslint/no-require-imports -- a plain Node script, like the other files in scripts/ */
 /**
- * Backfill AttendanceUpload.activeWeekStart. Run once per database, after `prisma db push` has
- * added the column and before relying on the unique constraint. Safe to run again (idempotent).
+ * Backfill AttendanceUpload.activeWeekStart. NOT a release step: the F12 migration
+ * (prisma/migrations/*_f12_etimeoffice_attendance) runs these same steps as SQL when it is
+ * deployed, so no database needs this script after that. It stays as a standalone, re-runnable
+ * (idempotent) tool to check or repair a database that already has the F12 schema, and to
+ * rehearse the release on a local copy of the old production data
+ * (scripts/seed-local-from-snapshot.js --backfill). The DB test src/__tests__/db/f12-migration.db.test.ts
+ * checks that this script and the migration give the same result.
  *
  *   node scripts/backfill-active-week-start.js
  *

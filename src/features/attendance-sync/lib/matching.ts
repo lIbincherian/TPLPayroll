@@ -6,6 +6,7 @@ import type {
   EmployeeDecisionValue,
   EmployeeLite,
   GridEmployeeTag,
+  IgnoreScope,
   WeekRange,
 } from '../types/attendance-sync.types'
 
@@ -42,6 +43,14 @@ export function matchEmployeeCode(
   if (hits.length === 0) return { status: 'UNKNOWN' }
   if (hits.length === 1) return { status: 'MATCHED', employee: hits[0], via: 'NUMBER' }
   return { status: 'DUPLICATE', employees: hits }
+}
+
+/**
+ * How long an ignored code stays ignored. An IGNORE exception is saved, so the code is ignored in every
+ * week. Punches marked IGNORED without one were ignored for their week only: the next pull asks again.
+ */
+export function ignoreScopeOf(code: string, exceptions: CodeExceptionLite[]): IgnoreScope {
+  return exceptions.some((e) => e.empCode === code && e.kind === 'IGNORE') ? 'ALWAYS' : 'WEEK'
 }
 
 function resignedBeforeWeek(employee: EmployeeLite, week: WeekRange): boolean {

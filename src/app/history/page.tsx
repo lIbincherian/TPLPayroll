@@ -3,6 +3,7 @@ import { AppShell } from '@/components/layout/AppShell'
 import { PayrollHistorySearch } from '@/features/payroll-history/components/PayrollHistorySearch'
 import { PayrollHistoryFilter } from '@/features/payroll-history/components/PayrollHistoryFilter'
 import { PayrollHistoryTable } from '@/features/payroll-history/components/PayrollHistoryTable'
+import type { PayrollHistoryRow } from '@/features/payroll-history/types/payroll-history.types'
 import {
   searchPayrollHistory,
   getPayrollHistoryByWeek,
@@ -28,7 +29,7 @@ export default async function PayrollHistoryPage({ searchParams }: PageProps) {
   // Fetch approved weeks for the filter dropdown
   const weeks = await getApprovedPayrollWeeks()
 
-  let rows: any[] = []
+  let rows: PayrollHistoryRow[] = []
 
   if (search && week) {
     // If both are provided, we search by employee, then filter the results by week in memory

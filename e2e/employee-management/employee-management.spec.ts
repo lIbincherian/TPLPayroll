@@ -28,7 +28,7 @@ test.beforeAll(async () => {
   ]
 
   for (const empData of employeesData) {
-    const employee = await (prisma as any).employee.create({
+    await prisma.employee.create({
       data: {
         employeeId: empData.employeeId,
         employeeName: empData.employeeName,
@@ -63,7 +63,7 @@ test.describe('E02: Sorting, Filtering, and Pagination E2E Tests', () => {
   test('E2E-02.1: Column sorting by Name ascending/descending', async ({ page }) => {
     // Default is sorting by Name ascending. Verify alphabetical names.
     // Top names: Amit Sharma, Bala Krishnan, Chitra Nair, Deepak Sen, ...
-    let rows = page.locator('tbody tr')
+    const rows = page.locator('tbody tr')
     await expect(rows.nth(0).locator('td').nth(2)).toHaveText('Amit Sharma')
     await expect(rows.nth(1).locator('td').nth(2)).toHaveText('Bala Krishnan')
 
@@ -87,7 +87,7 @@ test.describe('E02: Sorting, Filtering, and Pagination E2E Tests', () => {
     await idHeader.click()
     await page.waitForTimeout(500)
 
-    let rows = page.locator('tbody tr')
+    const rows = page.locator('tbody tr')
     await expect(rows.nth(0).locator('td').nth(1)).toHaveText('E2E-DIR-9001')
     await expect(rows.nth(1).locator('td').nth(1)).toHaveText('E2E-DIR-9002')
 

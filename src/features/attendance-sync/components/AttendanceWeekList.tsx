@@ -123,7 +123,7 @@ function WeekNotices({ week }: { week: AttendanceWeekListItem }) {
       )}
       {staleNotice && (
         <span className="block text-xs text-amber-700" data-testid="week-stale-notice">
-          Newer data may be available. Pull now to replace this week, discarding your edits.
+          Newer data may be available. Pull now to replace this week, discarding your changes and decisions.
         </span>
       )}
     </div>
@@ -148,14 +148,19 @@ interface PullWarning {
   weekId: ISODate
   editedDays: number
   decisions: number
+  ignoredCodes: number
 }
 
-/** "12 edited days and your employee decisions"; empty when nothing would be lost. */
-function describeDiscard(editedDays: number, decisions: number): string {
+/**
+ * "12 edited days, your employee decisions and 1 code ignored for this week"; empty when nothing
+ * would be lost. Two items read "A and B", three "A, B and C".
+ */
+function describeDiscard(editedDays: number, decisions: number, ignoredCodes: number): string {
   const parts: string[] = []
   if (editedDays > 0) parts.push(plural(editedDays, 'edited day'))
   if (decisions > 0) parts.push('your employee decisions')
-  return parts.join(' and ')
+  if (ignoredCodes > 0) parts.push(`${plural(ignoredCodes, 'code')} ignored for this week`)
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts.join('')
 }
 
 // ─── Empty state ──────────────────────────────────────────────────────────────
@@ -211,8 +216,8 @@ export function AttendanceWeekList({ weeks, todayISO }: AttendanceWeekListProps)
       const discarded = outcome.discarded
       toast.success(`Loaded ${label}`, {
         description:
-          discarded && (discarded.editedDays > 0 || discarded.decisions > 0)
-            ? `Discarded ${describeDiscard(discarded.editedDays, discarded.decisions)}.`
+          discarded && (discarded.editedDays > 0 || discarded.decisions > 0 || discarded.ignoredCodes > 0)
+            ? `Discarded ${describeDiscard(discarded.editedDays, discarded.decisions, discarded.ignoredCodes)}.`
             : undefined,
       })
     } else if (outcome.outcome === 'FAILED') {
@@ -230,8 +235,9 @@ export function AttendanceWeekList({ weeks, todayISO }: AttendanceWeekListProps)
         toast.error(check.error)
         return
       }
-      if (check.data.editedDays > 0 || check.data.decisions > 0) {
-        setWarning({ weekId, editedDays: check.data.editedDays, decisions: check.data.decisions })
+      const { editedDays, decisions, ignoredCodes } = check.data
+      if (editedDays > 0 || decisions > 0 || ignoredCodes > 0) {
+        setWarning({ weekId, editedDays, decisions, ignoredCodes })
         return
       }
     } catch {
@@ -324,7 +330,7 @@ export function AttendanceWeekList({ weeks, todayISO }: AttendanceWeekListProps)
         <AlertDialogContent data-testid="pull-warning-dialog">
           <AlertDialogTitle>Pull this week again?</AlertDialogTitle>
           <AlertDialogDescription>
-            <span data-testid="pull-warning-text">{warning ? `This will discard ${describeDiscard(warning.editedDays, warning.decisions)}.` : ''}</span>{' '}
+            <span data-testid="pull-warning-text">{warning ? `This will discard ${describeDiscard(warning.editedDays, warning.decisions, warning.ignoredCodes)}.` : ''}</span>{' '}
             The week is replaced with a fresh pull from eTimeOffice. The discarded edits stay in the audit log.
           </AlertDialogDescription>
           <AlertDialogFooter>

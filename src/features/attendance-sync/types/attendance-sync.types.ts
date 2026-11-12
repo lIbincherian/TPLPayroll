@@ -52,6 +52,8 @@ export interface DiscardedEdit {
 export interface DiscardSummary {
   editedDays: number
   decisions: number
+  /** Codes ignored for this week only: a new pull asks about them again. */
+  ignoredCodes: number
   edits: DiscardedEdit[]
 }
 
@@ -80,6 +82,15 @@ export type CodeMatch =
   | { status: 'IGNORED' }
 
 export type PunchMatchStatus = 'MATCHED' | 'UNKNOWN' | 'DUPLICATE' | 'IGNORED'
+
+/** How long an ignored code stays ignored: this week's punches only, or every week (a saved exception). */
+export type IgnoreScope = 'WEEK' | 'ALWAYS'
+
+/** Where a code went when it stopped being ignored: matched to an employee, or back under "Codes to fix". */
+export interface UnignoreCodeResult {
+  restoredPunches: number
+  outcome: { status: 'MATCHED'; employeeCode: string } | { status: 'UNKNOWN' | 'DUPLICATE' }
+}
 
 export interface CodeExceptionLite {
   empCode: string
@@ -293,7 +304,7 @@ export interface EmployeeCheck {
     dayCount: number
     candidates: EmployeeLite[] // DUPLICATE only
   }>
-  ignoredCodes: Array<{ empCode: string; empName: string | null; punchCount: number }>
+  ignoredCodes: Array<{ empCode: string; empName: string | null; punchCount: number; scope: IgnoreScope }>
   decisions: Array<{
     employeeId: string
     employeeCode: string

@@ -7,6 +7,7 @@ vi.mock('@/features/attendance-sync/services/employee-check.service', () => ({
   rematchWeekCodes: vi.fn(),
   matchCodeToEmployee: vi.fn(),
   ignoreCode: vi.fn(),
+  unignoreCode: vi.fn(),
   setEmployeeDecision: vi.fn(),
 }))
 vi.mock('@/features/attendance-sync/services/punch-review.service', () => ({
@@ -41,6 +42,7 @@ import {
   rematchWeekCodesAction,
   savePunchEditAction,
   setEmployeeDecisionAction,
+  unignoreCodeAction,
 } from '@/features/attendance-sync/actions/attendance-sync.actions'
 import {
   getEmployeeCheck,
@@ -48,6 +50,7 @@ import {
   matchCodeToEmployee,
   rematchWeekCodes,
   setEmployeeDecision,
+  unignoreCode,
 } from '@/features/attendance-sync/services/employee-check.service'
 import { getPunchReview, savePunchEdit } from '@/features/attendance-sync/services/punch-review.service'
 import { getPullWarning, pullNow } from '@/features/attendance-sync/services/sync.service'
@@ -66,6 +69,7 @@ const services = {
   rematchWeekCodes: vi.mocked(rematchWeekCodes),
   matchCodeToEmployee: vi.mocked(matchCodeToEmployee),
   ignoreCode: vi.mocked(ignoreCode),
+  unignoreCode: vi.mocked(unignoreCode),
   setEmployeeDecision: vi.mocked(setEmployeeDecision),
   getPunchReview: vi.mocked(getPunchReview),
   savePunchEdit: vi.mocked(savePunchEdit),
@@ -168,7 +172,9 @@ describe('input validation', () => {
     await expect(getEmployeeCheckAction(weekId)).resolves.toEqual(invalid)
     await expect(rematchWeekCodesAction(weekId)).resolves.toEqual(invalid)
     await expect(matchCodeAction(weekId, '0999', 'emp-1')).resolves.toEqual(invalid)
-    await expect(ignoreCodeAction(weekId, '0999')).resolves.toEqual(invalid)
+    await expect(ignoreCodeAction(weekId, '0999', 'ALWAYS')).resolves.toEqual(invalid)
+    await expect(ignoreCodeAction(weekId, '0999', 'WEEK')).resolves.toEqual(invalid)
+    await expect(unignoreCodeAction(weekId, '0999')).resolves.toEqual(invalid)
     await expect(setEmployeeDecisionAction(weekId, 'emp-1', 'APPROVED')).resolves.toEqual(invalid)
     await expect(getPunchReviewAction(weekId)).resolves.toEqual(invalid)
     await expect(getApprovalSummaryAction(weekId)).resolves.toEqual(invalid)
@@ -182,10 +188,13 @@ describe('input validation', () => {
   it('rejects an empty code or employee id for match, ignore and decision', async () => {
     await expect(matchCodeAction(WEEK_ID, '', 'emp-1')).resolves.toMatchObject({ ok: false, code: 'VALIDATION_ERROR' })
     await expect(matchCodeAction(WEEK_ID, '0999', '')).resolves.toMatchObject({ ok: false, code: 'VALIDATION_ERROR' })
-    await expect(ignoreCodeAction(WEEK_ID, '')).resolves.toMatchObject({ ok: false, code: 'VALIDATION_ERROR' })
+    await expect(ignoreCodeAction(WEEK_ID, '', 'ALWAYS')).resolves.toMatchObject({ ok: false, code: 'VALIDATION_ERROR' })
+    await expect(ignoreCodeAction(WEEK_ID, '', 'WEEK')).resolves.toMatchObject({ ok: false, code: 'VALIDATION_ERROR' })
+    await expect(unignoreCodeAction(WEEK_ID, '')).resolves.toMatchObject({ ok: false, code: 'VALIDATION_ERROR' })
     await expect(setEmployeeDecisionAction(WEEK_ID, '', 'APPROVED')).resolves.toMatchObject({ ok: false, code: 'VALIDATION_ERROR' })
     expect(services.matchCodeToEmployee).not.toHaveBeenCalled()
     expect(services.ignoreCode).not.toHaveBeenCalled()
+    expect(services.unignoreCode).not.toHaveBeenCalled()
     expect(services.setEmployeeDecision).not.toHaveBeenCalled()
   })
 
@@ -194,6 +203,22 @@ describe('input validation', () => {
 
     expect(result).toMatchObject({ ok: false, code: 'VALIDATION_ERROR' })
     expect(services.setEmployeeDecision).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['an unknown word', 'NEVER'],
+    ['a lower-case scope', 'week'],
+    ['an empty scope', ''],
+    ['the scope as a number', 1],
+    ['null', null],
+    ['undefined (an old caller that sends no scope)', undefined],
+    ['an object', { scope: 'WEEK' }],
+  ])('rejects %s as the ignore scope, before reaching the service', async (_label, scope) => {
+    const result = await ignoreCodeAction(WEEK_ID, '0999', scope as never)
+
+    expect(result).toEqual({ ok: false, error: 'The request was not valid.', code: 'VALIDATION_ERROR' })
+    expect(services.ignoreCode).not.toHaveBeenCalled()
+    expect(revalidate).not.toHaveBeenCalled()
   })
 
   it('rejects a malformed review mode', async () => {
@@ -317,9 +342,9 @@ describe('read actions return ok with the service result and never revalidate', 
   })
 
   it('getPullWarningAction', async () => {
-    services.getPullWarning.mockResolvedValue({ hasData: true, editedDays: 12, decisions: 3 })
+    services.getPullWarning.mockResolvedValue({ hasData: true, editedDays: 12, decisions: 3, ignoredCodes: 1 })
 
-    await expect(getPullWarningAction(WEEK_ID)).resolves.toEqual({ ok: true, data: { hasData: true, editedDays: 12, decisions: 3 } })
+    await expect(getPullWarningAction(WEEK_ID)).resolves.toEqual({ ok: true, data: { hasData: true, editedDays: 12, decisions: 3, ignoredCodes: 1 } })
     expect(services.getPullWarning).toHaveBeenCalledWith(WEEK_ID)
   })
 
@@ -355,7 +380,7 @@ describe('read actions return ok with the service result and never revalidate', 
 
   it('none of them revalidate a page', async () => {
     services.listAttendanceWeeks.mockResolvedValue([])
-    services.getPullWarning.mockResolvedValue({ hasData: false, editedDays: 0, decisions: 0 })
+    services.getPullWarning.mockResolvedValue({ hasData: false, editedDays: 0, decisions: 0, ignoredCodes: 0 })
     services.getEmployeeCheck.mockResolvedValue({} as never)
     services.rematchWeekCodes.mockResolvedValue({ matched: [], stillUnresolved: [] })
     services.getPunchReview.mockResolvedValue({} as never)
@@ -455,9 +480,59 @@ describe('employee check write actions', () => {
   it('ignoreCodeAction ignores and revalidates', async () => {
     services.ignoreCode.mockResolvedValue({ ignoredPunches: 4 })
 
-    await expect(ignoreCodeAction(WEEK_ID, '0999')).resolves.toEqual({ ok: true, data: { ignoredPunches: 4 } })
-    expect(services.ignoreCode).toHaveBeenCalledWith(WEEK_ID, '0999')
+    await expect(ignoreCodeAction(WEEK_ID, '0999', 'ALWAYS')).resolves.toEqual({ ok: true, data: { ignoredPunches: 4 } })
+    expect(services.ignoreCode).toHaveBeenCalledWith(WEEK_ID, '0999', 'ALWAYS')
     expectRevalidated()
+  })
+
+  it('ignoreCodeAction passes a week-only scope to the service unchanged', async () => {
+    services.ignoreCode.mockResolvedValue({ ignoredPunches: 2 })
+
+    await expect(ignoreCodeAction(WEEK_ID, '0999', 'WEEK')).resolves.toEqual({ ok: true, data: { ignoredPunches: 2 } })
+    expect(services.ignoreCode).toHaveBeenCalledWith(WEEK_ID, '0999', 'WEEK')
+    expectRevalidated()
+  })
+
+  it('unignoreCodeAction stops ignoring, returns where the code went and revalidates', async () => {
+    services.unignoreCode.mockResolvedValue({ restoredPunches: 2, outcome: { status: 'MATCHED', employeeCode: 'TPLGOAHLP036' } })
+
+    await expect(unignoreCodeAction(WEEK_ID, '0999')).resolves.toEqual({
+      ok: true,
+      data: { restoredPunches: 2, outcome: { status: 'MATCHED', employeeCode: 'TPLGOAHLP036' } },
+    })
+    expect(services.unignoreCode).toHaveBeenCalledWith(WEEK_ID, '0999')
+    expectRevalidated()
+  })
+
+  it('unignoreCodeAction returns the unresolved outcome as it is', async () => {
+    services.unignoreCode.mockResolvedValue({ restoredPunches: 2, outcome: { status: 'DUPLICATE' } })
+
+    await expect(unignoreCodeAction(WEEK_ID, '0007')).resolves.toEqual({
+      ok: true,
+      data: { restoredPunches: 2, outcome: { status: 'DUPLICATE' } },
+    })
+  })
+
+  it.each([
+    ['WEEK_LOCKED', 'This week is approved. Reopen it to change codes or decisions.'],
+    ['SYNC_IN_PROGRESS', 'A pull for this week is already running.'],
+    ['CODE_NOT_FOUND', "That code isn't ignored in this week."],
+    ['EMPLOYEE_NOT_FOUND', 'That employee no longer exists.'],
+  ] as const)('unignoreCodeAction maps %s to { ok: false, code } without revalidating', async (code, message) => {
+    services.unignoreCode.mockRejectedValue(new AttendanceSyncError(code, message))
+
+    await expect(unignoreCodeAction(WEEK_ID, '0999')).resolves.toEqual({ ok: false, error: message, code })
+    expect(revalidate).not.toHaveBeenCalled()
+  })
+
+  it('unignoreCodeAction hides an unexpected error behind the generic message', async () => {
+    services.unignoreCode.mockRejectedValue(new Error('connection string postgres://user:secret@host'))
+
+    const result = await unignoreCodeAction(WEEK_ID, '0999')
+
+    expect(result).toEqual({ ok: false, error: 'An unexpected error occurred', code: undefined })
+    expect(JSON.stringify(result)).not.toContain('secret')
+    expect(revalidate).not.toHaveBeenCalled()
   })
 
   it('setEmployeeDecisionAction records the decision and revalidates', async () => {
@@ -470,7 +545,9 @@ describe('employee check write actions', () => {
 
   it.each([
     ['matchCodeAction', () => matchCodeAction(WEEK_ID, '0999', 'emp-36'), 'matchCodeToEmployee'],
-    ['ignoreCodeAction', () => ignoreCodeAction(WEEK_ID, '0999'), 'ignoreCode'],
+    ['ignoreCodeAction', () => ignoreCodeAction(WEEK_ID, '0999', 'ALWAYS'), 'ignoreCode'],
+    ['ignoreCodeAction (this week only)', () => ignoreCodeAction(WEEK_ID, '0999', 'WEEK'), 'ignoreCode'],
+    ['unignoreCodeAction', () => unignoreCodeAction(WEEK_ID, '0999'), 'unignoreCode'],
     ['setEmployeeDecisionAction', () => setEmployeeDecisionAction(WEEK_ID, 'emp-2', 'APPROVED'), 'setEmployeeDecision'],
   ] as const)('%s maps a locked week to { ok: false, code: WEEK_LOCKED } without revalidating', async (_name, run, service) => {
     services[service].mockRejectedValue(new AttendanceSyncError('WEEK_LOCKED', 'This week is approved.'))

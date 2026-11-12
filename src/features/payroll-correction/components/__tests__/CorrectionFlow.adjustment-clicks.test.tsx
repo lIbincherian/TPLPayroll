@@ -55,6 +55,14 @@ const session: CorrectionSessionInfo = {
 const row = (name: string) => screen.getByText(name).closest('tr') as HTMLElement
 const status = (name: string) => within(row(name)).getByText(/^(Pending|Approved|Skipped)$/).textContent
 
+// Approve and Skip are disabled while a transition is pending, and that outlasts the message or status the click just
+// produced. A click or an assertion that follows an earlier one must wait for the button to be enabled again.
+const button = (name: string, label: 'Approve' | 'Skip') => () => within(row(name)).getByRole('button', { name: label })
+async function clickWhenEnabled(name: string, label: 'Approve' | 'Skip') {
+  await waitFor(() => expect(button(name, label)()).toBeEnabled(), { timeout: 15000 })
+  fireEvent.click(button(name, label)())
+}
+
 function renderFlow() {
   return render(<CorrectionFlow data={data} weekLabel="Week 06 Mar - 12 Mar" activeSession={session} />)
 }
@@ -65,30 +73,32 @@ beforeEach(() => {
   vi.mocked(skipAdjustmentInCorrectionAction).mockResolvedValue({ ok: true, data: { applicationId: 'app-a', approvalStatus: 'SKIPPED' } })
 })
 
-describe('CorrectionFlow: a refused approve or skip is shown, and the row keeps its status', () => {
+// The waits below allow 15 s for a React transition to settle (they had 5 s, the default test timeout too): on a busy
+// machine (a full parallel run) neither the wait nor the test could be trusted to finish in 5 s. The describe timeout is above the waits.
+describe('CorrectionFlow: a refused approve or skip is shown, and the row keeps its status', { timeout: 20000 }, () => {
   it('a failed approve shows the server\'s message and the row stays Pending, with both buttons still there', async () => {
     vi.mocked(approveAdjustmentInCorrectionAction).mockResolvedValue({ ok: false, error: NOTHING_LEFT, code: 'ADJUSTMENT_NOT_APPLICABLE' })
     renderFlow()
 
     fireEvent.click(within(row('Anita Sharma')).getByRole('button', { name: 'Approve' }))
 
-    expect(await screen.findByText(NOTHING_LEFT, undefined, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByText(NOTHING_LEFT, undefined, { timeout: 15000 })).toBeInTheDocument()
     expect(approveAdjustmentInCorrectionAction).toHaveBeenCalledWith('app-a')
     expect(status('Anita Sharma')).toBe('Pending')
-    expect(within(row('Anita Sharma')).getByRole('button', { name: 'Approve' })).toBeEnabled()
-    expect(within(row('Anita Sharma')).getByRole('button', { name: 'Skip' })).toBeEnabled()
+    await waitFor(() => expect(button('Anita Sharma', 'Approve')()).toBeEnabled(), { timeout: 15000 })
+    expect(button('Anita Sharma', 'Skip')()).toBeEnabled()
     expect(status('Rajesh Iyer')).toBe('Pending')
   })
 
   it('a failed skip shows the message and the row stays as it was (Approved stays Approved)', async () => {
     renderFlow()
     fireEvent.click(within(row('Anita Sharma')).getByRole('button', { name: 'Approve' }))
-    await waitFor(() => expect(status('Anita Sharma')).toBe('Approved'), { timeout: 5000 })
+    await waitFor(() => expect(status('Anita Sharma')).toBe('Approved'), { timeout: 15000 })
     vi.mocked(skipAdjustmentInCorrectionAction).mockResolvedValue({ ok: false, error: 'This correction is no longer in progress.', code: 'CORRECTION_NOT_ACTIVE' })
 
-    fireEvent.click(within(row('Anita Sharma')).getByRole('button', { name: 'Skip' }))
+    await clickWhenEnabled('Anita Sharma', 'Skip')
 
-    expect(await screen.findByText('This correction is no longer in progress.', undefined, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByText('This correction is no longer in progress.', undefined, { timeout: 15000 })).toBeInTheDocument()
     expect(status('Anita Sharma')).toBe('Approved')
   })
 
@@ -96,12 +106,12 @@ describe('CorrectionFlow: a refused approve or skip is shown, and the row keeps 
     vi.mocked(approveAdjustmentInCorrectionAction).mockResolvedValueOnce({ ok: false, error: COMPLETED, code: 'ADJUSTMENT_NOT_APPLICABLE' })
     renderFlow()
     fireEvent.click(within(row('Anita Sharma')).getByRole('button', { name: 'Approve' }))
-    expect(await screen.findByText(COMPLETED, undefined, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByText(COMPLETED, undefined, { timeout: 15000 })).toBeInTheDocument()
 
     // the user skips it instead: this works
-    fireEvent.click(within(row('Anita Sharma')).getByRole('button', { name: 'Skip' }))
+    await clickWhenEnabled('Anita Sharma', 'Skip')
 
-    await waitFor(() => expect(status('Anita Sharma')).toBe('Skipped'), { timeout: 5000 })
+    await waitFor(() => expect(status('Anita Sharma')).toBe('Skipped'), { timeout: 15000 })
     expect(screen.queryByText(COMPLETED)).not.toBeInTheDocument()
   })
 
@@ -109,16 +119,16 @@ describe('CorrectionFlow: a refused approve or skip is shown, and the row keeps 
     vi.mocked(approveAdjustmentInCorrectionAction).mockResolvedValueOnce({ ok: false, error: NOTHING_LEFT, code: 'ADJUSTMENT_NOT_APPLICABLE' })
     renderFlow()
     fireEvent.click(within(row('Anita Sharma')).getByRole('button', { name: 'Approve' }))
-    expect(await screen.findByText(NOTHING_LEFT, undefined, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByText(NOTHING_LEFT, undefined, { timeout: 15000 })).toBeInTheDocument()
 
     let answer: (value: { ok: true; data: { applicationId: string; approvalStatus: 'APPROVED' } }) => void = () => undefined
     vi.mocked(approveAdjustmentInCorrectionAction).mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
-    fireEvent.click(within(row('Rajesh Iyer')).getByRole('button', { name: 'Approve' }))
+    await clickWhenEnabled('Rajesh Iyer', 'Approve')
 
-    await waitFor(() => expect(screen.queryByText(NOTHING_LEFT)).not.toBeInTheDocument(), { timeout: 5000 })
+    await waitFor(() => expect(screen.queryByText(NOTHING_LEFT)).not.toBeInTheDocument(), { timeout: 15000 })
     expect(status('Rajesh Iyer')).toBe('Pending') // still waiting for the server
     answer({ ok: true, data: { applicationId: 'app-b', approvalStatus: 'APPROVED' } })
-    await waitFor(() => expect(status('Rajesh Iyer')).toBe('Approved'), { timeout: 5000 })
+    await waitFor(() => expect(status('Rajesh Iyer')).toBe('Approved'), { timeout: 15000 })
   })
 
   it('one row failing leaves the other rows alone: each keeps its own status', async () => {
@@ -128,10 +138,10 @@ describe('CorrectionFlow: a refused approve or skip is shown, and the row keeps 
     renderFlow()
 
     fireEvent.click(within(row('Anita Sharma')).getByRole('button', { name: 'Approve' }))
-    await screen.findByText(NOTHING_LEFT, undefined, { timeout: 5000 })
-    fireEvent.click(within(row('Rajesh Iyer')).getByRole('button', { name: 'Approve' }))
+    await screen.findByText(NOTHING_LEFT, undefined, { timeout: 15000 })
+    await clickWhenEnabled('Rajesh Iyer', 'Approve')
 
-    await waitFor(() => expect(status('Rajesh Iyer')).toBe('Approved'), { timeout: 5000 })
+    await waitFor(() => expect(status('Rajesh Iyer')).toBe('Approved'), { timeout: 15000 })
     expect(status('Anita Sharma')).toBe('Pending')
     expect(screen.queryByText(NOTHING_LEFT)).not.toBeInTheDocument() // the second click's success cleared it
   })
@@ -141,7 +151,7 @@ describe('CorrectionFlow: a refused approve or skip is shown, and the row keeps 
     renderFlow()
 
     fireEvent.click(within(row('Anita Sharma')).getByRole('button', { name: 'Approve' }))
-    await screen.findByText(NOTHING_LEFT, undefined, { timeout: 5000 })
+    await screen.findByText(NOTHING_LEFT, undefined, { timeout: 15000 })
 
     expect(recalculateAndCreateRevisionAction).not.toHaveBeenCalled()
     expect(push).not.toHaveBeenCalled()
@@ -156,7 +166,7 @@ describe('CorrectionFlow: a refused approve or skip is shown, and the row keeps 
 
     fireEvent.click(screen.getByRole('button', { name: /recalculate & preview/i }))
 
-    await waitFor(() => expect(recalculateAndCreateRevisionAction).toHaveBeenCalledTimes(1), { timeout: 5000 })
+    await waitFor(() => expect(recalculateAndCreateRevisionAction).toHaveBeenCalledTimes(1), { timeout: 15000 })
     const input = vi.mocked(recalculateAndCreateRevisionAction).mock.calls[0][0] as unknown as Record<string, unknown>
     expect(input).not.toHaveProperty('adjustmentChanges')
     expect(input).toMatchObject({ payrollRunId: 'run-1', correctionTypes: ['ADJUSTMENTS'], correctionSessionId: 'session-1' })
@@ -168,7 +178,7 @@ describe('CorrectionFlow: a refused approve or skip is shown, and the row keeps 
 
     fireEvent.click(screen.getByRole('button', { name: /recalculate & preview/i }))
 
-    expect(await screen.findByText(NOTHING_LEFT, undefined, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByText(NOTHING_LEFT, undefined, { timeout: 15000 })).toBeInTheDocument()
     expect(push).not.toHaveBeenCalled()
   })
 })

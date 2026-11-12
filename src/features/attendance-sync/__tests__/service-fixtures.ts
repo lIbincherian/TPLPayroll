@@ -18,7 +18,7 @@ const MODEL_METHODS = {
   attendanceUpload: ['findFirst', 'findMany', 'create', 'update', 'updateMany'],
   attendancePunch: ['findMany', 'count', 'create', 'createMany', 'update', 'updateMany', 'delete', 'deleteMany'],
   attendanceEmployeeDecision: ['findMany', 'findUnique', 'create', 'update', 'count', 'deleteMany'],
-  attendanceCodeException: ['findMany', 'findUnique', 'upsert'],
+  attendanceCodeException: ['findMany', 'findUnique', 'upsert', 'delete'],
   attendanceRecord: ['findMany', 'groupBy', 'count', 'deleteMany', 'createMany'],
   employee: ['findMany', 'findUnique'],
   payrollRun: ['findFirst', 'findMany'],

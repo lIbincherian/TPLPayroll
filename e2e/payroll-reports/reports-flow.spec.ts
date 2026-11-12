@@ -16,7 +16,7 @@ test.beforeAll(async () => {
     const seed = await seedApprovedPayrollData()
     payrollRunId = seed.payrollRunId
     console.log('Using payrollRunId:', payrollRunId);
-  } catch (err: any) {
+  } catch (err) {
     throw err;
   }
 })

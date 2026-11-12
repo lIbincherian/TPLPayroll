@@ -424,7 +424,8 @@ describe('PunchReviewGrid: a correction review with no actions never calls the l
   })
 
   it('the grid source has no path from a correction mode to approveWeekAction', () => {
-    const source = readFileSync(path.resolve(__dirname, '../components/PunchReviewGrid.tsx'), 'utf8')
+    // A Windows checkout (autocrlf) has CRLF line endings; the patterns below match LF.
+    const source = readFileSync(path.resolve(__dirname, '../components/PunchReviewGrid.tsx'), 'utf8').replace(/\r\n/g, '\n')
     const confirmApprove = /async function confirmApprove[\s\S]*?\n  }\n/.exec(source)?.[0] ?? ''
 
     expect(confirmApprove).toContain("mode.kind === 'CORRECTION'")

@@ -1,3 +1,7 @@
+# Prisma records a checksum of each migration file. Keep them LF on every OS so a
+# Windows checkout (autocrlf) and the Linux CI/Vercel build see identical bytes.
+prisma/migrations/** text eol=lf
+
 # Software factory scripts run under Git Bash and Python: keep LF, or the shebang and bash break
 factory/bin/* text eol=lf
 factory/checks.sh text eol=lf

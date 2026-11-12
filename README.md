@@ -85,17 +85,13 @@ Wait for the server to start successfully. It is configured to listen on port `6
 
 ### 4. Set Up the Database Schema
 
-Synchronize the database schema with the application without creating migrations files:
+Apply the committed migrations (`prisma/migrations/`) to the local database:
 
 ```bash
-npx prisma db push
+npx prisma migrate deploy
 ```
 
-*(Optional)* You can seed the database with basic test data using the E2E setup utility:
-
-```bash
-node e2e/utils/setup-db.js
-```
+The e2e suite needs no separate seeding step: its global setup applies the migrations itself and loads its own data (see [e2e/README.md](e2e/README.md)).
 
 ### 5. Run the Development Server
 
@@ -182,7 +178,7 @@ There are two recommended workflows for running E2E tests, depending on your nee
    npm run test:e2e
    ```
 
-Ensure your PostgreSQL database is running (`npx prisma dev`) before running E2E tests. The test suite will automatically set up a test database and seed it.
+Ensure your PostgreSQL database is running (`npx prisma dev`) before running E2E tests. The suite's global setup applies the committed migrations (`prisma migrate deploy`) and then replaces the database's data with its own base, so use a throwaway local database: it refuses any host that is not localhost. A local database that was created earlier with `prisma db push` has no migration history and is refused; reset it with `npx prisma migrate reset --force`. See [e2e/README.md](e2e/README.md).
 
 ### Hot Reload
 
@@ -190,19 +186,25 @@ The development server automatically reloads when you modify files. Edit any fil
 
 ### Database Management
 
-To synchronize schema changes without full migrations:
+The schema is managed with Prisma Migrate. To change it, edit `prisma/schema.prisma`, then create the migration against your local database and commit the generated `prisma/migrations/<timestamp>_<name>/` directory with the schema change:
 
 ```bash
-npx prisma db push
+npx prisma migrate dev --name <describe_the_change>
 ```
 
-To reset the database:
+Against a local `prisma dev` database, `migrate dev` needs `SHADOW_DATABASE_URL` set to that instance's shadow database (see [docs/ci-and-migrations.md](docs/ci-and-migrations.md#changing-the-schema) for how to find it).
+
+To reset your local database to the committed migrations (local only, this drops all data):
 
 ```bash
-npx prisma db push --force-reset
+npx prisma migrate reset
 ```
+
+Never run `prisma db push`, `migrate reset` or `migrate dev` against the Supabase Production or Staging databases. Vercel applies migrations on deploy via `prisma migrate deploy`. See [docs/ci-and-migrations.md](docs/ci-and-migrations.md) for details.
 
 ## Production Deployment
+
+Vercel builds run `vercel-build`, which applies the pending migrations to the environment's own database (Production builds migrate `tpl-payroll`, Preview builds migrate `tpl-payroll-stage`) before `next build`. Nothing else is run by hand: schema changes and their data steps ship as migrations, never as `prisma db push` or loose scripts. Attendance sync (F12) is released this way, as one migration, with Staging first through a Preview build. See [docs/ci-and-migrations.md](docs/ci-and-migrations.md#releasing-f12-etimeoffice-attendance) for the steps, what the migration does to existing data, and what to do if it stops.
 
 ### Build for Production
 

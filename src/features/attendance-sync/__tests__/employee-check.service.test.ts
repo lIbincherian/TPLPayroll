@@ -92,9 +92,10 @@ describe('getEmployeeCheck', () => {
   })
 
   it('lists ignored codes separately, read-only', async () => {
+    db.attendanceCodeException.findMany.mockResolvedValue([{ empCode: '0555', kind: 'IGNORE', employeeId: null }])
     const check = await getEmployeeCheck(WEEK_ID)
 
-    expect(check.ignoredCodes).toEqual([{ empCode: '0555', empName: 'Test Enrollment', punchCount: 2 }])
+    expect(check.ignoredCodes).toEqual([{ empCode: '0555', empName: 'Test Enrollment', punchCount: 2, scope: 'ALWAYS' }])
     expect(check.codes.some((c) => c.empCode === '0555')).toBe(false)
   })
 
@@ -569,7 +570,7 @@ describe('ignoreCode', () => {
   })
 
   it('saves an IGNORE exception and marks the code\'s unresolved punches IGNORED', async () => {
-    const result = await ignoreCode(WEEK_ID, '0999')
+    const result = await ignoreCode(WEEK_ID, '0999', 'ALWAYS')
 
     expect(result).toEqual({ ignoredPunches: 4 })
     expect(db.tx.attendanceCodeException.upsert).toHaveBeenCalledWith({
@@ -584,7 +585,7 @@ describe('ignoreCode', () => {
   })
 
   it('audits the exception inside the same transaction', async () => {
-    await ignoreCode(WEEK_ID, '0999')
+    await ignoreCode(WEEK_ID, '0999', 'ALWAYS')
 
     expect(db.$transaction).toHaveBeenCalledTimes(1)
     const [audit] = auditRows(db.tx)
@@ -595,7 +596,7 @@ describe('ignoreCode', () => {
   it('audits an UPDATE when the code already had an exception', async () => {
     db.tx.attendanceCodeException.findUnique.mockResolvedValue({ id: 'exception-9' })
 
-    await ignoreCode(WEEK_ID, '0999')
+    await ignoreCode(WEEK_ID, '0999', 'ALWAYS')
 
     expect(auditRows(db.tx)[0].actionType).toBe('UPDATE')
   })
@@ -603,14 +604,14 @@ describe('ignoreCode', () => {
   it('refuses a code that is not unresolved (CODE_NOT_FOUND)', async () => {
     db.attendancePunch.count.mockResolvedValue(0)
 
-    await expect(ignoreCode(WEEK_ID, '0036')).rejects.toMatchObject({ code: 'CODE_NOT_FOUND' })
+    await expect(ignoreCode(WEEK_ID, '0036', 'ALWAYS')).rejects.toMatchObject({ code: 'CODE_NOT_FOUND' })
     expect(db.$transaction).not.toHaveBeenCalled()
   })
 
   it('refuses an approved week (WEEK_LOCKED)', async () => {
     db.attendanceUpload.findFirst.mockResolvedValue(makeUpload({ status: 'APPROVED' }))
 
-    await expect(ignoreCode(WEEK_ID, '0999')).rejects.toMatchObject({ code: 'WEEK_LOCKED' })
+    await expect(ignoreCode(WEEK_ID, '0999', 'ALWAYS')).rejects.toMatchObject({ code: 'WEEK_LOCKED' })
   })
 })
 

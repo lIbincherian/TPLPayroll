@@ -6,7 +6,6 @@ import { BulkActionToolbar } from '@/features/employee-management/components/Bul
 vi.mock('@phosphor-icons/react', () => ({
   UserMinus: (props: Record<string, unknown>) => <span data-testid="icon-user-minus" {...props} />,
   Prohibit: (props: Record<string, unknown>) => <span data-testid="icon-prohibit" {...props} />,
-  CurrencyCircleDollar: (props: Record<string, unknown>) => <span data-testid="icon-currency" {...props} />,
   X: (props: Record<string, unknown>) => <span data-testid="icon-x" {...props} />,
   Warning: (props: Record<string, unknown>) => <span data-testid="icon-warning" {...props} />,
   SpinnerGap: (props: Record<string, unknown>) => <span data-testid="icon-spinner" {...props} />,
@@ -177,7 +176,7 @@ describe('BulkStatusDialog — Resigned validation', () => {
 
   it('disables buttons during processing', async () => {
     // Make the action hang so we can inspect the processing state
-    let resolveAction: (value: unknown) => void
+    let resolveAction: (value: Awaited<ReturnType<typeof bulkUpdateStatusAction>>) => void
     vi.mocked(bulkUpdateStatusAction).mockReturnValue(
       new Promise((resolve) => { resolveAction = resolve })
     )
