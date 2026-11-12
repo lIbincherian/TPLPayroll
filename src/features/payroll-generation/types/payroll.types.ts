@@ -41,6 +41,7 @@ export interface EmployeePayrollRow {
   designationShort: string | null
   site: string | null
   gPay: string | null
+  phone: string | null
   bankAccount: string | null
   weeklySalaryUsed: number
   hourlyRateUsed: number

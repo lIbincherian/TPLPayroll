@@ -64,7 +64,7 @@ function summary(netPayable: number): PayrollSummary {
     employees: [
       {
         employeeId: 'emp-1', employeeCode: 'EMP-001', employeeName: 'Anita Rao', designation: 'Guard', designationShort: null, site: null,
-        gPay: null, bankAccount: null, weeklySalaryUsed: 2500, hourlyRateUsed: 62.5, regularHours: 40, overtimeHours: 0,
+        gPay: null, phone: null, bankAccount: null, weeklySalaryUsed: 2500, hourlyRateUsed: 62.5, regularHours: 40, overtimeHours: 0,
         regularPay: netPayable, overtimePay: 0, grossPay: netPayable, additions: 0, deductions: 0, netPayable,
       },
     ],
