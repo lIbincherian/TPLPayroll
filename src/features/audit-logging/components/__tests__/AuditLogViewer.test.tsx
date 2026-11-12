@@ -215,6 +215,19 @@ describe('AuditLogViewer — rows', () => {
     expect(await screen.findByText('Daily wage: 800 → 1000')).toBeInTheDocument()
   })
 
+  it('reads the flat keys that the employee update and bulk change write', async () => {
+    respondWith([
+      log({ id: 'a', actionType: 'UPDATE', entityType: 'WAGE_HISTORY', detailsJson: { oldSalary: 800, newSalary: 1000, oldHourlyRate: 100, newHourlyRate: 125 } }),
+      log({ id: 'b', actionType: 'UPDATE', entityType: 'WAGE_HISTORY', detailsJson: { bulkAction: 'CHANGE_HOURLY_RATE', oldDailyWage: 900, newDailyWage: 1200, oldHourlyRate: 112.5, newHourlyRate: 150 } }),
+      log({ id: 'c', actionType: 'UPDATE', entityType: 'WAGE_HISTORY', detailsJson: { bulkAction: 'CHANGE_HOURLY_RATE', oldHourlyRate: 60, newHourlyRate: 65 } }),
+    ])
+    render(<AuditLogViewer />)
+
+    expect(await screen.findByText('Daily wage: 800 → 1000')).toBeInTheDocument()
+    expect(screen.getByText('Daily wage: 900 → 1200')).toBeInTheDocument()
+    expect(screen.getByText('Hourly rate: 60 → 65')).toBeInTheDocument()
+  })
+
   it('shows the empty state when there are no entries', async () => {
     respondWith([])
     render(<AuditLogViewer />)
