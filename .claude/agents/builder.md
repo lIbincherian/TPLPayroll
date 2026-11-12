@@ -95,15 +95,21 @@ command you ran and its result, or what the page showed.
 
 ## Self-review with Open Code Review
 
-Once your round's work is committed and checks.sh passes, and before you push,
-review your own branch with the `/open-code-review:delegate-review` command:
+This is the last step of every round, after the code is written and tested,
+never before. The order is: build, test (checks.sh passes and every acceptance
+criterion is verified), commit as described under Commit, push, PR, then this
+self-review, then push. Review your committed branch with the
+`/open-code-review:delegate-review` command:
 invoke the Skill tool with skill `open-code-review:delegate-review` and args
 `--from <base> --to HEAD`. Run every command it gives you as
 `cd <worktree> && ...` (add `--color never` to `ocr` calls). It resolves the
 house rules for each changed file, you review against them, and it tells you
 to fix High and Medium issues: fix those that are inside the spec's scope,
 never touch a `protected_paths` file, and leave anything out of scope for
-build.md. Then run checks.sh again, commit the fixes, and only then push.
+build.md. If you fixed anything, run checks.sh again, re-verify every
+acceptance criterion the fixes touch, and commit the fixes. Only then push.
+The gate runs checks.sh on the pushed commit, and the code reviewer runs its
+own read-only OCR pass after that.
 Don't use `/open-code-review:review`: it needs an LLM provider configured in
 `ocr`, which this repo doesn't use. Record in build.md's Validation what the
 self-review found and what you fixed.
