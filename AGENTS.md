@@ -4,6 +4,12 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+## Setup, Dev Server and Validation
+
+- **Fresh checkout or worktree**: `npm ci`, then `npx prisma generate` (the client in `src/generated/prisma` is gitignored). Env files are gitignored too: copy `.env` from the main checkout (or fill one in from `.env.example`). Never commit an env file.
+- **Dev server on a given port**: `npx next dev -p <port>` (`npm run dev` uses port 3000). Pages that read data need the database in `.env`.
+- **Validation** (what `factory/checks.sh` runs, mirroring CI's `lint-typecheck`, `unit` and `build` jobs and its migration-history guard): `npx prisma generate`, `npm run lint`, `npx tsc --noEmit`, `npm run test:run` (vitest, no watch), `npm run build`. CI's `migrations` and `e2e` jobs need PostgreSQL and run on the PR; locally, run E2E tests separately (see Testing Rules).
+
 ## Architecture Rules
 
 - **Feature Slice Architecture**: Every feature built must follow the feature slice architecture. Code should be organized by feature (e.g., `features/[feature-name]/` or similar feature-centric directories) rather than by global technical concerns. Each feature slice should be self-contained, encapsulating its own components, hooks, business logic, API calls, and types.
@@ -58,3 +64,27 @@ The schema is managed with Prisma Migrate. `prisma/migrations/` is the source of
     - `CRON_SECRET`: Vercel Cron sends it as `Authorization: Bearer <CRON_SECRET>` to `/api/cron/attendance-sync` (schedule in `vercel.json`, `30 0 * * 4` UTC). The route rejects every request when it is missing or wrong, and when `CRON_SECRET` is unset.
   - The in-app mock eTimeOffice API (`/api/mock-etimeoffice/...`) is active only when `ETIMEOFFICE_CORPORATE_ID` is unset and `VERCEL` is unset (local dev and e2e). Local `.env` needs `CRON_SECRET=local-cron-secret` for e2e and leaves `ETIMEOFFICE_*` unset. On Vercel with no login configured, every sync fails with "eTimeOffice login isn't configured."
 
+## Software factory
+
+`/factory run` builds every open GitHub issue labeled `factory` through
+intake → spec → build → gate → review → approve, one PR per issue. State is in
+`factory/jobs/` (gitignored); `factory/bin/job` is its only writer. Checks:
+`factory/checks.sh`. Dashboard: `cd factory && python -m http.server`, then
+open http://localhost:8000/dashboard.html.
+
+Each job works in its own git worktree, a full checkout of the repo at
+`.worktrees/<job-id>` (gitignored). A tool run from the repo root that doesn't
+read `.gitignore` sees those copies too; exclude `.worktrees/` in its config
+(ESLint, `tsconfig.json` and Vitest already do).
+
+Factory agents follow the same conventions as the `feature-pipeline` skill:
+every UI change is built with the `impeccable` skill (the UI and UX reviewers
+audit and critique through it, report-only). Open Code Review runs twice: the
+builder self-reviews with `/open-code-review:delegate-review` and fixes High
+and Medium issues before pushing, then the code reviewer independently applies
+the same house rules through the read-only `ocr delegate` CLI. Issue
+labels use the triage vocabulary in `docs/agents/triage-labels.md`, plus
+`factory` to queue an issue.
+
+This machine is Windows: the factory scripts run with `python` (not
+`python3`) and are patched for Windows file locking, UTF-8 I/O and Git Bash.

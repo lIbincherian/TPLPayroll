@@ -12,6 +12,18 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Software factory job worktrees (full checkouts of the repo).
+    ".worktrees/**",
+    // Local agent tooling (skills, helpers, their own worktrees); not app code.
+    ".claude/**",
+    ".claude-flow/**",
+    ".agents/**",
+    ".gemini/**",
+    ".codex/**",
+    ".swarm/**",
+    // Generated reports.
+    "playwright-report/**",
+    "test-results/**",
   ]),
   // The attendance feature is below every payroll slice (correction, generation, adjustments, ...),
   // never the other way round. The page that mounts a correction passes the correction actions in as props.

@@ -53,8 +53,13 @@ next-env.d.ts
 /src/generated/prisma
 
 
-# Claude
-.claude
+# Claude: the project's agents, skills, commands, helpers and settings are committed;
+# machine-local state is not.
+.claude/worktrees/
+.claude/settings.local.json
+.claude/*.bak*
+# Downloaded on first run by the impeccable launcher (19 MB binary).
+.claude/skills/impeccable/scripts/bin/
 .claude-flow
 
 # graphify
@@ -62,3 +67,7 @@ graphify-out/cache/
 graphify-out/.graphify_python
 graphify-out/.graphify_root
 graphify-out/.graphify_uncached.txt
+
+# Software factory runtime state and job worktrees
+/factory/jobs/
+/.worktrees/
