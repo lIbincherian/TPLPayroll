@@ -48,16 +48,16 @@ export function WageHistoryTable({ entries }: WageHistoryTableProps) {
       <table className="w-full">
         <thead>
           <tr>
-            <th className="pb-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
+            <th className="pb-3 pr-4 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
               Effective From
             </th>
-            <th className="pb-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
+            <th className="pb-3 pr-4 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
               Effective To
             </th>
-            <th className="pb-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
+            <th className="pb-3 pr-4 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
               Daily Wage
             </th>
-            <th className="pb-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
+            <th className="pb-3 pr-4 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
               Hourly Rate
             </th>
             <th className="pb-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
@@ -68,20 +68,20 @@ export function WageHistoryTable({ entries }: WageHistoryTableProps) {
         <tbody className="divide-y divide-zinc-100">
           {entries.map((entry) => (
             <tr key={entry.id}>
-              <td className="py-3 text-sm text-zinc-600">
+              <td className="py-3 pr-4 text-sm text-zinc-600">
                 {formatDate(entry.effectiveFrom)}
               </td>
-              <td className="py-3 text-sm text-zinc-600">
+              <td className="py-3 pr-4 text-sm text-zinc-600">
                 {entry.effectiveTo ? formatDate(entry.effectiveTo) : (
                   <span className="text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
                     Current
                   </span>
                 )}
               </td>
-              <td className="py-3 font-mono tabular-nums text-sm text-zinc-800">
+              <td className="py-3 pr-4 font-mono tabular-nums text-sm text-zinc-800">
                 {formatCurrency(entry.weeklySalary)}
               </td>
-              <td className="py-3 font-mono tabular-nums text-sm text-zinc-800">
+              <td className="py-3 pr-4 font-mono tabular-nums text-sm text-zinc-800">
                 {formatCurrency(entry.hourlyRate)}
               </td>
               <td className="py-3">
