@@ -71,7 +71,9 @@ describe('PayrollSummaryStep', () => {
       'Payment Date',
       'Payment Reference',
     ])
-    expect(table.parentElement?.className).toContain('overflow-x-auto')
+    expect(screen.getByRole('region', { name: 'Payroll summary, scrolls sideways' }).className).toContain(
+      'overflow-auto',
+    )
   })
 
   it('fills each row with Sl No., phone, UTC salary dates and the payment reference', () => {
@@ -105,7 +107,9 @@ describe('PayrollSummaryStep', () => {
     const totalsRow = within(table).getAllByRole('row').at(-1)!
     const cells = within(totalsRow).getAllByRole('cell')
     expect(cells.map((td) => td.textContent)).toEqual([
+      '',
       'Total',
+      '',
       '₹5,000.00',
       '₹250.00',
       '₹200.00',
@@ -113,6 +117,21 @@ describe('PayrollSummaryStep', () => {
       '₹5,350.00',
       '',
     ])
-    expect(cells[0].getAttribute('colspan')).toBe('8')
+    expect(cells[0].getAttribute('colspan')).toBe('2')
+    expect(cells[2].getAttribute('colspan')).toBe('5')
+  })
+
+  it('numbers rows in Emp ID order, like the Excel, whatever order the service returns', () => {
+    render(
+      <PayrollSummaryStep
+        weekLabel="5 – 11 Nov 2026"
+        summary={{ ...SUMMARY, employees: [employee('TPL-B', null), employee('TPL-A', null)] }}
+        onBack={vi.fn()}
+        onApprove={vi.fn()}
+      />,
+    )
+    const [, first, second] = within(screen.getByRole('table')).getAllByRole('row')
+    expect(within(first).getAllByRole('cell').slice(0, 2).map((td) => td.textContent)).toEqual(['1', 'TPL-A'])
+    expect(within(second).getAllByRole('cell').slice(0, 2).map((td) => td.textContent)).toEqual(['2', 'TPL-B'])
   })
 })

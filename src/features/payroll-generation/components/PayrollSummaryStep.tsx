@@ -47,7 +47,19 @@ const HEADERS = [
 const AMOUNT_HEADERS = ['Reg. Hrs Pay', 'Overtime Hrs Pay', 'Additions', 'Deductions', 'Net Pay']
 const RIGHT_ALIGNED = ['Sl No.', ...AMOUNT_HEADERS]
 
-const CELL = 'whitespace-nowrap px-3 py-3'
+const CELL = 'whitespace-nowrap border-b border-zinc-100 px-3 py-3'
+// Emp Name stays in view while the wide table scrolls sideways; sticky cells need an opaque background.
+const STICKY_NAME = 'sticky left-0 z-10'
+const HEADER_CELL =
+  'sticky top-0 z-10 whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-3 text-xs font-medium uppercase tracking-wider text-zinc-500'
+const FOOTER_CELL = 'sticky bottom-0 z-10 whitespace-nowrap border-t-2 border-zinc-300 bg-zinc-50 px-3 py-3'
+
+// Same order as the summary Excel (Emp ID ascending), so Sl No. matches in both.
+function byEmployeeCode(a: EmployeePayrollRow, b: EmployeePayrollRow) {
+  if (a.employeeCode < b.employeeCode) return -1
+  if (a.employeeCode > b.employeeCode) return 1
+  return 0
+}
 const CODE = 'font-mono text-xs text-zinc-500'
 const AMOUNT = 'font-mono tabular-nums text-sm text-zinc-700'
 
@@ -65,14 +77,14 @@ function EmployeeRow({
   weekStartISO: string
 }) {
   return (
-    <tr className="transition-colors hover:bg-zinc-50/80">
+    <tr className="group bg-white transition-colors hover:bg-zinc-50">
       <td className={`${CELL} text-right`}>
         <span className="font-mono tabular-nums text-xs text-zinc-500">{slNo}</span>
       </td>
       <td className={CELL}>
         <span className={CODE}>{row.employeeCode}</span>
       </td>
-      <td className={CELL}>
+      <td className={`${CELL} ${STICKY_NAME} bg-white transition-colors group-hover:bg-zinc-50`}>
         <span className="text-sm font-medium text-zinc-900">{row.employeeName}</span>
       </td>
       <td className={CELL}>
@@ -184,6 +196,7 @@ export function PayrollSummaryStep({ weekLabel, summary, onBack, onApprove }: Pr
   const salaryFrom = fmtDate(summary.weekStart)
   const salaryTo = fmtDate(summary.weekEnd)
   const weekStartISO = toISODate(new Date(summary.weekStart))
+  const rows = [...summary.employees].sort(byEmployeeCode)
 
   return (
     <>
@@ -203,14 +216,20 @@ export function PayrollSummaryStep({ weekLabel, summary, onBack, onApprove }: Pr
         </div>
 
         {/* ── Summary table ───────────────────────────────────────────── */}
-        <div className="overflow-x-auto">
-          <table className="w-full divide-y divide-zinc-100 text-sm">
-            <thead className="bg-zinc-50/50">
+        <div
+          role="region"
+          aria-label="Payroll summary, scrolls sideways"
+          tabIndex={0}
+          className="max-h-[calc(100vh-16rem)] overflow-auto rounded-lg border border-zinc-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600"
+        >
+          <table className="w-full border-separate border-spacing-0 text-sm">
+            <thead>
               <tr>
                 {HEADERS.map((h) => (
                   <th
                     key={h}
-                    className={`whitespace-nowrap px-3 py-3 text-xs font-medium uppercase tracking-wider text-zinc-400 ${
+                    scope="col"
+                    className={`${HEADER_CELL} ${h === 'Emp Name' ? 'left-0 z-20' : ''} ${
                       RIGHT_ALIGNED.includes(h) ? 'text-right' : 'text-left'
                     }`}
                   >
@@ -219,8 +238,8 @@ export function PayrollSummaryStep({ weekLabel, summary, onBack, onApprove }: Pr
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-100">
-              {summary.employees.map((row, i) => (
+            <tbody>
+              {rows.map((row, i) => (
                 <EmployeeRow
                   key={row.employeeId}
                   row={row}
@@ -233,24 +252,28 @@ export function PayrollSummaryStep({ weekLabel, summary, onBack, onApprove }: Pr
             </tbody>
             {/* ── Totals row ─────────────────────────────────────────── */}
             <tfoot>
-              <tr className="border-t-2 border-zinc-300 bg-zinc-50 font-semibold">
-                <td className={`${CELL} text-xs font-semibold uppercase tracking-wider text-zinc-500`} colSpan={8}>
+              <tr>
+                <td className={FOOTER_CELL} colSpan={2} />
+                <td
+                  className={`${FOOTER_CELL} left-0 z-20 text-xs font-semibold uppercase tracking-wider text-zinc-500`}
+                >
                   Total
                 </td>
+                <td className={FOOTER_CELL} colSpan={5} />
                 {[
                   totals.totalRegularPay,
                   totals.totalOvertimePay,
                   totals.totalAdditions,
                   totals.totalDeductions,
                 ].map((amount, i) => (
-                  <td key={i} className={`${CELL} text-right font-mono tabular-nums text-sm text-zinc-900`}>
+                  <td key={i} className={`${FOOTER_CELL} text-right font-mono tabular-nums text-sm font-semibold text-zinc-900`}>
                     ₹{fmt(amount)}
                   </td>
                 ))}
-                <td className={`${CELL} text-right font-mono tabular-nums text-sm font-bold text-zinc-900`}>
+                <td className={`${FOOTER_CELL} text-right font-mono tabular-nums text-sm font-bold text-zinc-900`}>
                   ₹{fmt(totals.totalNetPayable)}
                 </td>
-                <td className={CELL} colSpan={2} />
+                <td className={FOOTER_CELL} colSpan={2} />
               </tr>
             </tfoot>
           </table>
