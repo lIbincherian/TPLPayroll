@@ -174,7 +174,7 @@ test.describe('E2E-10: Inactive and resigned employees need a decision', () => {
 
     // Settle the two unresolved codes so the week can be approved
     await page.getByTestId('ignore-code-9999').click()
-    await page.getByTestId('confirm-ignore-9999').click()
+    await page.getByTestId('ignore-always-9999').click()
     await expect(page.getByTestId('code-row-9999')).toHaveCount(0)
     await chooseExistingEmployee(page, '9007', 'E2E-HLP-9007')
     await expect(page.getByTestId('code-row-9007')).toHaveCount(0)
@@ -301,20 +301,22 @@ test.describe('E2E-36: Unknown code can be matched and the link is saved', () =>
 })
 
 test.describe('E2E-37: Unknown code can be ignored and the choice is saved', () => {
-  test('ignored punches are left out of review and payroll, and the code stays ignored', async ({ request, page }) => {
+  test('ignored for every week: punches are left out of review and payroll, and the code stays ignored', async ({ request, page }) => {
     await loadWeek(request, mockDay('9999', current.start, ['08:00', '16:00'], 'Empname9999'))
     await openEmployeeCheck(page)
 
     await page.getByTestId('ignore-code-9999').click()
-    // A confirmation first: ignoring leaves the punches out of payroll
-    await expect(page.getByTestId('confirm-ignore-9999')).toBeVisible()
+    // A confirmation first: ignoring leaves the punches out of payroll, for this week or for every week
+    await expect(page.getByTestId('ignore-week-9999')).toBeVisible()
+    await expect(page.getByTestId('ignore-always-9999')).toBeVisible()
     await page.getByTestId('cancel-ignore-9999').click()
     await expect(page.getByTestId('code-row-9999')).toBeVisible()
     await page.getByTestId('ignore-code-9999').click()
-    await page.getByTestId('confirm-ignore-9999').click()
+    await page.getByTestId('ignore-always-9999').click()
 
     await expect(page.getByTestId('code-row-9999')).toHaveCount(0)
     await expect(page.getByTestId('ignored-code-9999')).toBeVisible()
+    await expect(page.getByTestId('ignored-scope-9999')).toHaveText('Every week')
     await settled(page)
     expect(await getCodeExceptions()).toEqual([{ empCode: '9999', kind: 'IGNORE', employeeCode: null }])
     const punches = await getPunchRows(week.start, { empCode: '9999' })

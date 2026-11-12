@@ -60,10 +60,11 @@ Payroll                 Existing generation flow, adjustments, slips
 - **Pull now** is available on any Thu–Wed week that isn't approved, including a week still in progress. It is not available on Excel-era weeks.
 - The week list always includes the last completed Thu–Wed week, so a sync that never ran still shows **Pull now**.
 - A new pull replaces the previous pull, including punch edits, notes, and employee decisions for that week.
-  - If the week has edits or decisions, a warning shows first, for example "This will discard 12 edited days and your employee decisions."
+  - If the week has edits, decisions or codes ignored for this week only, a warning shows first, for example "This will discard 12 edited days and your employee decisions." or "This will discard 3 edited days, your employee decisions and 1 code ignored for this week."
+  - Codes ignored for every week are not discarded: the new pull ignores them again.
   - Discarded edits stay in the audit log.
 - An approved week must be reopened before it can be pulled. A week with approved payroll can't be pulled, and changes go through **Correct**.
-- The scheduled sync replaces an earlier pull that has no edits or decisions. If the week has edits or decisions, the sync leaves it alone and shows a notice that newer data may be available.
+- The scheduled sync replaces an earlier pull that has no edits, decisions or codes ignored for this week only. If the week has any of them, the sync leaves it alone and shows a notice that newer data may be available.
 - The payroll week start is locked to Thursday. The F10 Settings page shows it read-only and can't change it. If the stored value isn't Thursday, the first read of the settings after the release changes it to Thursday (at runtime, not in the migration).
 - A sync or pull fails, and changes nothing, on any of these:
   - a timeout or network error
@@ -82,8 +83,12 @@ Payroll                 Existing generation flow, adjustments, slips
 - A code that matches no employee, or more than one, must be resolved in the employee check before the punch review opens. The check shows the code and the name eTimeOffice has for it, with these options:
   - **Add as new employee** opens the new employee form and returns to the check.
   - **Match to existing employee** picks from a searchable list, and the link is saved for future pulls.
-  - **Ignore this code** leaves the code out of the review and payroll, and the choice carries over to future pulls.
-- Saved links and ignored codes are stored only for these exceptions, and they survive a new pull. Every other code still matches on its number.
+  - **Ignore this code** asks for how long, then leaves the code out of the review and payroll:
+    - **Ignore this week** leaves the code's punches out of this week only. Nothing is saved for the code, so it is asked about again in later weeks, and again if this week is pulled afresh (a new pull replaces the week's punches and decisions).
+    - **Ignore every week** also saves the choice, so future pulls skip the code without asking.
+  - The check lists ignored codes with their scope, **This week only** or **Every week**. Each has a **Stop ignoring** button. A week-only ignore stops at once. For an every-week ignore the check first asks "Stop ignoring 0999 in future weeks too?", and on confirming the saved choice is deleted, so future pulls no longer skip the code.
+  - After **Stop ignoring**, the code's punches in this week are matched again: the code is linked to its employee if it now matches one (by number or a saved match, as the toast "Code 0999 matched to TPLGOAHLP999" says), and otherwise appears under Codes to fix again ("Code 0999 is back under Codes to fix"). Other weeks are not changed.
+- Saved links and codes ignored for every week are stored only for these exceptions, and they survive a new pull. A code ignored for this week only is not stored apart from the week's punches. Every other code still matches on its number.
 - Inactive employees and employees who resigned before the week need an approve or reject decision, as they do today. They only need one if they have punches. All decisions must be made before the punch review opens, and they can be changed after **Reopen**.
 
 ### Pairing and Duplicate Scans
@@ -580,10 +585,34 @@ THEN the saved link applies without asking again
 
 ```
 GIVEN Empcode "0999" is a test enrollment
-WHEN the user chooses [Ignore this code]
+WHEN the user chooses [Ignore this code] and then [Ignore every week]
 THEN its punches are left out of the review and payroll
+AND the check lists the code as "Every week"
 WHEN a later week is pulled
 THEN the code is ignored without asking again
+WHEN the user chooses [Stop ignoring] on the code and confirms
+THEN the code appears under Codes to fix again
+AND a later pull asks about it again
+```
+
+```
+GIVEN Empcode "0999" is a test enrollment
+WHEN the user chooses [Ignore this code] and then [Ignore this week]
+THEN its punches are left out of this week's review and payroll
+AND the check lists the code as "This week only"
+AND no exception is saved for the code
+WHEN a later week is pulled
+THEN the code appears in that week's employee check again
+WHEN the user clicks [Pull now] on the week where it was ignored
+THEN a warning counts "1 code ignored for this week"
+AND after the pull the code appears in the employee check again
+```
+
+```
+GIVEN Empcode "0999" is ignored for this week only
+WHEN the user chooses [Stop ignoring] on the code
+THEN no confirmation is asked
+AND the code appears under Codes to fix again with its punches
 ```
 
 ### E2E-38: Left-out employee's adjustments carry forward

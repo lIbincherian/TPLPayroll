@@ -136,7 +136,7 @@ const writers: WriterCase[] = [
   },
   {
     name: 'ignoreCode',
-    run: () => ignoreCode(WEEK_ID, '0999'),
+    run: () => ignoreCode(WEEK_ID, '0999', 'ALWAYS'),
     firstWrite: () => db.tx.attendanceCodeException.upsert,
     firstTxRead: () => db.tx.attendancePunch.count,
     needsReview: false,
@@ -254,7 +254,7 @@ describe('the locked status rules differ for codes and decisions', () => {
 
   it.each([
     ['matchCodeToEmployee', () => matchCodeToEmployee(WEEK_ID, '0999', 'emp-36'), () => db.tx.attendanceCodeException.upsert],
-    ['ignoreCode', () => ignoreCode(WEEK_ID, '0999'), () => db.tx.attendanceCodeException.upsert],
+    ['ignoreCode', () => ignoreCode(WEEK_ID, '0999', 'ALWAYS'), () => db.tx.attendanceCodeException.upsert],
     ['rematchWeekCodes', () => rematchWeekCodes(WEEK_ID), () => db.tx.attendancePunch.updateMany],
   ])('%s still accepts a SYNC_FAILED locked row (codes only refuse an approved week)', async (_name, run, firstWrite) => {
     mockLockedWeek(db.tx, { status: 'SYNC_FAILED' })
@@ -269,7 +269,7 @@ describe('the locked status rules differ for codes and decisions', () => {
 
 describe.each([
   ['matchCodeToEmployee', () => matchCodeToEmployee(WEEK_ID, '0999', 'emp-36')],
-  ['ignoreCode', () => ignoreCode(WEEK_ID, '0999')],
+  ['ignoreCode', () => ignoreCode(WEEK_ID, '0999', 'ALWAYS')],
 ])('%s re-checks that the code is still unresolved under the lock', (_name, run) => {
   const unresolvedWhere = {
     where: { attendanceUploadId: 'upload-1', correctionId: null, empCode: '0999', matchStatus: { in: ['UNKNOWN', 'DUPLICATE'] } },

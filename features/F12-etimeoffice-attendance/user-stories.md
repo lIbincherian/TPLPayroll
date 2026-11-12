@@ -315,6 +315,12 @@ TEST: matchEmployeeCode ignores names
 - AC4: These codes must be fixed before the punch review, and the review cannot be finished while any remain.
 - AC5: The user fixes a code by correcting the Employee ID or creating the employee.
 - AC6: After the fix, the app matches the code again and links its punches.
+- AC7: A code can instead be ignored, for this week only or for every week. Its punches are left out of the review and payroll either way.
+- AC8: Ignoring for every week saves the choice, so future pulls skip the code. Ignoring for this week only saves nothing: the code is asked about again in later weeks, and again if this week is pulled afresh.
+- AC9: The check lists each ignored code as "This week only" or "Every week".
+- AC10: A code ignored for this week only counts as a decision on the week. Pull now warns that it will be discarded, and the scheduled sync leaves the week alone, as it does for edits and employee decisions.
+- AC11: An ignored code can be un-ignored with **Stop ignoring**. For an every-week ignore the check asks first, because future pulls will ask about the code again; a week-only ignore stops at once.
+- AC12: After it, the code's punches in this week are matched again: linked to the employee when the code now matches one, otherwise back under Codes to fix. An every-week ignore's saved choice is deleted, so future pulls no longer skip the code. Other weeks are not changed.
 
 ### Unit Tests
 
@@ -340,6 +346,72 @@ TEST: rematchWeekCodes links punches after a fix
   WHEN rematchWeekCodes(week) is called
   THEN the punches are linked to that employee
   AND "0999" is no longer in the employee check
+
+TEST: ignoreCode with ALWAYS saves an IGNORE exception
+  GIVEN "0999" is UNKNOWN with stored punches
+  WHEN ignoreCode(week, "0999", "ALWAYS") is called
+  THEN the punches are IGNORED
+  AND an IGNORE exception exists for "0999"
+  AND the audit entry records scope ALWAYS
+
+TEST: ignoreCode with WEEK saves no exception
+  GIVEN "0999" is UNKNOWN with stored punches
+  WHEN ignoreCode(week, "0999", "WEEK") is called
+  THEN the punches are IGNORED
+  AND no exception exists for "0999"
+  AND the audit entry records scope WEEK
+
+TEST: getEmployeeCheck gives each ignored code its scope
+  GIVEN "0999" is IGNORED with an IGNORE exception and "0555" is IGNORED without one
+  WHEN getEmployeeCheck(week) is called
+  THEN "0999" is listed with scope ALWAYS and "0555" with scope WEEK
+
+TEST: unignoreCode on an every-week ignore deletes the exception and matches the code again
+  GIVEN "0999" is IGNORED with an IGNORE exception and no employee matches it
+  WHEN unignoreCode(week, "0999") is called
+  THEN the exception is deleted
+  AND the punches are UNKNOWN and "0999" is listed under Codes to fix
+  AND the audit entry records that an every-week ignore was undone
+
+TEST: unignoreCode links the code when it now matches an employee
+  GIVEN "0999" is IGNORED with an IGNORE exception and an employee ending in 999 has been created
+  WHEN unignoreCode(week, "0999") is called
+  THEN the punches are MATCHED to that employee, after the employee's own punches on a shared day
+
+TEST: unignoreCode on a week-only ignore touches no exception
+  GIVEN "0555" is IGNORED with no IGNORE exception
+  WHEN unignoreCode(week, "0555") is called
+  THEN the punches are UNKNOWN and no exception row was written or deleted
+
+TEST: unignoreCode refuses a code that is not ignored in the week
+  GIVEN "0036" is MATCHED
+  WHEN unignoreCode(week, "0036") is called
+  THEN it fails with CODE_NOT_FOUND
+
+TEST: unignoreCode refuses an approved week and a running pull
+  GIVEN the week is APPROVED, or a pull holds it
+  WHEN unignoreCode(week, "0999") is called
+  THEN it fails with WEEK_LOCKED, or SYNC_IN_PROGRESS
+
+TEST: rematchWeekCodes leaves a code ignored for this week alone
+  GIVEN "0555" is IGNORED with no exception and an employee ending in 555 has been created
+  WHEN rematchWeekCodes(week) is called
+  THEN the punches of "0555" are still IGNORED
+
+TEST: weekHasEditsOrDecisions counts codes ignored for this week only
+  GIVEN "0555" is IGNORED with no exception and "0999" is IGNORED with an IGNORE exception
+  WHEN weekHasEditsOrDecisions(week) is called
+  THEN ignoredCodes is 1
+
+TEST: a scheduled sync leaves a week with a code ignored for this week only
+  GIVEN the week has no edits and no decisions, and "0555" is ignored for this week only
+  WHEN the scheduled sync runs
+  THEN the outcome is SKIPPED_HAS_EDITS and the stale notice is set
+
+TEST: getPullWarning counts codes ignored for this week only
+  GIVEN "0555" is ignored for this week only
+  WHEN getPullWarning(week) is called
+  THEN ignoredCodes is 1
 ```
 
 ---

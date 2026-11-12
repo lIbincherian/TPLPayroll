@@ -10,12 +10,14 @@ import {
   type DayValidation,
   type EmployeeCheck,
   type EmployeeDecisionValue,
+  type IgnoreScope,
   type ISODate,
   type PunchReview,
   type ReviewMode,
   type SavePunchEditInput,
   type SavePunchEditResult,
   type SyncOutcome,
+  type UnignoreCodeResult,
 } from '../types/attendance-sync.types'
 import {
   getEmployeeCheck,
@@ -23,6 +25,7 @@ import {
   matchCodeToEmployee,
   rematchWeekCodes,
   setEmployeeDecision,
+  unignoreCode,
 } from '../services/employee-check.service'
 import { getPunchReview, savePunchEdit } from '../services/punch-review.service'
 import { getPullWarning, pullNow } from '../services/sync.service'
@@ -88,6 +91,8 @@ const savePunchEditSchema = z.object({
     .max(100),
 })
 
+const ignoreScopeSchema = z.enum(['WEEK', 'ALWAYS'])
+
 const invalid = () => err('The request was not valid.', 'VALIDATION_ERROR')
 
 // ─── Week list and pulling ────────────────────────────────────────────────────
@@ -102,7 +107,7 @@ export async function getAttendanceWeeksAction(): Promise<ActionResult<Attendanc
 
 export async function getPullWarningAction(
   weekStart: ISODate,
-): Promise<ActionResult<{ hasData: boolean; editedDays: number; decisions: number }>> {
+): Promise<ActionResult<{ hasData: boolean; editedDays: number; decisions: number; ignoredCodes: number }>> {
   if (!isoDate.safeParse(weekStart).success) return invalid()
   try {
     return ok(await getPullWarning(weekStart))
@@ -163,13 +168,31 @@ export async function matchCodeAction(
   }
 }
 
+/** Ignore a code for this week only (`WEEK`) or for every week (`ALWAYS`, saved for future pulls). */
 export async function ignoreCodeAction(
   weekId: ISODate,
   empCode: string,
+  scope: IgnoreScope,
 ): Promise<ActionResult<{ ignoredPunches: number }>> {
+  const parsedScope = ignoreScopeSchema.safeParse(scope)
+  if (!isoDate.safeParse(weekId).success || !id.safeParse(empCode).success || !parsedScope.success) return invalid()
+  try {
+    const result = await ignoreCode(weekId, empCode, parsedScope.data)
+    revalidateAttendance()
+    return ok(result)
+  } catch (e) {
+    return handleError(e)
+  }
+}
+
+/** Stop ignoring a code in this week, and, if it was ignored for every week, in future pulls too. */
+export async function unignoreCodeAction(
+  weekId: ISODate,
+  empCode: string,
+): Promise<ActionResult<UnignoreCodeResult>> {
   if (!isoDate.safeParse(weekId).success || !id.safeParse(empCode).success) return invalid()
   try {
-    const result = await ignoreCode(weekId, empCode)
+    const result = await unignoreCode(weekId, empCode)
     revalidateAttendance()
     return ok(result)
   } catch (e) {

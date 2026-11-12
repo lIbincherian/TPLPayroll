@@ -215,6 +215,12 @@ This is a page, not a dialog like today's `EmployeeVerificationDialog`. The user
 - **Fixing a code:** [Edit ID] goes to `/employees/[id]/edit`, and [Create employee] goes to `/employees/new`, each with `returnTo` set to this page. The form's "Return to attendance upload" link becomes "Return to employee check", and its `/attendance` fallback stays. The edit page has no return context today, so it needs one.
 - **Re-matching:** the app re-matches codes when the page loads on return. Fixed codes leave the list, with a toast "Code 0999 matched to TPLGOAHLP999". If the new ID still doesn't match, the row stays and its problem text updates.
 - **Decisions save as you click.** Failures show the rose banner and revert the buttons.
+- **Ignoring a code.** A code row also has a ghost **Ignore this code** button. It opens an inline confirm in the row (`role="alertdialog"`, `bg-amber-50 border-amber-200/60 rounded-xl`) with "Leave 12 punches out of payroll?", three buttons, and a line of helper text under them:
+  - **Ignore this week** (primary, `bg-zinc-900`): the code's punches are left out of this week only. Nothing is saved, so the code is asked about again in later weeks and after a new pull of this week.
+  - **Ignore every week** (outline): the choice is saved, so future pulls skip the code too.
+  - **Cancel** (ghost).
+  - Helper text, `text-xs text-amber-800/80`: "This week: the code's punches are left out of this week only. Every week: it is skipped in future pulls too."
+- **Ignored codes section.** Shown when any code is ignored, under Codes to fix, with `border-t border-zinc-200/60 pt-8`. Each row has the code, the eTimeOffice name, the punch count and a pill, `rounded-full bg-zinc-100 px-2 py-0.5 text-xs`, reading "This week only" or "Every week". Each row also has a small outline **Stop ignoring** button, on the right from `sm` up and below the row on mobile. A week-only ignore stops at once. For an every-week ignore the row opens the same inline confirm (amber panel), "Stop ignoring 0999 in future weeks too?", with a ghost **Cancel** and a `bg-zinc-900` **Stop ignoring**. The page then refreshes, and a toast says where the code went: "Code 0999 matched to TPLGOAHLP999", or "Code 0999 is back under Codes to fix" when it still matches no employee (or more than one). Disabled when the week is approved.
 - **Skipped when empty.** If no codes or decisions are outstanding, Review goes straight to Screen 3.
 - **Hours shown** count complete pairs only, because pairs aren't fixed yet at this point.
 - **Inactive and resigned rows** only appear for employees with punches this week.
@@ -234,6 +240,8 @@ This is a page, not a dialog like today's `EmployeeVerificationDialog`. The user
 | Find employee | Reused `EmployeeCombobox` | Moved into `attendance-sync` when the upload slice is removed |
 | Edit ID / Create employee | `Button` outline `sm`, `<UserPlus size={14} weight="bold" />` on Create | Navigates with `returnTo` |
 | Approve / Reject | `Button` `sm` | Same variants as the shipped dialog |
+| Ignore this code | `Button` ghost `sm`, then the inline confirm with `Button` `sm` for Ignore this week (`bg-zinc-900`), Ignore every week (outline) and Cancel (ghost) | Server action with scope `WEEK` or `ALWAYS`; only the every-week choice is saved |
+| Stop ignoring | `Button` outline `sm` on each ignored row, then the inline confirm for an every-week ignore | Server action; deletes the saved choice (every week), matches the code's punches in this week again |
 
 **Spec gaps:** the rules say codes are fixed before the punch review, while E2E-08 says the review can't be finished until they are resolved. This wireframe follows the rules and the User Flow, so the grid is not reachable first. Changing a decision after continuing isn't specified, so the link back to this page from Screen 3 is drawn without saying whether decisions there stay editable.
 

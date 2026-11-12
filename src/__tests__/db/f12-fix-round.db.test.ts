@@ -1401,11 +1401,11 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
     })
 
     it('ignoreCode marks the code IGNORED and saves an IGNORE exception; ignoring again is CODE_NOT_FOUND', async () => {
-      await expect(ec.ignoreCode(W.codes, '9302')).resolves.toEqual({ ignoredPunches: 2 })
+      await expect(ec.ignoreCode(W.codes, '9302', 'ALWAYS')).resolves.toEqual({ ignoredPunches: 2 })
 
       expect((await punchesOf('9302')).map((r) => [r.matchStatus, r.employeeId])).toEqual([['IGNORED', null], ['IGNORED', null]])
       expect(await prisma.attendanceCodeException.findUnique({ where: { empCode: '9302' } })).toMatchObject({ kind: 'IGNORE', employeeId: null })
-      await expect(ec.ignoreCode(W.codes, '9302')).rejects.toMatchObject({ code: 'CODE_NOT_FOUND' })
+      await expect(ec.ignoreCode(W.codes, '9302', 'ALWAYS')).rejects.toMatchObject({ code: 'CODE_NOT_FOUND' })
     })
 
     it('rematchWeekCodes links a code to the employee created after the fix, in one transaction, and writes its audit row', async () => {
@@ -1441,13 +1441,13 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
       const message = 'A pull is running for this week. Wait for it to finish, then try again.'
       try {
         await expect(ec.matchCodeToEmployee(W.codes, '9302', empA.id)).rejects.toMatchObject({ code: 'SYNC_IN_PROGRESS', message })
-        await expect(ec.ignoreCode(W.codes, '9302')).rejects.toMatchObject({ code: 'SYNC_IN_PROGRESS', message })
+        await expect(ec.ignoreCode(W.codes, '9302', 'ALWAYS')).rejects.toMatchObject({ code: 'SYNC_IN_PROGRESS', message })
         await expect(ec.rematchWeekCodes(W.codes)).rejects.toMatchObject({ code: 'SYNC_IN_PROGRESS', message })
         await expect(ec.setEmployeeDecision(W.codes, empD.id, 'APPROVED')).rejects.toMatchObject({ code: 'SYNC_IN_PROGRESS', message })
       } finally {
         await prisma.attendanceUpload.update({ where: { id: uploadId }, data: { syncLockedAt: new Date(Date.now() - 6 * 60 * 1000) } })
       }
-      await expect(ec.ignoreCode(W.codes, '9302')).resolves.toEqual({ ignoredPunches: 1 })
+      await expect(ec.ignoreCode(W.codes, '9302', 'ALWAYS')).resolves.toEqual({ ignoredPunches: 1 })
     })
 
     it('an approved week refuses all four writers with WEEK_LOCKED and writes nothing', async () => {
@@ -1456,7 +1456,7 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
       const exceptionsBefore = await prisma.attendanceCodeException.count()
       try {
         await expect(ec.matchCodeToEmployee(W.codes, '9302', empA.id)).rejects.toMatchObject({ code: 'WEEK_LOCKED' })
-        await expect(ec.ignoreCode(W.codes, '9302')).rejects.toMatchObject({ code: 'WEEK_LOCKED' })
+        await expect(ec.ignoreCode(W.codes, '9302', 'ALWAYS')).rejects.toMatchObject({ code: 'WEEK_LOCKED' })
         await expect(ec.rematchWeekCodes(W.codes)).rejects.toMatchObject({ code: 'WEEK_LOCKED' })
         await expect(ec.setEmployeeDecision(W.codes, empD.id, 'APPROVED')).rejects.toMatchObject({ code: 'WEEK_LOCKED' })
       } finally {

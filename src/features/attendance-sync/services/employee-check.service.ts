@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { TRANSACTION_TIMEOUT_MS } from '../lib/constants'
 import { buildDayView } from '../lib/hours'
-import { matchEmployeeCode, needsEmployeeDecision } from '../lib/matching'
+import { ignoreScopeOf, matchEmployeeCode, needsEmployeeDecision } from '../lib/matching'
 import { countEmployeeCheckIssues } from '../lib/review'
 import { round2 } from '../lib/time'
 import { getWeekDates, toISODate } from '../lib/week'
@@ -13,7 +13,9 @@ import {
   type EmployeeCheck,
   type EmployeeDecisionValue,
   type EmployeeLite,
+  type IgnoreScope,
   type StoredPunchRow,
+  type UnignoreCodeResult,
 } from '../types/attendance-sync.types'
 import { auditEntry } from './attendance-audit.service'
 import { requireApiWeek } from './week-list.service'
@@ -137,7 +139,7 @@ export async function getEmployeeCheck(weekId: string): Promise<EmployeeCheck> {
   for (const [empCode, rows] of byCode) {
     const empName = rows.find((r) => r.empName)?.empName ?? null
     if (rows[0].matchStatus === 'IGNORED') {
-      ignoredCodes.push({ empCode, empName, punchCount: rows.length })
+      ignoredCodes.push({ empCode, empName, punchCount: rows.length, scope: ignoreScopeOf(empCode, exceptions) })
       continue
     }
     // Candidates are recomputed now, so an edited Employee ID shows up before the next pull.
@@ -259,7 +261,8 @@ async function linkCodeToEmployee(
 
 /**
  * Re-run matching for the week's unresolved codes with the current employees and saved
- * exceptions. Call after the user adds or edits an employee.
+ * exceptions. Call after the user adds or edits an employee. Only UNKNOWN and DUPLICATE punches are
+ * read: a code ignored for this week only has no saved exception and stays ignored.
  *
  * The codes are read and matched first, on the plain client, only to skip the codes that cannot
  * change. Each code that might then commits in its own transaction, which first locks the week's
@@ -444,8 +447,32 @@ export async function matchCodeToEmployee(
   )
 }
 
-/** Leave a code out of the review and payroll. Saved, so it carries over to later pulls. */
-export async function ignoreCode(weekId: string, empCode: string): Promise<{ ignoredPunches: number }> {
+/** Save an IGNORE exception for `empCode`, replacing any match saved for it. */
+async function saveIgnoreException(
+  tx: Prisma.TransactionClient,
+  empCode: string,
+): Promise<{ id: string; existed: boolean }> {
+  const previous = await tx.attendanceCodeException.findUnique({ where: { empCode }, select: { id: true } })
+  const exception = await tx.attendanceCodeException.upsert({
+    where: { empCode },
+    create: { empCode, kind: 'IGNORE', employeeId: null },
+    update: { kind: 'IGNORE', employeeId: null },
+  })
+  return { id: exception.id, existed: previous !== null }
+}
+
+/**
+ * Leave a code out of the review and payroll, for this week only (`WEEK`) or for every week (`ALWAYS`).
+ *
+ * `ALWAYS` saves an IGNORE exception, so later pulls skip the code too. `WEEK` marks only this week's
+ * live punches IGNORED and saves nothing: the code is asked about again in later weeks, and again if
+ * this week is pulled afresh (a pull replaces the week's punches and decisions).
+ */
+export async function ignoreCode(
+  weekId: string,
+  empCode: string,
+  scope: IgnoreScope,
+): Promise<{ ignoredPunches: number }> {
   const { upload, week } = await requireApiWeek(weekId)
   assertCodesEditable(upload)
   await requireUnresolvedCode(upload.id, empCode)
@@ -456,12 +483,8 @@ export async function ignoreCode(weekId: string, empCode: string): Promise<{ ign
       // A pull or a match may have resolved the code since the check above.
       await requireUnresolvedCode(upload.id, empCode, tx)
 
-      const previous = await tx.attendanceCodeException.findUnique({ where: { empCode }, select: { id: true } })
-      const exception = await tx.attendanceCodeException.upsert({
-        where: { empCode },
-        create: { empCode, kind: 'IGNORE', employeeId: null },
-        update: { kind: 'IGNORE', employeeId: null },
-      })
+      // Only an every-week ignore is saved. A week-only ignore leaves the code's exception, if any, as it is.
+      const saved = scope === 'ALWAYS' ? await saveIgnoreException(tx, empCode) : null
       const updated = await tx.attendancePunch.updateMany({
         where: { attendanceUploadId: upload.id, correctionId: null, empCode, matchStatus: { in: UNRESOLVED } },
         data: { matchStatus: 'IGNORED', employeeId: null },
@@ -469,14 +492,16 @@ export async function ignoreCode(weekId: string, empCode: string): Promise<{ ign
 
       await auditEntry(
         {
-          actionType: previous ? 'UPDATE' : 'CREATE',
+          actionType: saved && !saved.existed ? 'CREATE' : 'UPDATE',
           entityType: 'ATTENDANCE_CODE',
-          entityId: exception.id,
+          // A week-only ignore has no exception row: the entry belongs to the week.
+          entityId: saved?.id ?? upload.id,
           details: {
-            summary: `Code ${empCode} ignored`,
+            summary: scope === 'ALWAYS' ? `Code ${empCode} ignored` : `Code ${empCode} ignored for this week only`,
             weekStart: week.start,
             empCode,
             kind: 'IGNORE',
+            scope,
             ignoredPunches: updated.count,
           },
         },
@@ -486,6 +511,97 @@ export async function ignoreCode(weekId: string, empCode: string): Promise<{ ign
     },
     { timeout: TRANSACTION_TIMEOUT_MS },
   )
+}
+
+async function requireIgnoredCode(
+  uploadId: string,
+  empCode: string,
+  db: Prisma.TransactionClient = prisma,
+): Promise<void> {
+  const count = await db.attendancePunch.count({
+    where: { attendanceUploadId: uploadId, correctionId: null, empCode, matchStatus: 'IGNORED' },
+  })
+  if (count === 0) throw new AttendanceSyncError('CODE_NOT_FOUND', "That code isn't ignored in this week.")
+}
+
+/**
+ * Stop ignoring a code in this week. An every-week ignore (a saved IGNORE exception) is deleted, so
+ * future pulls no longer skip the code; a week-only ignore has no exception and nothing else is
+ * touched. Either way this week's punches for the code go back to unresolved and are matched again
+ * under the week lock: MATCHED when the code now matches an employee (by number or a saved match),
+ * otherwise UNKNOWN or DUPLICATE, so it shows under "Codes to fix". Other weeks' punches are not changed.
+ */
+export async function unignoreCode(weekId: string, empCode: string): Promise<UnignoreCodeResult> {
+  const { upload, week } = await requireApiWeek(weekId)
+  assertCodesEditable(upload)
+  await requireIgnoredCode(upload.id, empCode)
+
+  try {
+    return await prisma.$transaction(
+      async (tx) => {
+        assertCodesEditable(await lockWeek(tx, upload.id))
+        // A pull may have replaced the week's punches since the check above.
+        await requireIgnoredCode(upload.id, empCode, tx)
+
+        const saved = await tx.attendanceCodeException.findUnique({ where: { empCode }, select: { id: true, kind: true } })
+        const undoes: IgnoreScope = saved?.kind === 'IGNORE' ? 'ALWAYS' : 'WEEK'
+        if (saved && undoes === 'ALWAYS') await tx.attendanceCodeException.delete({ where: { empCode } })
+
+        // Matched on what the lock sees, with the IGNORE exception gone.
+        const current = matchEmployeeCode(empCode, await loadEmployees(tx), await loadExceptions(tx, empCode))
+        if (current.status === 'IGNORED') {
+          throw new AttendanceSyncError('VALIDATION_ERROR', 'That code was ignored again a moment ago. Try again.')
+        }
+
+        const ignoredWhere = { attendanceUploadId: upload.id, correctionId: null, empCode, matchStatus: 'IGNORED' }
+        let restoredPunches: number
+        if (current.status === 'MATCHED') {
+          // Unresolved first, then the same link a match makes (it appends after the employee's own punches).
+          restoredPunches = (
+            await tx.attendancePunch.updateMany({ where: ignoredWhere, data: { matchStatus: 'UNKNOWN', employeeId: null } })
+          ).count
+          await linkCodeToEmployee(tx, upload.id, empCode, current.employee.id)
+        } else {
+          restoredPunches = (await tx.attendancePunch.updateMany({ where: ignoredWhere, data: { matchStatus: current.status } })).count
+        }
+
+        await auditEntry(
+          {
+            actionType: undoes === 'ALWAYS' ? 'DELETE' : 'UPDATE',
+            entityType: 'ATTENDANCE_CODE',
+            // An every-week ignore removes its exception row; a week-only one has none, so the entry belongs to the week.
+            entityId: undoes === 'ALWAYS' && saved ? saved.id : upload.id,
+            details: {
+              summary: `Code ${empCode} no longer ignored (was ignored for ${undoes === 'ALWAYS' ? 'every week' : 'this week only'})`,
+              weekStart: week.start,
+              empCode,
+              kind: 'IGNORE',
+              undoneScope: undoes,
+              restoredPunches,
+              result: current.status,
+              ...(current.status === 'MATCHED'
+                ? { employeeId: current.employee.id, employeeCode: current.employee.employeeId }
+                : {}),
+            },
+          },
+          tx,
+        )
+
+        return {
+          restoredPunches,
+          outcome:
+            current.status === 'MATCHED'
+              ? ({ status: 'MATCHED', employeeCode: current.employee.employeeId } as const)
+              : ({ status: current.status } as const),
+        }
+      },
+      { timeout: TRANSACTION_TIMEOUT_MS },
+    )
+  } catch (error) {
+    // The employee was deleted after the locked read and before the link: the whole change rolled back.
+    if (isForeignKeyViolation(error)) throw new AttendanceSyncError('EMPLOYEE_NOT_FOUND', 'That employee no longer exists.')
+    throw error
+  }
 }
 
 // ─── Decisions ────────────────────────────────────────────────────────────────

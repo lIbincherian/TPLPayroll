@@ -408,7 +408,7 @@ describe('employee check refuses while a pull is running', () => {
   const actions: Array<[string, () => Promise<unknown>]> = [
     ['setEmployeeDecision', () => setEmployeeDecision(WEEK_ID, 'emp-2', 'APPROVED')],
     ['matchCodeToEmployee', () => matchCodeToEmployee(WEEK_ID, '0999', 'emp-36')],
-    ['ignoreCode', () => ignoreCode(WEEK_ID, '0999')],
+    ['ignoreCode', () => ignoreCode(WEEK_ID, '0999', 'ALWAYS')],
     ['rematchWeekCodes', () => rematchWeekCodes(WEEK_ID)],
   ]
 
@@ -460,6 +460,6 @@ describe('employee check refuses while a pull is running', () => {
   it('ignoreCode proceeds when there is no lock', async () => {
     db.tx.attendancePunch.updateMany.mockResolvedValue({ count: 4 })
 
-    await expect(ignoreCode(WEEK_ID, '0999')).resolves.toEqual({ ignoredPunches: 4 })
+    await expect(ignoreCode(WEEK_ID, '0999', 'ALWAYS')).resolves.toEqual({ ignoredPunches: 4 })
   })
 })

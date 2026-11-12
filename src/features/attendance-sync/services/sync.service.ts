@@ -1,6 +1,7 @@
 import { Prisma, type AttendanceUpload } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { SYNC_LOCK_TTL_MS, TRANSACTION_TIMEOUT_MS } from '../lib/constants'
+import { ignoreScopeOf } from '../lib/matching'
 import { buildPunchRowsFromParsed } from '../lib/pairing'
 import { shouldScheduledSyncReplace } from '../lib/review'
 import { SYNC_FAILURE_COPY } from '../lib/etimeoffice/parser'
@@ -40,11 +41,19 @@ interface EditsAndDecisions {
   hasEdits: boolean
   editedDays: number
   decisions: number
+  /** Codes ignored for this week only (punches marked IGNORED with no saved IGNORE exception). */
+  ignoredCodes: number
   edits: DiscardedEdit[]
 }
 
+/** Something the user did to this week that a new pull would throw away. */
+function hasWorkToLose(week: Pick<EditsAndDecisions, 'hasEdits' | 'decisions' | 'ignoredCodes'>): boolean {
+  return week.hasEdits || week.decisions > 0 || week.ignoredCodes > 0
+}
+
 /**
- * Live punches that were edited or entered by hand, plus the week's employee decisions.
+ * Live punches that were edited or entered by hand, the week's employee decisions, and the codes
+ * ignored for this week only. A code ignored for every week is not counted: a new pull ignores it again.
  * Pass the interactive transaction client as `db` to read inside the caller's transaction.
  */
 export async function weekHasEditsOrDecisions(
@@ -57,6 +66,7 @@ export async function weekHasEditsOrDecisions(
       id: true,
       employeeId: true,
       empCode: true,
+      matchStatus: true,
       punchDate: true,
       position: true,
       source: true,
@@ -82,7 +92,19 @@ export async function weekHasEditsOrDecisions(
     note: p.note,
   }))
 
-  return { hasEdits: edited.length > 0, editedDays: days.size, decisions, edits }
+  // Codes ignored for this week only: IGNORED punches whose code has no saved IGNORE exception.
+  const ignoredInWeek = [...new Set(punches.filter((p) => p.matchStatus === 'IGNORED').map((p) => p.empCode))]
+  const savedIgnores = (
+    ignoredInWeek.length === 0
+      ? []
+      : await db.attendanceCodeException.findMany({
+          where: { kind: 'IGNORE', empCode: { in: ignoredInWeek } },
+          select: { empCode: true, kind: true, employeeId: true },
+        })
+  ) as CodeExceptionLite[]
+  const ignoredCodes = ignoredInWeek.filter((code) => ignoreScopeOf(code, savedIgnores) === 'WEEK').length
+
+  return { hasEdits: edited.length > 0, editedDays: days.size, decisions, ignoredCodes, edits }
 }
 
 /**
@@ -98,15 +120,20 @@ class ScheduledSkip extends Error {
 
 export async function getPullWarning(
   weekStart: ISODate,
-): Promise<{ hasData: boolean; editedDays: number; decisions: number }> {
+): Promise<{ hasData: boolean; editedDays: number; decisions: number; ignoredCodes: number }> {
   const row = await getWeekByStart(toUtcDate(weekStart))
-  if (!row || row.source === 'EXCEL') return { hasData: false, editedDays: 0, decisions: 0 }
+  if (!row || row.source === 'EXCEL') return { hasData: false, editedDays: 0, decisions: 0, ignoredCodes: 0 }
 
   const [punchCount, edits] = await Promise.all([
     prisma.attendancePunch.count({ where: { attendanceUploadId: row.id, correctionId: null } }),
     weekHasEditsOrDecisions(row.id),
   ])
-  return { hasData: punchCount > 0, editedDays: edits.editedDays, decisions: edits.decisions }
+  return {
+    hasData: punchCount > 0,
+    editedDays: edits.editedDays,
+    decisions: edits.decisions,
+    ignoredCodes: edits.ignoredCodes,
+  }
 }
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────
@@ -199,12 +226,12 @@ export async function syncWeek(input: {
   // lock and saves the API call in the common case; the replace transaction repeats it under the lock.
   if (trigger === 'SCHEDULED') {
     const edits = await weekHasEditsOrDecisions(row.id)
-    const hasEditsOrDecisions = edits.hasEdits || edits.decisions > 0
-    if (!shouldScheduledSyncReplace({ hasEditsOrDecisions, status: 'REVIEW' })) {
+    if (!shouldScheduledSyncReplace({ hasEditsOrDecisions: hasWorkToLose(edits), status: 'REVIEW' })) {
       await prisma.attendanceUpload.update({ where: { id: row.id }, data: { staleNoticeAt: now } })
       await recordScheduledSkip(row.id, week, 'SKIPPED_HAS_EDITS', 'Scheduled sync skipped: week has edits', {
         editedDays: edits.editedDays,
         decisions: edits.decisions,
+        ignoredCodes: edits.ignoredCodes,
       })
       return { outcome: 'SKIPPED_HAS_EDITS' }
     }
@@ -289,15 +316,16 @@ export async function syncWeek(input: {
           // A scheduled pull never replaces edits (a manual one has been confirmed by the user).
           if (
             trigger === 'SCHEDULED' &&
-            !shouldScheduledSyncReplace({ hasEditsOrDecisions: discard.hasEdits || discard.decisions > 0, status: 'REVIEW' })
+            !shouldScheduledSyncReplace({ hasEditsOrDecisions: hasWorkToLose(discard), status: 'REVIEW' })
           ) {
             throw new ScheduledSkip(discard)
           }
           discarded =
-            discard.editedDays > 0 || discard.decisions > 0
+            discard.editedDays > 0 || discard.decisions > 0 || discard.ignoredCodes > 0
               ? {
                   editedDays: discard.editedDays,
                   decisions: discard.decisions,
+                  ignoredCodes: discard.ignoredCodes,
                   edits: discard.edits.slice(0, MAX_AUDITED_EDITS),
                 }
               : null
@@ -346,7 +374,12 @@ export async function syncWeek(input: {
                 unknownCodes: codesWith('UNKNOWN'),
                 duplicateCodes: codesWith('DUPLICATE'),
                 ignoredCodes: codesWith('IGNORED'),
-                discarded: { editedDays: discard.editedDays, decisions: discard.decisions, edits: discarded?.edits ?? [] },
+                discarded: {
+                  editedDays: discard.editedDays,
+                  decisions: discard.decisions,
+                  ignoredCodes: discard.ignoredCodes,
+                  edits: discarded?.edits ?? [],
+                },
               },
             },
             tx,
@@ -362,6 +395,7 @@ export async function syncWeek(input: {
         await recordScheduledSkip(row.id, week, 'SKIPPED_HAS_EDITS', 'Scheduled sync skipped: week has edits', {
           editedDays: error.edits.editedDays,
           decisions: error.edits.decisions,
+          ignoredCodes: error.edits.ignoredCodes,
         })
         return { outcome: 'SKIPPED_HAS_EDITS' }
       }

@@ -661,7 +661,7 @@ describe('weekHasEditsOrDecisions', () => {
   it('reports nothing for untouched API punches and no decisions', async () => {
     db.attendancePunch.findMany.mockResolvedValue(dayPunches({ idPrefix: 'p', employeeId: 'emp-36', date: '2026-11-05', times: FULL_DAY }))
 
-    expect(await weekHasEditsOrDecisions('upload-1')).toEqual({ hasEdits: false, editedDays: 0, decisions: 0, edits: [] })
+    expect(await weekHasEditsOrDecisions('upload-1')).toEqual({ hasEdits: false, editedDays: 0, decisions: 0, ignoredCodes: 0, edits: [] })
   })
 
   it('reads only the live set (correction clones are not edits of the pull)', async () => {
@@ -709,20 +709,20 @@ describe('getPullWarning (C2)', () => {
   it('has no data and nothing to discard when the week has no row', async () => {
     db.attendanceUpload.findFirst.mockResolvedValue(null)
 
-    expect(await getPullWarning('2026-11-05')).toEqual({ hasData: false, editedDays: 0, decisions: 0 })
+    expect(await getPullWarning('2026-11-05')).toEqual({ hasData: false, editedDays: 0, decisions: 0, ignoredCodes: 0 })
     expect(db.attendancePunch.count).not.toHaveBeenCalled()
   })
 
   it('has no data for an Excel-era week', async () => {
     db.attendanceUpload.findFirst.mockResolvedValue(makeExcelUpload())
 
-    expect(await getPullWarning('2026-11-05')).toEqual({ hasData: false, editedDays: 0, decisions: 0 })
+    expect(await getPullWarning('2026-11-05')).toEqual({ hasData: false, editedDays: 0, decisions: 0, ignoredCodes: 0 })
   })
 
   it('has data but nothing to warn about for an unedited pull', async () => {
     db.attendancePunch.count.mockResolvedValue(8)
 
-    expect(await getPullWarning('2026-11-05')).toEqual({ hasData: true, editedDays: 0, decisions: 0 })
+    expect(await getPullWarning('2026-11-05')).toEqual({ hasData: true, editedDays: 0, decisions: 0, ignoredCodes: 0 })
   })
 
   it('counts the edited days and decisions the pull would discard', async () => {
@@ -733,14 +733,14 @@ describe('getPullWarning (C2)', () => {
     ])
     db.attendanceEmployeeDecision.count.mockResolvedValue(3)
 
-    expect(await getPullWarning('2026-11-05')).toEqual({ hasData: true, editedDays: 2, decisions: 3 })
+    expect(await getPullWarning('2026-11-05')).toEqual({ hasData: true, editedDays: 2, decisions: 3, ignoredCodes: 0 })
   })
 
   it('reports no data for a SYNC_FAILED placeholder with no punches', async () => {
     db.attendanceUpload.findFirst.mockResolvedValue(makeUpload({ status: 'SYNC_FAILED' }))
     db.attendancePunch.count.mockResolvedValue(0)
 
-    expect(await getPullWarning('2026-11-05')).toEqual({ hasData: false, editedDays: 0, decisions: 0 })
+    expect(await getPullWarning('2026-11-05')).toEqual({ hasData: false, editedDays: 0, decisions: 0, ignoredCodes: 0 })
   })
 })
 
