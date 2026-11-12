@@ -55,10 +55,10 @@ export function WageHistoryTable({ entries }: WageHistoryTableProps) {
               Effective To
             </th>
             <th className="pb-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
-              Salary
+              Daily Wage
             </th>
             <th className="pb-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
-              Hourly
+              Hourly Rate
             </th>
             <th className="pb-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
               Source

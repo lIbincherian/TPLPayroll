@@ -206,6 +206,15 @@ describe('AuditLogViewer — rows', () => {
     expect(screen.getByText('Hourly rate: 60 → 65')).toBeInTheDocument()
   })
 
+  it('labels a wage amount change as the daily wage', async () => {
+    respondWith([
+      log({ id: 'a', actionType: 'UPDATE', entityType: 'WAGE_HISTORY', detailsJson: { old: { salary: 800 }, new: { salary: 1000 } } }),
+    ])
+    render(<AuditLogViewer />)
+
+    expect(await screen.findByText('Daily wage: 800 → 1000')).toBeInTheDocument()
+  })
+
   it('shows the empty state when there are no entries', async () => {
     respondWith([])
     render(<AuditLogViewer />)

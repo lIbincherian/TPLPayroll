@@ -101,7 +101,7 @@ function summaryText(log: AuditLogRecord): string {
     }
     if (newVals?.salary !== undefined) {
       const oldVals = d.old as Record<string, unknown> | undefined
-      return `Salary: ${oldVals?.salary ?? '—'} → ${newVals.salary}`
+      return `Daily wage: ${oldVals?.salary ?? '—'} → ${newVals.salary}`
     }
     return 'Wage updated'
   }
