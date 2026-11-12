@@ -226,7 +226,7 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
             id="bulk-rate-confirm"
           >
             {isProcessing && <SpinnerGap size={14} className="animate-spin" />}
-            {isProcessing ? 'Processing...' : 'Update Wages'}
+            {isProcessing ? 'Processing...' : 'Update Daily Wages'}
           </button>
         </div>
       </div>

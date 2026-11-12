@@ -340,7 +340,7 @@ describe('BulkRateDialog — validation', () => {
     })
 
     // Click confirm without entering a rate
-    fireEvent.click(screen.getByText('Update Wages'))
+    fireEvent.click(screen.getByText('Update Daily Wages'))
 
     expect(screen.getByText('Enter a daily wage greater than 0')).toBeInTheDocument()
   })
@@ -360,7 +360,7 @@ describe('BulkRateDialog — validation', () => {
 
     const rateInput = screen.getByPlaceholderText('0.00')
     fireEvent.change(rateInput, { target: { value: '0' } })
-    fireEvent.click(screen.getByText('Update Wages'))
+    fireEvent.click(screen.getByText('Update Daily Wages'))
 
     expect(screen.getByText('Enter a daily wage greater than 0')).toBeInTheDocument()
   })
@@ -403,7 +403,7 @@ describe('BulkRateDialog — validation', () => {
     fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { value: '800' } })
     expect(screen.getByTestId('bulk-computed-hourly-rate')).toHaveTextContent('₹100.00')
 
-    fireEvent.click(screen.getByText('Update Wages'))
+    fireEvent.click(screen.getByText('Update Daily Wages'))
 
     await waitFor(() => expect(bulkUpdateHourlyRateAction).toHaveBeenCalledTimes(1))
     expect(vi.mocked(bulkUpdateHourlyRateAction).mock.calls[0][0]).toMatchObject({ newDailyWage: 800 })
