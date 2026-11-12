@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { ArrowLeft, WarningCircle } from '@phosphor-icons/react'
 import type { PayrollSummary, EmployeePayrollRow } from '@/features/payroll-generation/types/payroll.types'
+import { paymentReference, toISODate } from '@/features/attendance-sync/lib/week'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -13,39 +14,100 @@ function fmt(amount: number) {
   }).format(amount)
 }
 
-function fmtHours(h: number) {
-  return h.toFixed(2)
-}
-
 // ─── Table columns ────────────────────────────────────────────────────────────
 
+// Salary dates are stored at UTC midnight, so format them in UTC.
+function fmtDate(date: Date) {
+  return new Date(date).toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
+}
+
 const HEADERS = [
-  'ID',
-  'Name',
-  'GPay',
-  'Bank Acct.',
-  'Net Payable',
+  'Sl No.',
+  'Emp ID',
+  'Emp Name',
+  'GPay No.',
+  'WhatsApp No.',
+  'Paid Name (if diff.)',
+  'Salary from',
+  'Salary to',
+  'Reg. Hrs Pay',
+  'Overtime Hrs Pay',
+  'Additions',
+  'Deductions',
+  'Net Pay',
+  'Payment Date',
+  'Payment Reference',
 ]
 
-function EmployeeRow({ row }: { row: EmployeePayrollRow }) {
+const AMOUNT_HEADERS = ['Reg. Hrs Pay', 'Overtime Hrs Pay', 'Additions', 'Deductions', 'Net Pay']
+const RIGHT_ALIGNED = ['Sl No.', ...AMOUNT_HEADERS]
+
+const CELL = 'whitespace-nowrap px-3 py-3'
+const CODE = 'font-mono text-xs text-zinc-500'
+const AMOUNT = 'font-mono tabular-nums text-sm text-zinc-700'
+
+function EmployeeRow({
+  row,
+  slNo,
+  salaryFrom,
+  salaryTo,
+  weekStartISO,
+}: {
+  row: EmployeePayrollRow
+  slNo: number
+  salaryFrom: string
+  salaryTo: string
+  weekStartISO: string
+}) {
   return (
     <tr className="transition-colors hover:bg-zinc-50/80">
-      <td className="px-4 py-3">
-        <span className="font-mono text-xs text-zinc-500">{row.employeeCode}</span>
+      <td className={`${CELL} text-right`}>
+        <span className="font-mono tabular-nums text-xs text-zinc-500">{slNo}</span>
       </td>
-      <td className="px-4 py-3">
+      <td className={CELL}>
+        <span className={CODE}>{row.employeeCode}</span>
+      </td>
+      <td className={CELL}>
         <span className="text-sm font-medium text-zinc-900">{row.employeeName}</span>
       </td>
-      <td className="px-4 py-3">
-        <span className="font-mono text-xs text-zinc-500">{row.gPay ?? '—'}</span>
+      <td className={CELL}>
+        <span className={CODE}>{row.gPay?.trim() || '—'}</span>
       </td>
-      <td className="px-4 py-3">
-        <span className="font-mono text-xs text-zinc-500">{row.bankAccount ?? '—'}</span>
+      <td className={CELL}>
+        <span className={CODE}>{row.phone?.trim() || '—'}</span>
       </td>
-      <td className="px-4 py-3 text-right">
+      <td className={CELL} />
+      <td className={CELL}>
+        <span className="text-sm text-zinc-700">{salaryFrom}</span>
+      </td>
+      <td className={CELL}>
+        <span className="text-sm text-zinc-700">{salaryTo}</span>
+      </td>
+      <td className={`${CELL} text-right`}>
+        <span className={AMOUNT}>₹{fmt(row.regularPay)}</span>
+      </td>
+      <td className={`${CELL} text-right`}>
+        <span className={AMOUNT}>₹{fmt(row.overtimePay)}</span>
+      </td>
+      <td className={`${CELL} text-right`}>
+        <span className={AMOUNT}>₹{fmt(row.additions)}</span>
+      </td>
+      <td className={`${CELL} text-right`}>
+        <span className={AMOUNT}>₹{fmt(row.deductions)}</span>
+      </td>
+      <td className={`${CELL} text-right`}>
         <span className="font-mono tabular-nums text-sm font-semibold text-zinc-900">
           ₹{fmt(row.netPayable)}
         </span>
+      </td>
+      <td className={CELL} />
+      <td className={CELL}>
+        <span className={CODE}>{paymentReference(weekStartISO, row.employeeCode)}</span>
       </td>
     </tr>
   )
@@ -119,6 +181,9 @@ export function PayrollSummaryStep({ weekLabel, summary, onBack, onApprove }: Pr
   }
 
   const { totals } = summary
+  const salaryFrom = fmtDate(summary.weekStart)
+  const salaryTo = fmtDate(summary.weekEnd)
+  const weekStartISO = toISODate(new Date(summary.weekStart))
 
   return (
     <>
@@ -145,10 +210,8 @@ export function PayrollSummaryStep({ weekLabel, summary, onBack, onApprove }: Pr
                 {HEADERS.map((h) => (
                   <th
                     key={h}
-                    className={`whitespace-nowrap px-4 py-3 text-xs font-medium uppercase tracking-wider text-zinc-400 ${
-                      ['Net Payable'].includes(h)
-                        ? 'text-right'
-                        : 'text-left'
+                    className={`whitespace-nowrap px-3 py-3 text-xs font-medium uppercase tracking-wider text-zinc-400 ${
+                      RIGHT_ALIGNED.includes(h) ? 'text-right' : 'text-left'
                     }`}
                   >
                     {h}
@@ -157,19 +220,37 @@ export function PayrollSummaryStep({ weekLabel, summary, onBack, onApprove }: Pr
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100">
-              {summary.employees.map((row) => (
-                <EmployeeRow key={row.employeeId} row={row} />
+              {summary.employees.map((row, i) => (
+                <EmployeeRow
+                  key={row.employeeId}
+                  row={row}
+                  slNo={i + 1}
+                  salaryFrom={salaryFrom}
+                  salaryTo={salaryTo}
+                  weekStartISO={weekStartISO}
+                />
               ))}
             </tbody>
             {/* ── Totals row ─────────────────────────────────────────── */}
             <tfoot>
               <tr className="border-t-2 border-zinc-300 bg-zinc-50 font-semibold">
-                <td className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-500" colSpan={4}>
+                <td className={`${CELL} text-xs font-semibold uppercase tracking-wider text-zinc-500`} colSpan={8}>
                   Total
                 </td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums text-sm font-bold text-zinc-900">
+                {[
+                  totals.totalRegularPay,
+                  totals.totalOvertimePay,
+                  totals.totalAdditions,
+                  totals.totalDeductions,
+                ].map((amount, i) => (
+                  <td key={i} className={`${CELL} text-right font-mono tabular-nums text-sm text-zinc-900`}>
+                    ₹{fmt(amount)}
+                  </td>
+                ))}
+                <td className={`${CELL} text-right font-mono tabular-nums text-sm font-bold text-zinc-900`}>
                   ₹{fmt(totals.totalNetPayable)}
                 </td>
+                <td className={CELL} colSpan={2} />
               </tr>
             </tfoot>
           </table>
