@@ -469,7 +469,8 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
   // Auto-fit column widths
   const maxCols = 13
   const wcols = Array(maxCols).fill(0).map(() => ({ wch: 10 }))
-  for (let r = 0; r < aoa.length; r++) {
+  // Start at the header row: the merged title, week and generated lines would widen column A.
+  for (let r = 4; r < aoa.length; r++) {
     for (let c = 0; c < maxCols; c++) {
       const val = aoa[r][c]
       if (val !== undefined && val !== null) {
