@@ -1,5 +1,8 @@
 import { randomUUID } from 'crypto'
+import type { PayrollAdjustment, Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
+import { TRANSACTION_TIMEOUT_MS } from '@/features/attendance-sync/lib/constants'
+import { lockAdjustmentRows } from '@/features/payroll-adjustments/services/adjustment-lock.service'
 import {
   CreateAdjustmentSchema,
   UpdateAdjustmentSchema,
@@ -218,74 +221,53 @@ export async function getAdjustmentDetail(id: string): Promise<AdjustmentDetailR
   }
 }
 
-// ─── approveAdjustmentApplication ────────────────────────────────────────────
+// ─── Adjustment effects (shared by the weekly review and a correction's apply step) ───────────────
 
-export async function approveAdjustmentApplication(applicationId: string) {
-  const app = await prisma.payrollAdjustmentApplication.findUnique({
-    where: { id: applicationId },
-    include: { payrollAdjustment: true },
-  })
+type AdjustmentDb = Pick<Prisma.TransactionClient, 'payrollAdjustmentApplication' | 'payrollAdjustment'>
 
-  if (!app) {
-    throw new AdjustmentServiceError('APPLICATION_NOT_FOUND', `Application "${applicationId}" not found`)
+/** An `AdjustmentDb` that can also take the adjustment row lock (a transaction client, or the default client). */
+type LockableAdjustmentDb = AdjustmentDb & Pick<Prisma.TransactionClient, '$queryRaw'>
+
+/** The amount an approval applies now: the instalment, capped at what is left of a TOTAL_BALANCE adjustment. */
+export function amountToApply(adj: PayrollAdjustment): number {
+  const amount = Number(adj.amount)
+  if (adj.recurrenceEndType === 'TOTAL_BALANCE' && adj.remainingBalance != null) {
+    return Math.min(amount, Number(adj.remainingBalance))
   }
-  if (app.approvalStatus !== 'PENDING' && app.approvalStatus !== 'SKIPPED') {
-    throw new AdjustmentServiceError(
-      'INVALID_APPROVAL_STATUS',
-      `Application is already ${app.approvalStatus.toLowerCase()}`,
-    )
-  }
+  return amount
+}
 
-  const adj = app.payrollAdjustment
+/**
+ * What approving an application does to its adjustment: take `appliedAmount` off the balance, schedule
+ * the next instalment, complete the adjustment when it is done. The application itself is marked
+ * approved by the caller (and must be, before this runs: the FIXED_WEEKS count includes it).
+ */
+export async function applyApprovalToAdjustment(
+  db: AdjustmentDb,
+  app: { payrollWeekStartDate: Date; payrollWeekEndDate: Date; employeeId: string },
+  adj: PayrollAdjustment,
+  appliedAmount: number,
+): Promise<void> {
   const isTotalBalance = adj.recurrenceEndType === 'TOTAL_BALANCE'
   const isFixedWeeks = adj.recurrenceEndType === 'FIXED_WEEKS'
   const isEndWeek = adj.recurrenceEndType === 'END_WEEK'
 
-  let appliedAmount = Number(adj.amount)
   let newRemainingBalance: number | null = null
   let adjustmentCompleted = false
 
   if (isTotalBalance && adj.remainingBalance != null) {
-    // Cap the applied amount at whatever balance remains
-    const remaining = Number(adj.remainingBalance)
-    appliedAmount = Math.min(appliedAmount, remaining)
-    newRemainingBalance = remaining - appliedAmount
+    newRemainingBalance = Math.max(0, Number(adj.remainingBalance) - appliedAmount)
     adjustmentCompleted = newRemainingBalance <= 0
   }
 
   if (isFixedWeeks && adj.remainingBalance != null) {
     // Deplete the running balance so we can track total paid out
-    const remaining = Number(adj.remainingBalance)
-    newRemainingBalance = Math.max(0, remaining - appliedAmount)
+    newRemainingBalance = Math.max(0, Number(adj.remainingBalance) - appliedAmount)
   }
-
-  const now = new Date()
-
-  // If we are approving a skipped application, delete its carry-forward application if it exists
-  if (app.approvalStatus === 'SKIPPED' && app.carriedForwardToPayrollWeekStartDate) {
-    await prisma.payrollAdjustmentApplication.deleteMany({
-      where: {
-        payrollAdjustmentId: adj.id,
-        payrollWeekStartDate: app.carriedForwardToPayrollWeekStartDate,
-        approvalStatus: 'PENDING',
-      },
-    })
-  }
-
-  // Mark current application as approved
-  const updated = await prisma.payrollAdjustmentApplication.update({
-    where: { id: applicationId },
-    data: {
-      approvalStatus: 'APPROVED',
-      appliedAt: now,
-      appliedAmount,
-      carriedForwardToPayrollWeekStartDate: null,
-    },
-  })
 
   // ── TOTAL_BALANCE: update remaining balance and possibly complete ─────────
   if (isTotalBalance) {
-    await prisma.payrollAdjustment.update({
+    await db.payrollAdjustment.update({
       where: { id: adj.id },
       data: {
         remainingBalance: newRemainingBalance ?? 0,
@@ -298,7 +280,7 @@ export async function approveAdjustmentApplication(applicationId: string) {
   if (isFixedWeeks && adj.totalRecurrenceWeeks != null) {
     // Count how many applications have been approved for this adjustment
     // (including the one we just approved)
-    const approvedCount = await prisma.payrollAdjustmentApplication.count({
+    const approvedCount = await db.payrollAdjustmentApplication.count({
       where: {
         payrollAdjustmentId: adj.id,
         approvalStatus: 'APPROVED',
@@ -307,7 +289,7 @@ export async function approveAdjustmentApplication(applicationId: string) {
 
     if (approvedCount >= adj.totalRecurrenceWeeks) {
       // All weeks have been applied — mark the adjustment done
-      await prisma.payrollAdjustment.update({
+      await db.payrollAdjustment.update({
         where: { id: adj.id },
         data: {
           status: 'COMPLETED',
@@ -320,7 +302,7 @@ export async function approveAdjustmentApplication(applicationId: string) {
       const nextWeekEnd = addDays(app.payrollWeekEndDate, 7)
 
       // Guard: only create if no PENDING application already exists for this week
-      const existingNextPending = await prisma.payrollAdjustmentApplication.findFirst({
+      const existingNextPending = await db.payrollAdjustmentApplication.findFirst({
         where: {
           payrollAdjustmentId: adj.id,
           payrollWeekStartDate: nextWeekStart,
@@ -329,7 +311,7 @@ export async function approveAdjustmentApplication(applicationId: string) {
       })
 
       if (!existingNextPending) {
-        await prisma.payrollAdjustmentApplication.create({
+        await db.payrollAdjustmentApplication.create({
           data: {
             payrollAdjustmentId: adj.id,
             employeeId: app.employeeId,
@@ -342,7 +324,7 @@ export async function approveAdjustmentApplication(applicationId: string) {
       }
 
       if (newRemainingBalance !== null) {
-        await prisma.payrollAdjustment.update({
+        await db.payrollAdjustment.update({
           where: { id: adj.id },
           data: { remainingBalance: newRemainingBalance },
         })
@@ -357,7 +339,7 @@ export async function approveAdjustmentApplication(applicationId: string) {
 
     if (currentWeekStart >= endWeekStart) {
       // This was the last week — complete the adjustment
-      await prisma.payrollAdjustment.update({
+      await db.payrollAdjustment.update({
         where: { id: adj.id },
         data: { status: 'COMPLETED' },
       })
@@ -367,7 +349,7 @@ export async function approveAdjustmentApplication(applicationId: string) {
       const nextWeekEnd = addDays(app.payrollWeekEndDate, 7)
 
       // Guard: only create if no PENDING application already exists for this week
-      const existingNextPending = await prisma.payrollAdjustmentApplication.findFirst({
+      const existingNextPending = await db.payrollAdjustmentApplication.findFirst({
         where: {
           payrollAdjustmentId: adj.id,
           payrollWeekStartDate: nextWeekStart,
@@ -376,7 +358,7 @@ export async function approveAdjustmentApplication(applicationId: string) {
       })
 
       if (!existingNextPending) {
-        await prisma.payrollAdjustmentApplication.create({
+        await db.payrollAdjustmentApplication.create({
           data: {
             payrollAdjustmentId: adj.id,
             employeeId: app.employeeId,
@@ -392,72 +374,74 @@ export async function approveAdjustmentApplication(applicationId: string) {
 
   // ── ONE_TIME: complete the adjustment immediately ───────────────────────
   if (adj.recurrenceType === 'ONE_TIME') {
-    await prisma.payrollAdjustment.update({
+    await db.payrollAdjustment.update({
       where: { id: adj.id },
       data: { status: 'COMPLETED' },
     })
   }
-
-  return {
-    ...updated,
-    appliedAmount: Number(updated.appliedAmount),
-    approvalStatus: updated.approvalStatus as 'APPROVED',
-    appliedAt: updated.appliedAt,
-  }
 }
 
-// ─── skipAdjustmentApplication ───────────────────────────────────────────────
+/**
+ * What an application's approval did to its adjustment, undone: the balance goes back (capped at the
+ * total) and a completed adjustment is active again. Empty when the approval changed neither.
+ */
+function approvalUndoData(
+  adj: PayrollAdjustment,
+  appliedAmount: number,
+): { remainingBalance?: number; status?: 'ACTIVE' } {
+  const data: { remainingBalance?: number; status?: 'ACTIVE' } = {}
+  const isTotalBalance = adj.recurrenceEndType === 'TOTAL_BALANCE'
+  const isFixedWeeks = adj.recurrenceEndType === 'FIXED_WEEKS'
 
-export async function skipAdjustmentApplication(applicationId: string) {
-  const app = await prisma.payrollAdjustmentApplication.findUnique({
-    where: { id: applicationId },
-    include: { payrollAdjustment: true },
-  })
+  if ((isTotalBalance || isFixedWeeks) && adj.remainingBalance !== null) {
+    let restored = Number(adj.remainingBalance) + appliedAmount
 
-  if (!app) {
-    throw new AdjustmentServiceError('APPLICATION_NOT_FOUND', `Application "${applicationId}" not found`)
+    // Cap the restored balance at the original total if known
+    if (adj.totalBalance !== null) {
+      restored = Math.min(restored, Number(adj.totalBalance))
+    }
+    data.remainingBalance = restored
   }
-  if (app.approvalStatus !== 'PENDING' && app.approvalStatus !== 'APPROVED') {
-    throw new AdjustmentServiceError(
-      'INVALID_APPROVAL_STATUS',
-      `Application is already ${app.approvalStatus.toLowerCase()}`,
-    )
-  }
 
-  const adj = app.payrollAdjustment
+  // If the adjustment was completed, revert it to ACTIVE: its instalment is not paid after all.
+  if (adj.status === 'COMPLETED') data.status = 'ACTIVE'
+  return data
+}
+
+/** Give back an application's approval to its adjustment without touching the application (see `approvalUndoData`). */
+export async function undoApprovalOnAdjustment(
+  db: AdjustmentDb,
+  app: { appliedAmount: Prisma.Decimal | number },
+  adj: PayrollAdjustment,
+): Promise<void> {
+  const data = approvalUndoData(adj, Number(app.appliedAmount))
+  if (Object.keys(data).length === 0) return
+  await db.payrollAdjustment.update({ where: { id: adj.id }, data })
+}
+
+/**
+ * Mark an application skipped and carry it to the next payroll week: a PENDING application for that
+ * week unless one exists, and the carry-forward count. `undoApproval` also gives back what the
+ * application's approval did to the adjustment; pass it when that approval had been applied.
+ */
+export async function carryApplicationForward(
+  db: AdjustmentDb,
+  app: {
+    id: string
+    employeeId: string
+    payrollWeekStartDate: Date
+    payrollWeekEndDate: Date
+    appliedAmount: Prisma.Decimal | number
+  },
+  adj: PayrollAdjustment,
+  options: { undoApproval: boolean },
+) {
   const now = new Date()
-
-  // ── Undo effects if skipping an already approved application ────────────
-  let restoredRemainingBalance: number | null = null
-  let revertStatusToActive = false
-
-  if (app.approvalStatus === 'APPROVED') {
-    const isTotalBalance = adj.recurrenceEndType === 'TOTAL_BALANCE'
-    const isFixedWeeks = adj.recurrenceEndType === 'FIXED_WEEKS'
-    const appliedAmount = Number(app.appliedAmount)
-
-    if ((isTotalBalance || isFixedWeeks) && adj.remainingBalance !== null) {
-      const currentRemaining = Number(adj.remainingBalance)
-      restoredRemainingBalance = currentRemaining + appliedAmount
-
-      // Cap the restored balance at the original total if known
-      if (adj.totalBalance !== null) {
-         restoredRemainingBalance = Math.min(restoredRemainingBalance, Number(adj.totalBalance))
-      }
-    }
-
-    // If the adjustment was completed, revert it to ACTIVE since we are skipping an application
-    // and thus creating a carry-forward (meaning it's not done yet).
-    if (adj.status === 'COMPLETED') {
-      revertStatusToActive = true
-    }
-  }
-
   const nextWeekStart = addDays(app.payrollWeekStartDate, 7)
   const nextWeekEnd = addDays(app.payrollWeekEndDate, 7)
 
-  const updated = await prisma.payrollAdjustmentApplication.update({
-    where: { id: applicationId },
+  const updated = await db.payrollAdjustmentApplication.update({
+    where: { id: app.id },
     data: {
       approvalStatus: 'SKIPPED',
       skippedAt: now,
@@ -466,7 +450,7 @@ export async function skipAdjustmentApplication(applicationId: string) {
   })
 
   // Guard: only create carry-forward if no PENDING application already exists for next week
-  const existingNextPending = await prisma.payrollAdjustmentApplication.findFirst({
+  const existingNextPending = await db.payrollAdjustmentApplication.findFirst({
     where: {
       payrollAdjustmentId: adj.id,
       payrollWeekStartDate: nextWeekStart,
@@ -475,7 +459,7 @@ export async function skipAdjustmentApplication(applicationId: string) {
   })
 
   if (!existingNextPending) {
-    await prisma.payrollAdjustmentApplication.create({
+    await db.payrollAdjustmentApplication.create({
       data: {
         payrollAdjustmentId: adj.id,
         employeeId: app.employeeId,
@@ -487,21 +471,172 @@ export async function skipAdjustmentApplication(applicationId: string) {
     })
   }
 
-  await prisma.payrollAdjustment.update({
+  await db.payrollAdjustment.update({
     where: { id: adj.id },
     data: {
       skippedCarryForwardCount: adj.skippedCarryForwardCount + 1,
-      ...(restoredRemainingBalance !== null ? { remainingBalance: restoredRemainingBalance } : {}),
-      ...(revertStatusToActive ? { status: 'ACTIVE' } : {}),
+      ...(options.undoApproval ? approvalUndoData(adj, Number(app.appliedAmount)) : {}),
     },
   })
 
-  return {
-    ...updated,
-    approvalStatus: updated.approvalStatus as 'SKIPPED',
-    skippedAt: updated.skippedAt,
-    appliedAmount: Number(updated.appliedAmount),
+  return updated
+}
+
+/** Delete the PENDING application a skip carried to the next week; approving the skipped application takes it back. */
+export async function removeCarryForward(
+  db: AdjustmentDb,
+  app: { carriedForwardToPayrollWeekStartDate: Date | null },
+  adj: PayrollAdjustment,
+): Promise<void> {
+  if (!app.carriedForwardToPayrollWeekStartDate) return
+  await db.payrollAdjustmentApplication.deleteMany({
+    where: {
+      payrollAdjustmentId: adj.id,
+      payrollWeekStartDate: app.carriedForwardToPayrollWeekStartDate,
+      approvalStatus: 'PENDING',
+    },
+  })
+}
+
+// ─── Guards: a week under correction is the correction's ─────────────────────
+
+const CORRECTION_OPEN_MESSAGE = 'A payroll correction is open for this week. Finish or cancel it first.'
+
+/**
+ * While a correction is open for a week its applications are the correction's: it reset them to PENDING and
+ * settles every balance once, when its revision is approved, from the status each ends with. A weekly approve,
+ * skip, edit or cancel in the meantime would move the same balance for a row the correction settles again.
+ * Throws CORRECTION_IN_PROGRESS when an IN_PROGRESS correction session exists for a run of this week.
+ */
+async function assertWeekNotUnderCorrection(weekStart: Date): Promise<void> {
+  const open = await prisma.payrollCorrectionSession.findFirst({
+    where: { status: 'IN_PROGRESS', payrollRun: { payrollWeekStartDate: weekStart } },
+    select: { id: true },
+  })
+  if (open) throw new AdjustmentServiceError('CORRECTION_IN_PROGRESS', CORRECTION_OPEN_MESSAGE)
+}
+
+/** The same, for any week one of the adjustment's applications is in. */
+async function assertAdjustmentNotUnderCorrection(adjustmentId: string): Promise<void> {
+  const applications = await prisma.payrollAdjustmentApplication.findMany({
+    where: { payrollAdjustmentId: adjustmentId },
+    select: { payrollWeekStartDate: true },
+  })
+  if (applications.length === 0) return
+  const open = await prisma.payrollCorrectionSession.findFirst({
+    where: {
+      status: 'IN_PROGRESS',
+      payrollRun: { payrollWeekStartDate: { in: applications.map((application) => application.payrollWeekStartDate) } },
+    },
+    select: { id: true },
+  })
+  if (open) throw new AdjustmentServiceError('CORRECTION_IN_PROGRESS', CORRECTION_OPEN_MESSAGE)
+}
+
+// ─── approveAdjustmentApplication ────────────────────────────────────────────
+
+/** The application with its adjustment, or the refusal the weekly approve and skip share. */
+async function loadApplicationFor(db: AdjustmentDb, applicationId: string, allowed: readonly string[]) {
+  const app = await db.payrollAdjustmentApplication.findUnique({
+    where: { id: applicationId },
+    include: { payrollAdjustment: true },
+  })
+
+  if (!app) {
+    throw new AdjustmentServiceError('APPLICATION_NOT_FOUND', `Application "${applicationId}" not found`)
   }
+  if (!allowed.includes(app.approvalStatus)) {
+    throw new AdjustmentServiceError(
+      'INVALID_APPROVAL_STATUS',
+      `Application is already ${app.approvalStatus.toLowerCase()}`,
+    )
+  }
+  return app
+}
+
+/**
+ * Approve an application. The balance is read, changed and written back under the adjustment's row lock,
+ * inside one transaction: the balance is shared by every week the adjustment has applications in, so a
+ * read-modify-write outside a lock lets a concurrent approval or skip (of another week), or a correction's
+ * settlement, be overwritten. The application is read again after the lock, so a second approval of the same
+ * application finds it approved and is refused instead of deducting twice.
+ */
+export async function approveAdjustmentApplication(applicationId: string) {
+  const found = await loadApplicationFor(prisma, applicationId, ['PENDING', 'SKIPPED'])
+  await assertWeekNotUnderCorrection(found.payrollWeekStartDate)
+
+  return prisma.$transaction(
+    async (tx) => {
+      await lockAdjustmentRows(tx, [found.payrollAdjustmentId])
+      const app = await loadApplicationFor(tx, applicationId, ['PENDING', 'SKIPPED'])
+
+      const adj = app.payrollAdjustment
+      // Cap the applied amount at whatever balance remains
+      const appliedAmount = amountToApply(adj)
+      const now = new Date()
+
+      // If we are approving a skipped application, delete its carry-forward application if it exists
+      if (app.approvalStatus === 'SKIPPED') await removeCarryForward(tx, app, adj)
+
+      // Mark current application as approved
+      const updated = await tx.payrollAdjustmentApplication.update({
+        where: { id: applicationId },
+        data: {
+          approvalStatus: 'APPROVED',
+          appliedAt: now,
+          appliedAmount,
+          carriedForwardToPayrollWeekStartDate: null,
+        },
+      })
+
+      await applyApprovalToAdjustment(tx, app, adj, appliedAmount)
+
+      return {
+        ...updated,
+        appliedAmount: Number(updated.appliedAmount),
+        approvalStatus: updated.approvalStatus as 'APPROVED',
+        appliedAt: updated.appliedAt,
+      }
+    },
+    { timeout: TRANSACTION_TIMEOUT_MS },
+  )
+}
+
+// ─── skipAdjustmentApplication ───────────────────────────────────────────────
+
+/**
+ * Skip an application and carry it to the next payroll week. Pass a transaction client
+ * as `db` to run the writes inside the caller's transaction (payroll approval does this
+ * so a left-out employee's carry-forward commits or rolls back with the approval).
+ * Skipping an approved application undoes what its approval did to the adjustment.
+ *
+ * Like the approval it reads the balance under the adjustment's row lock: in its own transaction with the
+ * default client, in the caller's with a transaction client (which already holds the week's row; the
+ * adjustment rows come after it).
+ */
+export async function skipAdjustmentApplication(applicationId: string, db: LockableAdjustmentDb = prisma) {
+  const found = await loadApplicationFor(db, applicationId, ['PENDING', 'APPROVED'])
+  // approvePayroll passes its transaction, for a week that has no run yet and so cannot have a correction.
+  if (db === prisma) await assertWeekNotUnderCorrection(found.payrollWeekStartDate)
+
+  const skipUnderLock = async (client: LockableAdjustmentDb) => {
+    await lockAdjustmentRows(client, [found.payrollAdjustmentId])
+    const app = await loadApplicationFor(client, applicationId, ['PENDING', 'APPROVED'])
+
+    const updated = await carryApplicationForward(client, app, app.payrollAdjustment, {
+      undoApproval: app.approvalStatus === 'APPROVED',
+    })
+
+    return {
+      ...updated,
+      approvalStatus: updated.approvalStatus as 'SKIPPED',
+      skippedAt: updated.skippedAt,
+      appliedAmount: Number(updated.appliedAmount),
+    }
+  }
+
+  if (db !== prisma) return skipUnderLock(db)
+  return prisma.$transaction((tx) => skipUnderLock(tx), { timeout: TRANSACTION_TIMEOUT_MS })
 }
 
 // ─── getAdjustmentsForWeekReview (used by F06) ────────────────────────────────
@@ -572,6 +707,7 @@ export async function updateAdjustment(id: string, input: UpdateAdjustmentInput)
   if (!adj) {
     throw new AdjustmentServiceError('ADJUSTMENT_NOT_FOUND', `Adjustment "${id}" not found`)
   }
+  await assertAdjustmentNotUnderCorrection(id)
 
   const hasApproved = adj.adjustmentApplications.some((a) => a.approvalStatus === 'APPROVED')
   if (hasApproved) {
@@ -659,6 +795,7 @@ export async function cancelAdjustment(id: string) {
   if (!adj) {
     throw new AdjustmentServiceError('ADJUSTMENT_NOT_FOUND', `Adjustment "${id}" not found`)
   }
+  await assertAdjustmentNotUnderCorrection(id)
 
   if (adj.status === 'COMPLETED' || adj.status === 'CANCELLED') {
     throw new AdjustmentServiceError(

@@ -10,13 +10,29 @@ vi.mock('@/lib/prisma', () => ({
     },
     payrollRevision: {
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
+      deleteMany: vi.fn(),
     },
     payrollRunEmployee: {
       findMany: vi.fn(),
       createMany: vi.fn(),
+      deleteMany: vi.fn(),
+    },
+    payrollCorrectionSession: {
+      findUnique: vi.fn(),
+      findFirst: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+    },
+    attendancePunch: {
+      count: vi.fn(),
+    },
+    attendanceEmployeeDecision: {
+      findMany: vi.fn(),
     },
     payrollAdjustmentApplication: {
       findUnique: vi.fn(),
@@ -32,6 +48,24 @@ vi.mock('@/lib/prisma', () => ({
     },
     $transaction: vi.fn(),
   },
+}))
+
+// ─── Mock F12 attendance services (used by attendance corrections) ───────────
+vi.mock('@/features/attendance-sync/services/punch-review.service', () => ({
+  getPunchReview: vi.fn(),
+}))
+vi.mock('@/features/attendance-sync/services/attendance-audit.service', () => ({
+  auditEntry: vi.fn(),
+}))
+// approveRevision locks the week row of a correction session, and carries forward left-out adjustments.
+vi.mock('@/features/attendance-sync/services/week-lock.service', () => ({
+  lockWeekRow: vi.fn(),
+}))
+vi.mock('@/features/payroll-adjustments/services/adjustment-lock.service', () => ({
+  lockAdjustmentRows: vi.fn(),
+}))
+vi.mock('@/features/payroll-adjustments/services/adjustment.service', () => ({
+  skipAdjustmentApplication: vi.fn(),
 }))
 
 // ─── Mock payroll calc helpers ────────────────────────────────────────────────
@@ -50,8 +84,6 @@ vi.mock('@/features/payroll-generation/services/payroll.service', () => ({
 import prisma from '@/lib/prisma'
 import {
   initiateCorrection,
-  reverseAdjustmentApplication,
-  approveSkippedAdjustment,
   recalculateAndCreateRevision,
   approveRevision,
   getRevisionHistory,
@@ -81,6 +113,7 @@ function makePayrollRun(overrides: Partial<PayrollRun> = {}): PayrollRun {
     generatedAt: new Date('2025-03-14'),
     approvedAt: new Date('2025-03-14'),
     invoicesGeneratedAt: null,
+    approvedWeekStart: null,
     ...overrides,
   }
 }
@@ -198,66 +231,6 @@ describe('initiateCorrection', () => {
   })
 })
 
-// ─── US-08.2: Modify adjustments in correction ──────────────────────────────
-
-describe('reverseAdjustmentApplication', () => {
-  it('marks an approved application as reversed', async () => {
-    const app = makeAdjApplication({ approvalStatus: 'APPROVED', isReversed: false })
-    vi.mocked(prisma.payrollAdjustmentApplication.findUnique).mockResolvedValue(app as never)
-    vi.mocked(prisma.payrollAdjustmentApplication.update).mockResolvedValue({
-      ...app,
-      isReversed: true,
-    } as never)
-
-    const result = await reverseAdjustmentApplication('app-uuid-1')
-
-    expect(result.isReversed).toBe(true)
-    expect(vi.mocked(prisma.payrollAdjustmentApplication.update)).toHaveBeenCalledWith({
-      where: { id: 'app-uuid-1' },
-      data: { isReversed: true },
-    })
-  })
-
-  it('throws ALREADY_REVERSED for already-reversed applications', async () => {
-    const app = makeAdjApplication({ isReversed: true })
-    vi.mocked(prisma.payrollAdjustmentApplication.findUnique).mockResolvedValue(app as never)
-
-    await expect(reverseAdjustmentApplication('app-uuid-1')).rejects.toMatchObject({
-      code: 'ALREADY_REVERSED',
-    })
-  })
-})
-
-describe('approveSkippedAdjustment', () => {
-  it('approves a previously skipped application', async () => {
-    const app = makeAdjApplication({ approvalStatus: 'SKIPPED', isReversed: false })
-    vi.mocked(prisma.payrollAdjustmentApplication.findUnique).mockResolvedValue(app as never)
-    vi.mocked(prisma.payrollAdjustmentApplication.update).mockResolvedValue({
-      ...app,
-      approvalStatus: 'APPROVED',
-    } as never)
-
-    const result = await approveSkippedAdjustment('app-uuid-1')
-
-    expect(result.approvalStatus).toBe('APPROVED')
-    expect(vi.mocked(prisma.payrollAdjustmentApplication.update)).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'app-uuid-1' },
-        data: expect.objectContaining({ approvalStatus: 'APPROVED' }),
-      }),
-    )
-  })
-
-  it('throws CANNOT_APPROVE_NON_SKIPPED for non-skipped applications', async () => {
-    const app = makeAdjApplication({ approvalStatus: 'APPROVED' })
-    vi.mocked(prisma.payrollAdjustmentApplication.findUnique).mockResolvedValue(app as never)
-
-    await expect(approveSkippedAdjustment('app-uuid-1')).rejects.toMatchObject({
-      code: 'CANNOT_APPROVE_NON_SKIPPED',
-    })
-  })
-})
-
 // ─── US-08.3: Recalculate and create new revision ───────────────────────────
 
 describe('recalculateAndCreateRevision', () => {
@@ -269,6 +242,8 @@ describe('recalculateAndCreateRevision', () => {
       ...run,
       revisions: [revision],
     } as never)
+    // The current revision is read again inside the transaction, once the week is locked.
+    vi.mocked(prisma.payrollRevision.findFirst).mockResolvedValue(revision as never)
 
     vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue({
       id: 'upload-uuid-1',
@@ -310,20 +285,17 @@ describe('recalculateAndCreateRevision', () => {
     const newRevision = makeRevision({
       id: 'revision-uuid-2',
       revisionNumber: 2,
-      isCurrent: true,
+      status: 'DRAFT',
+      isCurrent: false,
     })
 
-    vi.mocked(prisma.payrollRevision.update).mockResolvedValue(revision as never)
     vi.mocked(prisma.payrollRevision.create).mockResolvedValue(newRevision as never)
     vi.mocked(prisma.payrollRunEmployee.createMany).mockResolvedValue({ count: 1 } as never)
     vi.mocked(prisma.payrollRun.update).mockResolvedValue({ ...run, currentRevisionNumber: 2 } as never)
 
-    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => {
-      if (Array.isArray(promises)) {
-        return Promise.all(promises)
-      }
-      return promises as never
-    })
+    // The draft is written in one interactive transaction; the transaction client is the mock client here.
+    vi.mocked(prisma.$transaction).mockImplementation((async (arg: unknown) =>
+      typeof arg === 'function' ? arg(prisma) : Promise.all(arg as Promise<unknown>[])) as never)
 
     return { newRevision }
   }
@@ -342,7 +314,7 @@ describe('recalculateAndCreateRevision', () => {
     expect(result.employeeCount).toBe(1)
   })
 
-  it('supersedes previous revision (isCurrent=false, status=SUPERSEDED)', async () => {
+  it('creates a DRAFT revision that is not current and leaves the current revision and the run untouched', async () => {
     setupRecalculateMocks()
 
     await recalculateAndCreateRevision({
@@ -354,12 +326,36 @@ describe('recalculateAndCreateRevision', () => {
     // Verify the transaction was called
     expect(prisma.$transaction).toHaveBeenCalled()
 
-    expect(prisma.payrollRevision.update).toHaveBeenCalledWith(
+    expect(prisma.payrollRevision.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'revision-uuid-1' },
-        data: { isCurrent: false, status: 'SUPERSEDED' },
+        data: expect.objectContaining({
+          revisionNumber: 2,
+          status: 'DRAFT',
+          isCurrent: false,
+          approvedAt: null,
+        }),
       }),
     )
+    // The current revision is superseded only by approveRevision
+    expect(prisma.payrollRevision.update).not.toHaveBeenCalled()
+    expect(prisma.payrollRevision.updateMany).not.toHaveBeenCalled()
+    expect(prisma.payrollRun.update).not.toHaveBeenCalled()
+    // Adjustment applications are re-pointed only when the revision is approved
+    expect(prisma.payrollAdjustmentApplication.updateMany).not.toHaveBeenCalled()
+  })
+
+  it('replaces an earlier draft instead of adding a second one', async () => {
+    setupRecalculateMocks()
+
+    await recalculateAndCreateRevision({
+      payrollRunId: 'run-uuid-1',
+      correctionReason: null,
+      correctionTypes: ['ADJUSTMENTS'],
+    })
+
+    expect(prisma.payrollRevision.deleteMany).toHaveBeenCalledWith({
+      where: { payrollRunId: 'run-uuid-1', status: 'DRAFT' },
+    })
   })
 
   it('stores correction reason on the new revision', async () => {
@@ -417,28 +413,60 @@ describe('recalculateAndCreateRevision', () => {
 // ─── US-08.4: Preview and approve revised payroll ───────────────────────────
 
 describe('approveRevision', () => {
-  it('sets status to APPROVED and sets approvedAt timestamp', async () => {
-    const revision = makeRevision({ status: 'APPROVED' as never, approvedAt: null })
-    vi.mocked(prisma.payrollRevision.findUnique).mockResolvedValue(revision as never)
+  // approveRevision runs in one interactive transaction; the transaction client is the mock client here.
+  function mockInteractiveTransaction() {
+    vi.mocked(prisma.$transaction).mockImplementation((async (arg: unknown) =>
+      typeof arg === 'function' ? arg(prisma) : Promise.all(arg as Promise<unknown>[])) as never)
+  }
 
-    const now = new Date()
-    vi.mocked(prisma.payrollRevision.update).mockResolvedValue({
-      ...revision,
-      status: 'APPROVED',
-      approvedAt: now,
-    } as never)
+  function makeDraft(overrides: Partial<PayrollRevision> = {}) {
+    return {
+      ...makeRevision({ id: 'revision-uuid-2', revisionNumber: 2, status: 'DRAFT', isCurrent: false, approvedAt: null, ...overrides }),
+      payrollRun: makePayrollRun(),
+    }
+  }
 
-    const result = await approveRevision('revision-uuid-1')
+  it('promotes the draft to the current approved revision and supersedes the one it replaces', async () => {
+    mockInteractiveTransaction()
+    vi.mocked(prisma.payrollRevision.findUnique).mockResolvedValue(makeDraft() as never)
+    vi.mocked(prisma.payrollCorrectionSession.findFirst).mockResolvedValue(null)
+    vi.mocked(prisma.payrollRevision.updateMany).mockResolvedValue({ count: 1 } as never)
+    vi.mocked(prisma.payrollRun.update).mockResolvedValue(makePayrollRun() as never)
+    // Everyone in the draft is paid, so no adjustment is carried forward.
+    vi.mocked(prisma.payrollRunEmployee.findMany).mockResolvedValue([{ employeeId: 'emp-uuid-1', additions: 0, deductions: 0 }] as never)
+    vi.mocked(prisma.payrollAdjustmentApplication.findMany).mockResolvedValue([])
+    vi.mocked(prisma.payrollAdjustmentApplication.updateMany).mockResolvedValue({ count: 0 } as never)
+
+    const result = await approveRevision('revision-uuid-2')
 
     expect(result.status).toBe('APPROVED')
     expect(result.approvedAt).toBeDefined()
-    expect(result.revisionNumber).toBe(1)
-    expect(vi.mocked(prisma.payrollRevision.update)).toHaveBeenCalledWith(
+    expect(result.revisionNumber).toBe(2)
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1)
+    expect(prisma.payrollRevision.updateMany).toHaveBeenCalledWith({
+      where: { id: 'revision-uuid-2', status: 'DRAFT' },
+      data: expect.objectContaining({ status: 'APPROVED', isCurrent: true, approvedAt: expect.any(Date) }),
+    })
+    expect(prisma.payrollRevision.updateMany).toHaveBeenCalledWith({
+      where: { payrollRunId: 'run-uuid-1', isCurrent: true, id: { not: 'revision-uuid-2' } },
+      data: { isCurrent: false, status: 'SUPERSEDED' },
+    })
+    expect(prisma.payrollRun.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'revision-uuid-1' },
-        data: expect.objectContaining({ status: 'APPROVED' }),
+        where: { id: 'run-uuid-1' },
+        data: expect.objectContaining({ currentRevisionNumber: 2, status: 'REVISED' }),
       }),
     )
+  })
+
+  it('throws REVISION_NOT_DRAFT for a revision that is not a draft', async () => {
+    vi.mocked(prisma.payrollRevision.findUnique).mockResolvedValue({
+      ...makeRevision({ status: 'APPROVED' }),
+      payrollRun: makePayrollRun(),
+    } as never)
+
+    await expect(approveRevision('revision-uuid-1')).rejects.toMatchObject({ code: 'REVISION_NOT_DRAFT' })
+    expect(prisma.$transaction).not.toHaveBeenCalled()
   })
 
   it('throws REVISION_NOT_FOUND for non-existent revision', async () => {
@@ -479,6 +507,16 @@ describe('getRevisionHistory', () => {
     const result = await getRevisionHistory('run-uuid-1')
 
     expect(result).toHaveLength(0)
+  })
+
+  it('does not list a draft revision', async () => {
+    vi.mocked(prisma.payrollRevision.findMany).mockResolvedValue([])
+
+    await getRevisionHistory('run-uuid-1')
+
+    expect(prisma.payrollRevision.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { payrollRunId: 'run-uuid-1', status: { not: 'DRAFT' } } }),
+    )
   })
 })
 

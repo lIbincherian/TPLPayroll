@@ -3,7 +3,14 @@ import * as XLSX from 'xlsx'
 
 import type { TDocumentDefinitions, Content } from 'pdfmake/interfaces'
 import JSZip from 'jszip'
-import { ReportServiceError, type PayrollSlipData, type DailyAttendanceRow } from '@/features/payroll-reports/types/report.types'
+import {
+  ReportServiceError,
+  type PayrollSlipData,
+  type DailyAttendanceRow,
+  type SlipAttendanceSource,
+} from '@/features/payroll-reports/types/report.types'
+import { formatPunchesCell, pairsFromStoredPunches } from '@/features/attendance-sync/lib/hours'
+import { toISODate } from '@/features/attendance-sync/lib/week'
 
 let fontsConfigured = false
 
@@ -110,8 +117,22 @@ export function buildSlipData(params: {
     overtimeOut: string | null
   }>
   generatedAt: Date
+  /** 'ETIMEOFFICE' weeks get the Punches layout; Excel-era weeks (or undefined) keep the six slot columns. */
+  attendanceSource?: SlipAttendanceSource
+  /** Complete punch pairs keyed by `${employee.id}|${YYYY-MM-DD}`. Only read for ETIMEOFFICE weeks. */
+  punchPairsByEmployeeDate?: Map<string, Array<{ in: string; out: string }>>
 }): PayrollSlipData {
-  const { runEmployee, weekStart, weekEnd, payrollRunId, payrollRevisionId, attendanceRecords, generatedAt } = params
+  const {
+    runEmployee,
+    weekStart,
+    weekEnd,
+    payrollRunId,
+    payrollRevisionId,
+    attendanceRecords,
+    generatedAt,
+    attendanceSource,
+    punchPairsByEmployeeDate,
+  } = params
   const { employee } = runEmployee
 
   const toNum = (val: number | { toNumber(): number }): number =>
@@ -125,9 +146,13 @@ export function buildSlipData(params: {
     const d = r.attendanceDate
     const day = d.toLocaleString('en-US', { weekday: 'long' })
     const date = `${d.getDate()} ${d.toLocaleString('en-US', { month: 'short' })}`
+    const pairs = punchPairsByEmployeeDate?.get(`${employee.id}|${toISODate(d)}`) ?? []
     return {
       day,
       date,
+      ...(attendanceSource === 'ETIMEOFFICE'
+        ? { punches: pairs.length > 0 ? formatPunchesCell(pairs) : '-' }
+        : {}),
       beforeNoonIn: r.beforeNoonIn,
       beforeNoonOut: r.beforeNoonOut,
       afternoonIn: r.afternoonIn,
@@ -161,6 +186,7 @@ export function buildSlipData(params: {
     payrollRunId,
     payrollRevisionId,
     employeeDbId: employee.id,
+    ...(attendanceSource ? { attendanceSource } : {}),
     dailyAttendance,
     regularHours,
     overtimeHours,
@@ -455,6 +481,25 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
   return { buffer, fileName }
 }
 
+/**
+ * The Punches cell: one Courier node per pair. pdfmake breaks lines after an en dash as
+ * well as after a space, so each pair is its own no-wrap node and a long day wraps only
+ * after a comma, never inside a pair.
+ */
+function punchesCell(punches: string | null | undefined): Record<string, unknown> {
+  const base = { font: 'Courier', alignment: 'left' }
+  if (!punches || punches === '-') return { ...base, text: '-' }
+
+  const pairs = punches.split(', ')
+  return {
+    ...base,
+    text: pairs.flatMap((pair, index) => [
+      { text: pair, noWrap: true },
+      ...(index < pairs.length - 1 ? [{ text: ', ' }] : []),
+    ]),
+  }
+}
+
 export async function generatePayrollSlipPdf(slip: PayrollSlipData): Promise<Buffer> {
   const weekStartDate = new Date(slip.weekStart)
   const weekEndDate = new Date(slip.weekEnd)
@@ -463,7 +508,11 @@ export async function generatePayrollSlipPdf(slip: PayrollSlipData): Promise<Buf
   const fmt = (d: Date) =>
     d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 
-  const attendanceTableBody = [
+  // API weeks show one Punches column; Excel-era weeks (and snapshots from before F12,
+  // which have no attendanceSource) keep the six In/Out columns unchanged.
+  const usePunchesLayout = slip.attendanceSource === 'ETIMEOFFICE'
+
+  const slotTableBody = [
     [
       { text: 'Day', style: 'tableHeader' },
       { text: 'Date', style: 'tableHeader' },
@@ -491,6 +540,29 @@ export async function generatePayrollSlipPdf(slip: PayrollSlipData): Promise<Buf
     [
       { text: 'TOTAL', colSpan: 8, bold: true, font: 'Helvetica', alignment: 'right' },
       {}, {}, {}, {}, {}, {}, {},
+      { text: formatHours(slip.regularHours), font: 'Courier', alignment: 'right', bold: true },
+      { text: formatHours(slip.overtimeHours), font: 'Courier', alignment: 'right', bold: true },
+    ],
+  ]
+
+  const punchesTableBody = [
+    [
+      { text: 'Day', style: 'tableHeader' },
+      { text: 'Date', style: 'tableHeader' },
+      { text: 'Punches', style: 'tableHeader' },
+      { text: 'Reg Hrs', style: 'tableHeader' },
+      { text: 'OT Hrs', style: 'tableHeader' },
+    ],
+    ...slip.dailyAttendance.map((row) => [
+      { text: row.day, font: 'Helvetica' },
+      { text: row.date, font: 'Helvetica' },
+      punchesCell(row.punches),
+      { text: formatHours(row.regularHours), font: 'Courier', alignment: 'right' },
+      { text: formatHours(row.overtimeHours), font: 'Courier', alignment: 'right' },
+    ]),
+    [
+      { text: 'TOTAL', colSpan: 3, bold: true, font: 'Helvetica', alignment: 'right' },
+      {}, {},
       { text: formatHours(slip.regularHours), font: 'Courier', alignment: 'right', bold: true },
       { text: formatHours(slip.overtimeHours), font: 'Courier', alignment: 'right', bold: true },
     ],
@@ -573,11 +645,17 @@ export async function generatePayrollSlipPdf(slip: PayrollSlipData): Promise<Buf
       },
       { text: 'ATTENDANCE', style: 'sectionHeader' },
       {
-        table: {
-          headerRows: 1,
-          widths: ['*', 'auto', 'auto', 'auto', 'auto', 'auto', 'auto', 'auto', 'auto', 'auto'],
-          body: attendanceTableBody,
-        },
+        table: usePunchesLayout
+          ? {
+              headerRows: 1,
+              widths: ['auto', 'auto', '*', 'auto', 'auto'],
+              body: punchesTableBody,
+            }
+          : {
+              headerRows: 1,
+              widths: ['*', 'auto', 'auto', 'auto', 'auto', 'auto', 'auto', 'auto', 'auto', 'auto'],
+              body: slotTableBody,
+            },
         layout: 'lightHorizontalLines',
         marginBottom: 10,
       } as Content,
@@ -603,6 +681,50 @@ export async function generatePayrollSlipPdf(slip: PayrollSlipData): Promise<Buf
   }
 
   return toPdfBuffer(docDef)
+}
+
+/**
+ * Complete punch pairs from the live punches, keyed by `${employeeId}|${YYYY-MM-DD}` and
+ * ordered by time. Deleted punches (no current time) and incomplete pairs are left out.
+ */
+async function loadPunchPairs(
+  uploadId: string,
+  employeeIds: string[],
+): Promise<Map<string, Array<{ in: string; out: string }>>> {
+  const rows = await prisma.attendancePunch.findMany({
+    where: {
+      attendanceUploadId: uploadId,
+      correctionId: null,
+      employeeId: { in: employeeIds },
+      currentTime: { not: null },
+    },
+    select: {
+      id: true,
+      employeeId: true,
+      punchDate: true,
+      pairIndex: true,
+      position: true,
+      source: true,
+      originalTime: true,
+      currentTime: true,
+      note: true,
+    },
+  })
+
+  const byDay = new Map<string, typeof rows>()
+  for (const row of rows) {
+    const key = `${row.employeeId}|${toISODate(row.punchDate)}`
+    byDay.set(key, [...(byDay.get(key) ?? []), row])
+  }
+
+  const result = new Map<string, Array<{ in: string; out: string }>>()
+  for (const [key, dayRows] of byDay) {
+    const pairs = pairsFromStoredPunches(dayRows)
+      .flatMap((pair) => (pair.in?.time && pair.out?.time ? [{ in: pair.in.time, out: pair.out.time }] : []))
+      .sort((a, b) => (a.in < b.in ? -1 : a.in > b.in ? 1 : 0))
+    if (pairs.length > 0) result.set(key, pairs)
+  }
+  return result
 }
 
 export async function generatePayrollSlipsZip(
@@ -659,6 +781,21 @@ export async function generatePayrollSlipsZip(
   const weekStart = run.payrollWeekStartDate
   const weekEnd = run.payrollWeekEndDate
 
+  // The week's source picks the slip layout. A week with no row keeps the six-column layout.
+  const upload = await prisma.attendanceUpload.findFirst({
+    where: {
+      payrollWeekStartDate: weekStart,
+      payrollWeekEndDate: weekEnd,
+      isActiveForPayrollWeek: true,
+    },
+    select: { id: true, source: true },
+  })
+  const attendanceSource: SlipAttendanceSource = upload?.source === 'ETIMEOFFICE' ? 'ETIMEOFFICE' : 'EXCEL'
+  const punchPairsByEmployeeDate =
+    upload && attendanceSource === 'ETIMEOFFICE'
+      ? await loadPunchPairs(upload.id, employeeIds)
+      : undefined
+
   const slips: PayrollSlipData[] = run.runEmployees.map((runEmployee) =>
     buildSlipData({
       runEmployee: {
@@ -693,6 +830,8 @@ export async function generatePayrollSlipsZip(
         overtimeOut: r.overtimeOut,
       })),
       generatedAt,
+      attendanceSource,
+      punchPairsByEmployeeDate,
     }),
   )
 

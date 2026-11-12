@@ -37,6 +37,9 @@ model Employee {
   payrollRunEmployees    PayrollRunEmployee[]
   invoiceSnapshots       InvoiceSnapshot[]
   documents              EmployeeDocument[]
+  attendancePunches      AttendancePunch[]
+  attendanceDecisions    AttendanceEmployeeDecision[]
+  codeExceptions         AttendanceCodeException[]
 }
 
 model EmployeeImportBatch {
@@ -73,19 +76,106 @@ model EmployeeWageHistory {
 }
 
 model AttendanceUpload {
-  id                     String   @id @default(uuid())
-  fileName               String
-  fileType               String
-  payrollWeekStartDate   DateTime
-  payrollWeekEndDate     DateTime
-  payrollWeekSource      String
-  status                 String
-  isActiveForPayrollWeek Boolean  @default(true)
+  id                     String    @id @default(uuid())
+  fileName               String? // Excel era only
+  fileType               String? // Excel era only
+  payrollWeekStartDate   DateTime // UTC midnight Thursday
+  payrollWeekEndDate     DateTime // UTC midnight Wednesday
+  payrollWeekSource      String // Excel: SHEET_CONTENT|FILE_NAME|MANUAL; API weeks: 'ETIMEOFFICE'
+  source                 String    @default("EXCEL") // 'EXCEL' | 'ETIMEOFFICE'
+  status                 String // EXCEL: 'READY'|'ERRORS'; ETIMEOFFICE: 'SYNC_FAILED'|'REVIEW'|'APPROVED'
+  isActiveForPayrollWeek Boolean   @default(true)
   uploadedBy             String?
-  uploadedAt             DateTime @default(now())
-  sourceStorageKey       String?  // Supabase Storage key (nullable for legacy rows)
+  uploadedAt             DateTime  @default(now())
+  sourceStorageKey       String? // Supabase Storage key (nullable for legacy rows)
+  lastSyncAttemptAt      DateTime?
+  lastSyncedAt           DateTime?
+  lastSyncError          String?
+  lastSyncTrigger        String? // 'SCHEDULED' | 'MANUAL'
+  staleNoticeAt          DateTime? // scheduled sync skipped because the week has edits/decisions
+  syncLockedAt           DateTime?
+  approvedAt             DateTime?
+  approvedLeftOutCount   Int? // employees the approval left out (zero hours or rejected), counted when the week was approved or a correction rebuilt its records; null = not approved, or approved before this column existed
+  activeWeekStart        DateTime? @unique // = payrollWeekStartDate while isActiveForPayrollWeek, else null. Postgres NULLs are distinct, so this is one active row per week. Any code that sets isActiveForPayrollWeek = false must null this too.
 
-  attendanceRecords AttendanceRecord[]
+  attendanceRecords  AttendanceRecord[]
+  punches            AttendancePunch[]
+  decisions          AttendanceEmployeeDecision[]
+  correctionSessions PayrollCorrectionSession[]
+}
+
+model AttendancePunch {
+  id                 String   @id @default(uuid())
+  attendanceUploadId String
+  correctionId       String? // null = live set; set = draft clone of a correction
+  clonedFromPunchId  String? // live punch this correction clone was copied from
+  employeeId         String? // null until the code is resolved
+  empCode            String
+  empName            String? // eTimeOffice name, reference only
+  matchStatus        String // 'MATCHED' | 'UNKNOWN' | 'DUPLICATE' | 'IGNORED'
+  punchDate          DateTime // UTC midnight of the wall-clock date
+  pairIndex          Int
+  position           String // 'IN' | 'OUT'
+  source             String // 'API' | 'MANUAL'
+  originalTime       String? // 'HH:mm' as received; null for MANUAL
+  currentTime        String? // 'HH:mm'; null = deleted
+  note               String?
+  mergedScansJson    Json? // string[] of 'HH:mm' scans merged into this punch
+  mcid               String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  attendanceUpload AttendanceUpload          @relation(fields: [attendanceUploadId], references: [id])
+  employee         Employee?                 @relation(fields: [employeeId], references: [id])
+  correction       PayrollCorrectionSession? @relation(fields: [correctionId], references: [id])
+
+  @@index([attendanceUploadId, correctionId, employeeId, punchDate])
+  @@index([attendanceUploadId, empCode])
+}
+
+model AttendanceEmployeeDecision {
+  id                 String   @id @default(uuid())
+  attendanceUploadId String
+  employeeId         String
+  reason             String // 'INACTIVE' | 'RESIGNED_BEFORE_WEEK'
+  decision           String // 'APPROVED' | 'REJECTED'
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  attendanceUpload AttendanceUpload @relation(fields: [attendanceUploadId], references: [id])
+  employee         Employee         @relation(fields: [employeeId], references: [id])
+
+  @@unique([attendanceUploadId, employeeId])
+}
+
+model AttendanceCodeException {
+  id         String    @id @default(uuid())
+  empCode    String    @unique
+  kind       String // 'MATCH' | 'IGNORE'
+  employeeId String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  employee   Employee? @relation(fields: [employeeId], references: [id])
+}
+
+model PayrollCorrectionSession {
+  id                     String    @id @default(uuid())
+  payrollRunId           String
+  attendanceUploadId     String
+  status                 String // 'IN_PROGRESS' | 'APPLIED' | 'ABANDONED'
+  correctionReason       String?
+  correctionTypesJson    Json // CorrectionType[]
+  adjustmentSnapshotJson Json? // [{ applicationId, approvalStatus, isReversed, approvedAt, skippedAt, appliedAt, appliedAmount?, carriedForwardToPayrollWeekStartDate? }]
+  draftRevisionId        String?
+  createdAt              DateTime  @default(now())
+  appliedAt              DateTime?
+  abandonedAt            DateTime?
+
+  payrollRun       PayrollRun        @relation(fields: [payrollRunId], references: [id])
+  attendanceUpload AttendanceUpload  @relation(fields: [attendanceUploadId], references: [id])
+  punches          AttendancePunch[]
+
+  @@index([payrollRunId, status])
 }
 
 model AttendanceRecord {
@@ -173,18 +263,20 @@ model PayrollRun {
   generatedAt           DateTime  @default(now())
   approvedAt            DateTime?
   invoicesGeneratedAt   DateTime?
+  approvedWeekStart     DateTime? @unique // = payrollWeekStartDate once status is APPROVED or REVISED, else null. Postgres NULLs are distinct, so this is one approved run per week.
 
   revisions              PayrollRevision[]
   adjustmentApplications PayrollAdjustmentApplication[]
   runEmployees           PayrollRunEmployee[]
   invoiceSnapshots       InvoiceSnapshot[]
+  correctionSessions     PayrollCorrectionSession[]
 }
 
 model PayrollRevision {
   id                  String    @id @default(uuid())
   payrollRunId        String
   revisionNumber      Int
-  status              String // "APPROVED", "SUPERSEDED"
+  status              String // "DRAFT", "APPROVED", "SUPERSEDED"
   correctionReason    String?
   totalRegularPay     Decimal   @db.Decimal(12, 2)
   totalOvertimePay    Decimal   @db.Decimal(12, 2)
@@ -239,26 +331,10 @@ model InvoiceSnapshot {
   employee        Employee        @relation(fields: [employeeId], references: [id])
 }
 
-model AttendanceUploadSession {
-  id              String   @id @default(uuid())
-  storageKey      String   // Supabase Storage key within attendance-files bucket
-  fileName        String
-  fileType        String
-  weekStart       String // YYYY-MM-DD
-  weekEnd         String // YYYY-MM-DD
-  weekSource      String // PayrollWeekSource value
-  decisionsJson   String // JSON: { verificationDecisions, manualMatchDecisions, rejectedBlockKeys }
-  pendingBlockKey String
-  expiresAt       DateTime
-  createdAt       DateTime @default(now())
-
-  @@index([expiresAt])
-}
-
 model AuditLog {
   id          String   @id @default(uuid())
-  actionType  String // "CREATE", "UPDATE", "DELETE"
-  entityType  String // "EMPLOYEE", "WAGE_HISTORY"
+  actionType  String // "CREATE", "UPDATE", "DELETE", "SYNC", "PULL", "APPROVE", "REOPEN", "DISCARD"
+  entityType  String // "EMPLOYEE", "WAGE_HISTORY", "ATTENDANCE_WEEK", "ATTENDANCE_PUNCH", "ATTENDANCE_DECISION", "ATTENDANCE_CODE"
   entityId    String
   detailsJson Json
   createdAt   DateTime @default(now())

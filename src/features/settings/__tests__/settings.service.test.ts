@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/prisma', () => ({
   default: {
     settings: {
+      findUnique: vi.fn(),
       upsert: vi.fn(),
       update: vi.fn(),
     },
@@ -31,21 +32,41 @@ describe('getSettings', () => {
     vi.clearAllMocks()
   })
 
-  it('returns current settings when payrollWeekStartDay = "MONDAY"', async () => {
-    // GIVEN existing record with MONDAY
-    vi.mocked(prisma.settings.upsert).mockResolvedValue(makeSettingsRecord('MONDAY') as never)
+  it('returns THURSDAY with fixed currency and expiry threshold, and writes nothing', async () => {
+    // GIVEN existing record with THURSDAY
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
 
     // WHEN
     const result = await getSettings()
 
-    // THEN payrollWeekStartDay is MONDAY with fixed fields
-    expect(result.payrollWeekStartDay).toBe('MONDAY')
+    // THEN payrollWeekStartDay is THURSDAY with fixed fields, and the read did not write the row
+    expect(result.payrollWeekStartDay).toBe('THURSDAY')
     expect(result.currency).toBe('INR')
     expect(result.docExpiryThresholdDays).toBe(7)
+    expect(prisma.settings.upsert).not.toHaveBeenCalled()
+    expect(prisma.settings.update).not.toHaveBeenCalled()
+  })
+
+  it('self-heals a stored non-Thursday value by upserting THURSDAY (F12 lock)', async () => {
+    // GIVEN MONDAY is stored, so the upsert is asked to write THURSDAY over it
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(makeSettingsRecord('MONDAY') as never)
+    vi.mocked(prisma.settings.upsert).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
+
+    // WHEN
+    await getSettings()
+
+    // THEN the update branch sets THURSDAY
+    expect(prisma.settings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'singleton' },
+        update: { payrollWeekStartDay: 'THURSDAY' },
+      }),
+    )
   })
 
   it('returns defaults (THURSDAY) when no record exists (upsert creates it)', async () => {
-    // GIVEN upsert creates a new record with default THURSDAY
+    // GIVEN no row is stored, and upsert creates a new record with default THURSDAY
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(null)
     vi.mocked(prisma.settings.upsert).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
 
     // WHEN
@@ -71,21 +92,27 @@ describe('updateSettings', () => {
     vi.clearAllMocks()
   })
 
-  it('saves new payrollWeekStartDay correctly (MONDAY → DB stores MONDAY)', async () => {
-    // GIVEN valid input with MONDAY
-    vi.mocked(prisma.settings.update).mockResolvedValue(makeSettingsRecord('MONDAY') as never)
+  it('rejects a change to the week start and makes no database write (US-12.36)', async () => {
+    // GIVEN the payroll week start is Thursday
+    // WHEN a change to MONDAY is requested
+    const rejection = updateSettings({ payrollWeekStartDay: 'MONDAY' })
+    await expect(rejection).rejects.toBeInstanceOf(SettingsServiceError)
+    await expect(rejection).rejects.toMatchObject({ code: 'WEEK_START_LOCKED' })
 
-    // WHEN
-    const result = await updateSettings({ payrollWeekStartDay: 'MONDAY' })
+    // THEN prisma.settings.update is not called
+    expect(prisma.settings.update).not.toHaveBeenCalled()
+  })
 
-    // THEN DB is called with MONDAY and result reflects it
-    expect(result.payrollWeekStartDay).toBe('MONDAY')
-    expect(prisma.settings.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'singleton' },
-        data: expect.objectContaining({ payrollWeekStartDay: 'MONDAY' }),
-      }),
-    )
+  it('treats a request for THURSDAY as a no-op that returns the current settings', async () => {
+    // GIVEN THURSDAY is stored
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
+
+    // WHEN THURSDAY is requested
+    const result = await updateSettings({ payrollWeekStartDay: 'THURSDAY' })
+
+    // THEN the current settings come back and nothing is updated
+    expect(result.payrollWeekStartDay).toBe('THURSDAY')
+    expect(prisma.settings.update).not.toHaveBeenCalled()
   })
 
   it('throws INVALID_DAY error when given invalid day', async () => {
@@ -100,19 +127,63 @@ describe('updateSettings', () => {
     // THEN prisma is not called
     expect(prisma.settings.update).not.toHaveBeenCalled()
   })
+})
 
-  it('returns updated value via getSettings after update', async () => {
-    // GIVEN update succeeds with WEDNESDAY
-    vi.mocked(prisma.settings.update).mockResolvedValue(makeSettingsRecord('WEDNESDAY') as never)
-    vi.mocked(prisma.settings.upsert).mockResolvedValue(makeSettingsRecord('WEDNESDAY') as never)
+// ─────────────────────────────────────────────────────────────────────────────
+// US-12.36: the payroll week start is locked to Thursday
+// ─────────────────────────────────────────────────────────────────────────────
 
-    // WHEN update is called
-    await updateSettings({ payrollWeekStartDay: 'WEDNESDAY' })
+describe('updateSettings — week start lock (F12)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
 
-    // AND getSettings is called subsequently
-    const current = await getSettings()
+  it.each(['MONDAY', 'TUESDAY', 'WEDNESDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'] as const)(
+    'rejects %s with WEEK_START_LOCKED and touches no table',
+    async (day) => {
+      await expect(updateSettings({ payrollWeekStartDay: day })).rejects.toMatchObject({
+        name: 'SettingsServiceError',
+        code: 'WEEK_START_LOCKED',
+        message: expect.stringMatching(/locked to Thursday/i),
+      })
 
-    // THEN the updated value is returned
-    expect(current.payrollWeekStartDay).toBe('WEDNESDAY')
+      // AC4: a rejected request makes no database change (no update, and not even the self-heal upsert).
+      expect(prisma.settings.update).not.toHaveBeenCalled()
+      expect(prisma.settings.upsert).not.toHaveBeenCalled()
+    },
+  )
+
+  it('rejects an unknown day name with VALIDATION_ERROR, not WEEK_START_LOCKED, and writes nothing', async () => {
+    await expect(updateSettings({ payrollWeekStartDay: 'funday' as never })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+    await expect(updateSettings({ payrollWeekStartDay: 'thursday' as never })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+    await expect(updateSettings({} as never)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+    await expect(updateSettings({ payrollWeekStartDay: undefined } as never)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+
+    expect(prisma.settings.update).not.toHaveBeenCalled()
+    expect(prisma.settings.upsert).not.toHaveBeenCalled()
+  })
+
+  it('a request for THURSDAY returns the stored settings through the self-healing read, with no write', async () => {
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(makeSettingsRecord('THURSDAY') as never)
+
+    const result = await updateSettings({ payrollWeekStartDay: 'THURSDAY' })
+
+    expect(result).toEqual({ payrollWeekStartDay: 'THURSDAY', currency: 'INR', docExpiryThresholdDays: 7 })
+    expect(prisma.settings.update).not.toHaveBeenCalled()
+    expect(prisma.settings.findUnique).toHaveBeenCalledTimes(1)
+    expect(prisma.settings.upsert).not.toHaveBeenCalled()
+  })
+
+  it('getSettings writes THURSDAY over a stored non-Thursday value and returns Thursday', async () => {
+    // The upsert's update branch is what fixes a stored MONDAY; the database returns the row after the write.
+    vi.mocked(prisma.settings.findUnique).mockResolvedValue(makeSettingsRecord('MONDAY') as never)
+    vi.mocked(prisma.settings.upsert).mockImplementation((async (args: { update: { payrollWeekStartDay: string } }) =>
+      makeSettingsRecord(args.update.payrollWeekStartDay)) as never)
+
+    const result = await getSettings()
+
+    expect(result.payrollWeekStartDay).toBe('THURSDAY')
+    const args = vi.mocked(prisma.settings.upsert).mock.calls[0][0]
+    expect(args.update).toEqual({ payrollWeekStartDay: 'THURSDAY' })
   })
 })

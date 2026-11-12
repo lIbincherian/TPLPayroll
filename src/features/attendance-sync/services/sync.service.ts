@@ -1,0 +1,427 @@
+import { Prisma, type AttendanceUpload } from '@prisma/client'
+import prisma from '@/lib/prisma'
+import { SYNC_LOCK_TTL_MS, TRANSACTION_TIMEOUT_MS } from '../lib/constants'
+import { ignoreScopeOf } from '../lib/matching'
+import { buildPunchRowsFromParsed } from '../lib/pairing'
+import { shouldScheduledSyncReplace } from '../lib/review'
+import { SYNC_FAILURE_COPY } from '../lib/etimeoffice/parser'
+import {
+  addDaysISO,
+  getCompletedPayrollWeek,
+  isFutureWeek,
+  isThursdayISO,
+  parseWeekId,
+  toISODate,
+  toUtcDate,
+  todayInIST,
+} from '../lib/week'
+import {
+  AttendanceSyncError,
+  type CodeExceptionLite,
+  type DiscardedEdit,
+  type DiscardSummary,
+  type EmployeeLite,
+  type ISODate,
+  type SyncFailureCode,
+  type SyncOutcome,
+  type SyncTrigger,
+  type WeekRange,
+} from '../types/attendance-sync.types'
+import { auditEntry } from './attendance-audit.service'
+import { fetchPunchData } from './etimeoffice.client'
+import { getOrCreateApiWeekRow, getWeekByStart } from './week-list.service'
+import { lockWeekRow } from './week-lock.service'
+
+const CREATE_MANY_CHUNK_SIZE = 1000
+const MAX_AUDITED_EDITS = 500
+
+// ─── Edits and decisions ──────────────────────────────────────────────────────
+
+interface EditsAndDecisions {
+  hasEdits: boolean
+  editedDays: number
+  decisions: number
+  /** Codes ignored for this week only (punches marked IGNORED with no saved IGNORE exception). */
+  ignoredCodes: number
+  edits: DiscardedEdit[]
+}
+
+/** Something the user did to this week that a new pull would throw away. */
+function hasWorkToLose(week: Pick<EditsAndDecisions, 'hasEdits' | 'decisions' | 'ignoredCodes'>): boolean {
+  return week.hasEdits || week.decisions > 0 || week.ignoredCodes > 0
+}
+
+/**
+ * Live punches that were edited or entered by hand, the week's employee decisions, and the codes
+ * ignored for this week only. A code ignored for every week is not counted: a new pull ignores it again.
+ * Pass the interactive transaction client as `db` to read inside the caller's transaction.
+ */
+export async function weekHasEditsOrDecisions(
+  uploadId: string,
+  db: Prisma.TransactionClient = prisma,
+): Promise<EditsAndDecisions> {
+  const punches = await db.attendancePunch.findMany({
+    where: { attendanceUploadId: uploadId, correctionId: null },
+    select: {
+      id: true,
+      employeeId: true,
+      empCode: true,
+      matchStatus: true,
+      punchDate: true,
+      position: true,
+      source: true,
+      originalTime: true,
+      currentTime: true,
+      note: true,
+      employee: { select: { employeeId: true } },
+    },
+  })
+  const decisions = await db.attendanceEmployeeDecision.count({ where: { attendanceUploadId: uploadId } })
+
+  // originalTime IS DISTINCT FROM currentTime, or a hand-entered punch.
+  const edited = punches.filter((p) => p.source === 'MANUAL' || p.originalTime !== p.currentTime)
+
+  const days = new Set(edited.map((p) => `${p.employeeId ?? `code:${p.empCode}`}|${toISODate(p.punchDate)}`))
+  const edits: DiscardedEdit[] = edited.map((p) => ({
+    punchId: p.id,
+    employeeCode: p.employee?.employeeId ?? null,
+    date: toISODate(p.punchDate),
+    position: p.position === 'OUT' ? 'OUT' : 'IN',
+    original: p.originalTime,
+    current: p.currentTime,
+    note: p.note,
+  }))
+
+  // Codes ignored for this week only: IGNORED punches whose code has no saved IGNORE exception.
+  const ignoredInWeek = [...new Set(punches.filter((p) => p.matchStatus === 'IGNORED').map((p) => p.empCode))]
+  const savedIgnores = (
+    ignoredInWeek.length === 0
+      ? []
+      : await db.attendanceCodeException.findMany({
+          where: { kind: 'IGNORE', empCode: { in: ignoredInWeek } },
+          select: { empCode: true, kind: true, employeeId: true },
+        })
+  ) as CodeExceptionLite[]
+  const ignoredCodes = ignoredInWeek.filter((code) => ignoreScopeOf(code, savedIgnores) === 'WEEK').length
+
+  return { hasEdits: edited.length > 0, editedDays: days.size, decisions, ignoredCodes, edits }
+}
+
+/**
+ * Thrown inside the replace transaction of a SCHEDULED pull when the locked read finds edits or
+ * decisions that the pre-fetch check did not see. Never leaves syncWeek: it rolls the transaction
+ * back and is turned into the SKIPPED_HAS_EDITS outcome.
+ */
+class ScheduledSkip extends Error {
+  constructor(readonly edits: EditsAndDecisions) {
+    super('Scheduled sync: the week has edits or decisions')
+  }
+}
+
+export async function getPullWarning(
+  weekStart: ISODate,
+): Promise<{ hasData: boolean; editedDays: number; decisions: number; ignoredCodes: number }> {
+  const row = await getWeekByStart(toUtcDate(weekStart))
+  if (!row || row.source === 'EXCEL') return { hasData: false, editedDays: 0, decisions: 0, ignoredCodes: 0 }
+
+  const [punchCount, edits] = await Promise.all([
+    prisma.attendancePunch.count({ where: { attendanceUploadId: row.id, correctionId: null } }),
+    weekHasEditsOrDecisions(row.id),
+  ])
+  return {
+    hasData: punchCount > 0,
+    editedDays: edits.editedDays,
+    decisions: edits.decisions,
+    ignoredCodes: edits.ignoredCodes,
+  }
+}
+
+// ─── Sync ─────────────────────────────────────────────────────────────────────
+
+function auditActionFor(trigger: SyncTrigger): 'SYNC' | 'PULL' {
+  return trigger === 'MANUAL' ? 'PULL' : 'SYNC'
+}
+
+function triggerLabel(trigger: SyncTrigger): string {
+  return trigger === 'MANUAL' ? 'Pull' : 'Sync'
+}
+
+async function recordScheduledSkip(
+  entityId: string,
+  week: WeekRange,
+  outcome: SyncOutcome['outcome'],
+  summary: string,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  await auditEntry({
+    actionType: 'SYNC',
+    entityType: 'ATTENDANCE_WEEK',
+    entityId,
+    details: { summary, outcome, trigger: 'SCHEDULED', weekStart: week.start, weekEnd: week.end, ...extra },
+  })
+}
+
+/**
+ * Load one Thursday–Wednesday week from eTimeOffice and replace what was there.
+ * Nothing is written unless the whole response loads. A failure leaves earlier
+ * punches, edits and decisions in place and only records the error.
+ */
+export async function syncWeek(input: {
+  week: WeekRange
+  trigger: SyncTrigger
+  now?: Date
+}): Promise<SyncOutcome> {
+  const { week, trigger } = input
+  const now = input.now ?? new Date()
+  const today = todayInIST(now)
+
+  if (!isThursdayISO(week.start) || week.end !== addDaysISO(week.start, 6)) {
+    throw new AttendanceSyncError('INVALID_WEEK', 'A payroll week runs Thursday to Wednesday.')
+  }
+  if (isFutureWeek(week, today)) {
+    throw new AttendanceSyncError('FUTURE_WEEK', "This week hasn't started yet.")
+  }
+
+  let row: AttendanceUpload
+  try {
+    row = await getOrCreateApiWeekRow(week)
+  } catch (error) {
+    if (trigger === 'SCHEDULED' && error instanceof AttendanceSyncError && error.code === 'EXCEL_ERA_WEEK') {
+      const excelRow = await getWeekByStart(toUtcDate(week.start))
+      await recordScheduledSkip(
+        excelRow?.id ?? week.start,
+        week,
+        'SKIPPED_EXCEL_ERA',
+        'Scheduled sync skipped: week was imported from Excel',
+      )
+      return { outcome: 'SKIPPED_EXCEL_ERA' }
+    }
+    throw error
+  }
+
+  if (row.status === 'APPROVED') {
+    if (trigger === 'MANUAL') {
+      throw new AttendanceSyncError('WEEK_APPROVED', 'This week is approved. Reopen it before pulling.')
+    }
+    await recordScheduledSkip(row.id, week, 'SKIPPED_APPROVED', 'Scheduled sync skipped: week is approved')
+    return { outcome: 'SKIPPED_APPROVED' }
+  }
+
+  const approvedRun = await prisma.payrollRun.findFirst({
+    where: { payrollWeekStartDate: toUtcDate(week.start), status: { in: ['APPROVED', 'REVISED'] } },
+    select: { id: true },
+  })
+  if (approvedRun) {
+    if (trigger === 'MANUAL') {
+      throw new AttendanceSyncError(
+        'PAYROLL_ALREADY_APPROVED',
+        "Payroll for this week is approved. Use Correct on the payroll run to change attendance.",
+      )
+    }
+    await recordScheduledSkip(row.id, week, 'SKIPPED_PAYROLL_APPROVED', 'Scheduled sync skipped: payroll is approved')
+    return { outcome: 'SKIPPED_PAYROLL_APPROVED' }
+  }
+
+  // A scheduled pull leaves a week with edits or decisions alone. This check runs without the week
+  // lock and saves the API call in the common case; the replace transaction repeats it under the lock.
+  if (trigger === 'SCHEDULED') {
+    const edits = await weekHasEditsOrDecisions(row.id)
+    if (!shouldScheduledSyncReplace({ hasEditsOrDecisions: hasWorkToLose(edits), status: 'REVIEW' })) {
+      await prisma.attendanceUpload.update({ where: { id: row.id }, data: { staleNoticeAt: now } })
+      await recordScheduledSkip(row.id, week, 'SKIPPED_HAS_EDITS', 'Scheduled sync skipped: week has edits', {
+        editedDays: edits.editedDays,
+        decisions: edits.decisions,
+        ignoredCodes: edits.ignoredCodes,
+      })
+      return { outcome: 'SKIPPED_HAS_EDITS' }
+    }
+  }
+
+  // Take the sync lock. A second caller (cron vs manual) is turned away; a stale lock expires.
+  // maxDuration (120 s) < SYNC_LOCK_TTL_MS (300 s), so a running pull can never lose its lock
+  // to a TTL takeover.
+  const lock = await prisma.attendanceUpload.updateMany({
+    where: {
+      id: row.id,
+      OR: [{ syncLockedAt: null }, { syncLockedAt: { lt: new Date(now.getTime() - SYNC_LOCK_TTL_MS) } }],
+    },
+    data: { syncLockedAt: now, lastSyncAttemptAt: now, lastSyncTrigger: trigger },
+  })
+  if (lock.count === 0) {
+    throw new AttendanceSyncError('SYNC_IN_PROGRESS', 'A pull for this week is already running.')
+  }
+
+  let lockReleased = false
+  const recordFailure = async (code: SyncFailureCode, message: string): Promise<SyncOutcome> => {
+    // Status is left as it is: REVIEW if punches exist, SYNC_FAILED otherwise.
+    await prisma.$transaction([
+      prisma.attendanceUpload.update({
+        where: { id: row.id },
+        data: { lastSyncError: message, syncLockedAt: null },
+      }),
+      auditEntry({
+        actionType: auditActionFor(trigger),
+        entityType: 'ATTENDANCE_WEEK',
+        entityId: row.id,
+        details: {
+          summary: `${triggerLabel(trigger)} failed: ${message}`,
+          outcome: 'FAILED',
+          code,
+          message,
+          trigger,
+          weekStart: week.start,
+          weekEnd: week.end,
+        },
+      }),
+    ])
+    lockReleased = true
+    return { outcome: 'FAILED', code, message }
+  }
+
+  try {
+    const result = await fetchPunchData(week)
+    if (!result.ok) return await recordFailure(result.code, result.message)
+
+    const [employees, exceptions] = await Promise.all([
+      prisma.employee.findMany({
+        select: { id: true, employeeId: true, employeeName: true, isActive: true, dateOfResignation: true },
+      }) as Promise<EmployeeLite[]>,
+      prisma.attendanceCodeException.findMany({
+        select: { empCode: true, kind: true, employeeId: true },
+      }) as Promise<CodeExceptionLite[]>,
+    ])
+
+    // Built fully in memory so a partial response can never be half-saved.
+    const rows = buildPunchRowsFromParsed(result.punches, employees, exceptions, week)
+    if (rows.length === 0) return await recordFailure('EMPTY', SYNC_FAILURE_COPY.EMPTY)
+
+    const codeStatus = new Map(rows.map((r) => [r.empCode, r.matchStatus]))
+    const codesWith = (status: string) => [...codeStatus.entries()].filter(([, s]) => s === status).map(([code]) => code)
+    let discarded: DiscardSummary | null = null
+
+    try {
+      await prisma.$transaction(
+        async (tx) => {
+          // Everything that changes the week takes this row lock first. The week may have been
+          // approved, or edited, while the API call was running; look again now that no other
+          // writer can interleave, and replace nothing if the week is no longer in review.
+          const locked = await lockWeekRow(tx, { id: row.id })
+          if (!locked || locked.status === 'APPROVED') {
+            throw new AttendanceSyncError('WEEK_APPROVED', SYNC_FAILURE_COPY.WEEK_CHANGED)
+          }
+
+          // What is about to be thrown away, read after the lock so it matches what is deleted.
+          const discard = await weekHasEditsOrDecisions(row.id, tx)
+          // The pre-fetch check ran without the lock; an edit may have landed while the API call ran.
+          // A scheduled pull never replaces edits (a manual one has been confirmed by the user).
+          if (
+            trigger === 'SCHEDULED' &&
+            !shouldScheduledSyncReplace({ hasEditsOrDecisions: hasWorkToLose(discard), status: 'REVIEW' })
+          ) {
+            throw new ScheduledSkip(discard)
+          }
+          discarded =
+            discard.editedDays > 0 || discard.decisions > 0 || discard.ignoredCodes > 0
+              ? {
+                  editedDays: discard.editedDays,
+                  decisions: discard.decisions,
+                  ignoredCodes: discard.ignoredCodes,
+                  edits: discard.edits.slice(0, MAX_AUDITED_EDITS),
+                }
+              : null
+
+          await tx.attendancePunch.deleteMany({ where: { attendanceUploadId: row.id, correctionId: null } })
+          await tx.attendanceEmployeeDecision.deleteMany({ where: { attendanceUploadId: row.id } })
+          // Defensive: a week in review has no attendance records.
+          await tx.attendanceRecord.deleteMany({ where: { attendanceUploadId: row.id } })
+
+          for (let i = 0; i < rows.length; i += CREATE_MANY_CHUNK_SIZE) {
+            await tx.attendancePunch.createMany({
+              data: rows.slice(i, i + CREATE_MANY_CHUNK_SIZE).map((r) => ({
+                ...r,
+                attendanceUploadId: row.id,
+                mergedScansJson: r.mergedScansJson ?? Prisma.DbNull,
+              })),
+            })
+          }
+
+          await tx.attendanceUpload.update({
+            where: { id: row.id },
+            data: {
+              status: 'REVIEW',
+              lastSyncedAt: now,
+              lastSyncError: null,
+              staleNoticeAt: null,
+              syncLockedAt: null,
+              approvedAt: null,
+            },
+          })
+
+          await auditEntry(
+            {
+              actionType: auditActionFor(trigger),
+              entityType: 'ATTENDANCE_WEEK',
+              entityId: row.id,
+              details: {
+                summary: `${triggerLabel(trigger)} loaded ${rows.length} punches`,
+                outcome: 'LOADED',
+                trigger,
+                weekStart: week.start,
+                weekEnd: week.end,
+                punchCount: rows.length,
+                scanCount: result.punches.length,
+                codes: codeStatus.size,
+                unknownCodes: codesWith('UNKNOWN'),
+                duplicateCodes: codesWith('DUPLICATE'),
+                ignoredCodes: codesWith('IGNORED'),
+                discarded: {
+                  editedDays: discard.editedDays,
+                  decisions: discard.decisions,
+                  ignoredCodes: discard.ignoredCodes,
+                  edits: discarded?.edits ?? [],
+                },
+              },
+            },
+            tx,
+          )
+        },
+        { timeout: TRANSACTION_TIMEOUT_MS },
+      )
+      lockReleased = true
+    } catch (error) {
+      if (error instanceof ScheduledSkip) {
+        await prisma.attendanceUpload.update({ where: { id: row.id }, data: { staleNoticeAt: now, syncLockedAt: null } })
+        lockReleased = true
+        await recordScheduledSkip(row.id, week, 'SKIPPED_HAS_EDITS', 'Scheduled sync skipped: week has edits', {
+          editedDays: error.edits.editedDays,
+          decisions: error.edits.decisions,
+          ignoredCodes: error.edits.ignoredCodes,
+        })
+        return { outcome: 'SKIPPED_HAS_EDITS' }
+      }
+      if (error instanceof AttendanceSyncError && error.code === 'WEEK_APPROVED') {
+        return await recordFailure('WEEK_CHANGED', SYNC_FAILURE_COPY.WEEK_CHANGED)
+      }
+      console.error('[AttendanceSync] Saving the pulled punches failed:', error instanceof Error ? error.message : error)
+      return await recordFailure('SYNC_FAILED', SYNC_FAILURE_COPY.SYNC_FAILED)
+    }
+
+    return { outcome: 'LOADED', punchCount: rows.length, discarded }
+  } finally {
+    if (!lockReleased) {
+      await prisma.attendanceUpload
+        .update({ where: { id: row.id }, data: { syncLockedAt: null } })
+        .catch(() => undefined)
+    }
+  }
+}
+
+export async function runScheduledSync(now: Date = new Date()): Promise<SyncOutcome> {
+  return syncWeek({ week: getCompletedPayrollWeek(now), trigger: 'SCHEDULED', now })
+}
+
+export async function pullNow(weekStart: ISODate): Promise<SyncOutcome> {
+  const week = parseWeekId(weekStart)
+  if (!week) throw new AttendanceSyncError('INVALID_WEEK', 'A payroll week starts on a Thursday.')
+  return syncWeek({ week, trigger: 'MANUAL' })
+}

@@ -36,17 +36,16 @@ export async function getLatestPayrollTotal(): Promise<number> {
 }
 
 /**
- * Returns the count of active attendance uploads that have blocking errors.
- * An upload is considered to have blocking errors if its status is not
- * 'PROCESSED' or 'CLEAN' (i.e., it is in an error or unresolved state).
+ * Returns the count of eTimeOffice attendance weeks that still need the owner's attention:
+ * weeks whose sync failed, and weeks pulled but not yet approved. Excel-era weeks are
+ * read-only and never counted.
  */
-export async function countPendingAttendanceErrors(): Promise<number> {
+export async function countAttendanceWeeksAwaitingReview(): Promise<number> {
   return prisma.attendanceUpload.count({
     where: {
       isActiveForPayrollWeek: true,
-      status: {
-        notIn: ['PROCESSED', 'CLEAN', 'COMPLETED'],
-      },
+      source: 'ETIMEOFFICE',
+      status: { in: ['SYNC_FAILED', 'REVIEW'] },
     },
   })
 }

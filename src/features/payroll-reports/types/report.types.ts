@@ -9,7 +9,11 @@ export interface DailyAttendanceRow {
   overtimeOut: string | null
   regularHours: number
   overtimeHours: number
+  /** API weeks: "07:40–13:04, 13:56–17:47", or "-" when the day has no punches. Absent on Excel-era slips. */
+  punches?: string | null
 }
+
+export type SlipAttendanceSource = 'EXCEL' | 'ETIMEOFFICE'
 
 export interface PayrollSlipData {
   employeeCode: string
@@ -23,6 +27,8 @@ export interface PayrollSlipData {
   payrollRunId: string
   payrollRevisionId: string
   employeeDbId: string
+  /** Which layout the slip uses. Absent on snapshots from before F12, which keep the six-column layout. */
+  attendanceSource?: SlipAttendanceSource
   dailyAttendance: DailyAttendanceRow[]
   regularHours: number
   overtimeHours: number

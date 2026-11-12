@@ -68,17 +68,33 @@ describe('updateSettingsAction', () => {
     vi.clearAllMocks()
   })
 
-  it('with valid input returns ok result', async () => {
-    // GIVEN service returns updated MONDAY settings
-    vi.mocked(updateSettings).mockResolvedValue(makeAppSettings('MONDAY'))
+  it('with THURSDAY (the locked value) returns ok result', async () => {
+    // GIVEN service returns THURSDAY settings
+    vi.mocked(updateSettings).mockResolvedValue(makeAppSettings('THURSDAY'))
+
+    // WHEN
+    const result = await updateSettingsAction({ payrollWeekStartDay: 'THURSDAY' })
+
+    // THEN result is ok with THURSDAY
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.payrollWeekStartDay).toBe('THURSDAY')
+    }
+  })
+
+  it('returns { ok: false } with WEEK_START_LOCKED for a change to the week start (US-12.36)', async () => {
+    // GIVEN service rejects the change because the week start is locked
+    vi.mocked(updateSettings).mockRejectedValue(
+      new SettingsServiceError('WEEK_START_LOCKED', 'The payroll week start is locked to Thursday and cannot be changed.'),
+    )
 
     // WHEN
     const result = await updateSettingsAction({ payrollWeekStartDay: 'MONDAY' })
 
-    // THEN result is ok with MONDAY
-    expect(result.ok).toBe(true)
-    if (result.ok) {
-      expect(result.data.payrollWeekStartDay).toBe('MONDAY')
+    // THEN result is an error carrying the lock code
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe('WEEK_START_LOCKED')
     }
   })
 
@@ -89,7 +105,7 @@ describe('updateSettingsAction', () => {
     )
 
     // WHEN
-    const result = await updateSettingsAction({ payrollWeekStartDay: 'MONDAY' })
+    const result = await updateSettingsAction({ payrollWeekStartDay: 'THURSDAY' })
 
     // THEN result is an error with code
     expect(result.ok).toBe(false)

@@ -1,25 +1,30 @@
 import { test, expect } from '@playwright/test'
 import prisma from '../../src/lib/prisma'
-import { cleanupDatabase } from '../utils/db'
+import { cleanupTestData } from '../utils/db'
+
+// The directory lists every employee, and the real-data base has hundreds. These 12 test employees all have an ID
+// starting with "E2E-DIR-", so every test searches for that prefix first: the sorting, filtering and pagination
+// below then run on exactly these rows, whatever else the database holds.
+const SCOPE = 'E2E-DIR'
 
 test.beforeAll(async () => {
-  // 1. Cleanup existing database records
-  await cleanupDatabase()
+  // 1. Remove the test namespace (never the real data)
+  await cleanupTestData()
 
   // 2. Seed 12 employees with precise names, designations, sites, and statuses
   const employeesData = [
-    { employeeId: 'EMP001', employeeName: 'Amit Sharma', designation: 'Security Officer', site: 'North Gate', isActive: true, dateOfResignation: null },
-    { employeeId: 'EMP002', employeeName: 'Bala Krishnan', designation: 'Security Guard', site: 'South Gate', isActive: false, dateOfResignation: null },
-    { employeeId: 'EMP003', employeeName: 'Chitra Nair', designation: 'Security Guard', site: 'East Gate', isActive: true, dateOfResignation: new Date('2025-03-01T00:00:00Z') },
-    { employeeId: 'EMP004', employeeName: 'Deepak Sen', designation: 'Supervisor', site: 'North Gate', isActive: true, dateOfResignation: null },
-    { employeeId: 'EMP005', employeeName: 'Esha Gupta', designation: 'Supervisor', site: 'South Gate', isActive: true, dateOfResignation: null },
-    { employeeId: 'EMP006', employeeName: 'Farhan Syed', designation: 'Security Guard', site: 'East Gate', isActive: true, dateOfResignation: null },
-    { employeeId: 'EMP007', employeeName: 'Gita Patel', designation: 'Security Guard', site: 'North Gate', isActive: true, dateOfResignation: null },
-    { employeeId: 'EMP008', employeeName: 'Hari Prasad', designation: 'Security Officer', site: 'South Gate', isActive: true, dateOfResignation: null },
-    { employeeId: 'EMP009', employeeName: 'Indira Devi', designation: 'Security Guard', site: 'East Gate', isActive: true, dateOfResignation: null },
-    { employeeId: 'EMP010', employeeName: 'Jatin Shah', designation: 'Supervisor', site: 'North Gate', isActive: true, dateOfResignation: null },
-    { employeeId: 'EMP011', employeeName: 'Kiran Rao', designation: 'Security Guard', site: 'South Gate', isActive: true, dateOfResignation: null },
-    { employeeId: 'EMP012', employeeName: 'Lata Mangesh', designation: 'Security Guard', site: 'East Gate', isActive: true, dateOfResignation: null },
+    { employeeId: 'E2E-DIR-9001', employeeName: 'Amit Sharma', designation: 'Security Officer', site: 'North Gate', isActive: true, dateOfResignation: null },
+    { employeeId: 'E2E-DIR-9002', employeeName: 'Bala Krishnan', designation: 'Security Guard', site: 'South Gate', isActive: false, dateOfResignation: null },
+    { employeeId: 'E2E-DIR-9003', employeeName: 'Chitra Nair', designation: 'Security Guard', site: 'East Gate', isActive: true, dateOfResignation: new Date('2025-03-01T00:00:00Z') },
+    { employeeId: 'E2E-DIR-9004', employeeName: 'Deepak Sen', designation: 'Supervisor', site: 'North Gate', isActive: true, dateOfResignation: null },
+    { employeeId: 'E2E-DIR-9005', employeeName: 'Esha Gupta', designation: 'Supervisor', site: 'South Gate', isActive: true, dateOfResignation: null },
+    { employeeId: 'E2E-DIR-9006', employeeName: 'Farhan Syed', designation: 'Security Guard', site: 'East Gate', isActive: true, dateOfResignation: null },
+    { employeeId: 'E2E-DIR-9007', employeeName: 'Gita Patel', designation: 'Security Guard', site: 'North Gate', isActive: true, dateOfResignation: null },
+    { employeeId: 'E2E-DIR-9008', employeeName: 'Hari Prasad', designation: 'Security Officer', site: 'South Gate', isActive: true, dateOfResignation: null },
+    { employeeId: 'E2E-DIR-9009', employeeName: 'Indira Devi', designation: 'Security Guard', site: 'East Gate', isActive: true, dateOfResignation: null },
+    { employeeId: 'E2E-DIR-9010', employeeName: 'Jatin Shah', designation: 'Supervisor', site: 'North Gate', isActive: true, dateOfResignation: null },
+    { employeeId: 'E2E-DIR-9011', employeeName: 'Kiran Rao', designation: 'Security Guard', site: 'South Gate', isActive: true, dateOfResignation: null },
+    { employeeId: 'E2E-DIR-9012', employeeName: 'Lata Mangesh', designation: 'Security Guard', site: 'East Gate', isActive: true, dateOfResignation: null },
   ]
 
   for (const empData of employeesData) {
@@ -47,9 +52,11 @@ test.beforeAll(async () => {
 test.describe('E02: Sorting, Filtering, and Pagination E2E Tests', () => {
 
   test.beforeEach(async ({ page }) => {
-    // Navigate to Team Directory page
+    // Navigate to Team Directory page, then narrow it to this spec's own employees
     await page.goto('/employees')
     await expect(page.locator('h1:has-text("Team Directory")')).toBeVisible({ timeout: 10000 })
+    await page.locator('#employee-search').fill(SCOPE)
+    await expect(page.locator('text=Showing 1–10 of 12')).toBeVisible({ timeout: 10000 })
   })
 
   // ─── Column Sorting ───────────────────────────────────────────────────────
@@ -81,16 +88,16 @@ test.describe('E02: Sorting, Filtering, and Pagination E2E Tests', () => {
     await page.waitForTimeout(500)
 
     const rows = page.locator('tbody tr')
-    await expect(rows.nth(0).locator('td').nth(1)).toHaveText('EMP001')
-    await expect(rows.nth(1).locator('td').nth(1)).toHaveText('EMP002')
+    await expect(rows.nth(0).locator('td').nth(1)).toHaveText('E2E-DIR-9001')
+    await expect(rows.nth(1).locator('td').nth(1)).toHaveText('E2E-DIR-9002')
 
     // Click ID column header again to sort by ID descending
     await idHeader.click()
     await page.waitForTimeout(500)
 
-    // With 12 seeded employees, EMP012 is top, then EMP011, etc.
-    await expect(rows.nth(0).locator('td').nth(1)).toHaveText('EMP012')
-    await expect(rows.nth(1).locator('td').nth(1)).toHaveText('EMP011')
+    // With 12 seeded employees, E2E-DIR-9012 is top, then E2E-DIR-9011, etc.
+    await expect(rows.nth(0).locator('td').nth(1)).toHaveText('E2E-DIR-9012')
+    await expect(rows.nth(1).locator('td').nth(1)).toHaveText('E2E-DIR-9011')
   })
 
   test('E2E-02.3: Sorting resets page to 1 and clears selections', async ({ page }) => {

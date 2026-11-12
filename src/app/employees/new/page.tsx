@@ -1,6 +1,6 @@
 import { AppShell } from '@/components/layout/AppShell'
 import { EmployeeForm } from '@/features/employee-management/components/EmployeeForm'
-import { getAttendanceUploadSessionAction } from '@/features/attendance-upload/actions/session.actions'
+import { buildCreateReturnContext } from '@/features/employee-management/lib/return-context'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,27 +11,16 @@ export const metadata = {
 }
 
 interface Props {
-  searchParams: Promise<{ attendanceSession?: string; returnTo?: string }>
+  // The attendance employee check sends returnTo, the eTimeOffice name and the code.
+  searchParams: Promise<{ returnTo?: string; name?: string; code?: string }>
 }
 
 export default async function NewEmployeePage({ searchParams }: Props) {
-  const { attendanceSession, returnTo } = await searchParams
-
-  let returnContext: { sessionId: string; sheetEmployeeName: string; returnTo?: string } | undefined
-  if (attendanceSession) {
-    const result = await getAttendanceUploadSessionAction(attendanceSession)
-    if (result.ok && result.data) {
-      returnContext = {
-        sessionId: attendanceSession,
-        sheetEmployeeName: result.data.pendingSheetEmployeeName,
-        returnTo: returnTo,
-      }
-    }
-  }
+  const { returnTo, name, code } = await searchParams
 
   return (
     <AppShell>
-      <EmployeeForm mode="create" returnContext={returnContext} />
+      <EmployeeForm mode="create" returnContext={buildCreateReturnContext({ returnTo, name, code })} />
     </AppShell>
   )
 }

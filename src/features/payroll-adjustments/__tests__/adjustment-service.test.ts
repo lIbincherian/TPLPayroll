@@ -18,16 +18,24 @@ vi.mock('@/lib/prisma', () => ({
       create: vi.fn(),
       findUnique: vi.fn(),
       findFirst: vi.fn(),
-      findMany: vi.fn(),
+      // Also what the guard against a correction reads (the weeks of an adjustment's applications): none by default.
+      findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn(),
       updateMany: vi.fn(),
       deleteMany: vi.fn(),
       count: vi.fn(),
       aggregate: vi.fn(),
     },
+    // The guard against a correction: no correction is open unless a test says so.
+    payrollCorrectionSession: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
     $transaction: vi.fn(),
   },
 }))
+
+// The weekly approve and skip take the adjustment's row lock in a transaction; the lock itself needs a real database.
+vi.mock('@/features/payroll-adjustments/services/adjustment-lock.service', () => ({ lockAdjustmentRows: vi.fn() }))
 
 import _prisma from '@/lib/prisma'
 
@@ -64,6 +72,13 @@ import {
   getAdjustmentsForWeekReview,
 } from '@/features/payroll-adjustments/services/adjustment.service'
 import { AdjustmentServiceError } from '@/features/payroll-adjustments/types/adjustment.types'
+
+// The weekly approve and skip run in an interactive transaction: the mock client is the transaction client. Tests
+// of createAdjustment (an array of promises) set their own implementation inside the test.
+beforeEach(() => {
+  vi.mocked(prisma.$transaction).mockImplementation((async (arg: unknown) =>
+    typeof arg === 'function' ? arg(prisma) : Promise.all(arg as Promise<unknown>[])) as never)
+})
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

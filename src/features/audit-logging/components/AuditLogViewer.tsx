@@ -2,11 +2,15 @@
 
 import { useState, useEffect, Fragment } from 'react'
 import { ListChecks } from '@phosphor-icons/react'
+import type {
+  AuditActionType,
+  AuditEntityType,
+} from '@/features/audit-logging/types/audit-log.types'
 
 type AuditLogRecord = {
   id: string
-  actionType: 'CREATE' | 'UPDATE'
-  entityType: 'EMPLOYEE' | 'WAGE_HISTORY'
+  actionType: AuditActionType
+  entityType: AuditEntityType
   entityId: string
   detailsJson: Record<string, unknown>
   createdAt: string
@@ -41,11 +45,52 @@ function fullDateTime(dateStr: string): string {
   })
 }
 
-function entityLabel(entityType: 'EMPLOYEE' | 'WAGE_HISTORY'): string {
-  return entityType === 'EMPLOYEE' ? 'Employee' : 'Wage History'
+const ENTITY_LABELS: Record<AuditEntityType, string> = {
+  EMPLOYEE: 'Employee',
+  WAGE_HISTORY: 'Wage History',
+  ATTENDANCE_WEEK: 'Attendance week',
+  ATTENDANCE_PUNCH: 'Attendance punch',
+  ATTENDANCE_DECISION: 'Attendance decision',
+  ATTENDANCE_CODE: 'Attendance code',
+}
+
+const ACTION_LABELS: Record<AuditActionType, string> = {
+  CREATE: 'Create',
+  UPDATE: 'Update',
+  DELETE: 'Delete',
+  SYNC: 'Sync',
+  PULL: 'Pull',
+  APPROVE: 'Approve',
+  REOPEN: 'Reopen',
+  DISCARD: 'Discard',
+}
+
+const ACTION_BADGE_CLASSES: Record<AuditActionType, string> = {
+  CREATE: 'bg-emerald-50 text-emerald-700',
+  UPDATE: 'bg-sky-50 text-sky-700',
+  DELETE: 'bg-rose-50 text-rose-700',
+  SYNC: 'bg-zinc-100 text-zinc-600',
+  PULL: 'bg-violet-50 text-violet-700',
+  APPROVE: 'bg-emerald-600 text-white',
+  REOPEN: 'bg-amber-50 text-amber-700',
+  DISCARD: 'bg-rose-50 text-rose-700',
+}
+
+function entityLabel(entityType: AuditEntityType): string {
+  return ENTITY_LABELS[entityType] ?? entityType
+}
+
+function isAttendanceEntity(entityType: AuditEntityType): boolean {
+  return entityType.startsWith('ATTENDANCE_')
 }
 
 function summaryText(log: AuditLogRecord): string {
+  // Attendance entries (and any entry that carries one) provide their own summary line.
+  const provided = (log.detailsJson as Record<string, unknown>).summary
+  if (typeof provided === 'string' && provided.trim() !== '') return provided
+  if (isAttendanceEntity(log.entityType)) {
+    return `${entityLabel(log.entityType)} ${(ACTION_LABELS[log.actionType] ?? log.actionType).toLowerCase()}`
+  }
   if (log.actionType === 'CREATE') return 'New employee'
   if (log.entityType === 'WAGE_HISTORY') {
     const d = log.detailsJson as Record<string, unknown>
@@ -185,15 +230,18 @@ function EmptyState() {
 
 export function AuditLogViewer() {
   const [state, setState] = useState<State | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loadedKey, setLoadedKey] = useState<string | null>(null)
   const [entityType, setEntityType] = useState('')
   const [actionType, setActionType] = useState('')
   const [page, setPage] = useState(1)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
+  // The table is loading until the results for the current filters and page have arrived.
+  const requestKey = `${entityType}|${actionType}|${page}`
+  const loading = loadedKey !== requestKey
+
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- show the loading state synchronously when filters or page change, before the fetch starts
-    setLoading(true)
+    let cancelled = false
     const params = new URLSearchParams()
     if (entityType) params.set('entityType', entityType)
     if (actionType) params.set('actionType', actionType)
@@ -202,9 +250,13 @@ export function AuditLogViewer() {
     fetch(`/api/audit-logs?${params}`)
       .then(r => r.json())
       .then(data => {
+        if (cancelled) return
         setState(data)
-        setLoading(false)
+        setLoadedKey(`${entityType}|${actionType}|${page}`)
       })
+    return () => {
+      cancelled = true
+    }
   }, [entityType, actionType, page])
 
   const totalPages = state ? Math.ceil(state.totalCount / state.limit) : 1
@@ -234,6 +286,10 @@ export function AuditLogViewer() {
             <option value="">All Entities</option>
             <option value="EMPLOYEE">Employee</option>
             <option value="WAGE_HISTORY">Wage History</option>
+            <option value="ATTENDANCE_WEEK">Attendance week</option>
+            <option value="ATTENDANCE_PUNCH">Attendance punch</option>
+            <option value="ATTENDANCE_DECISION">Attendance decision</option>
+            <option value="ATTENDANCE_CODE">Attendance code</option>
           </select>
           <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
             <svg className="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -251,6 +307,12 @@ export function AuditLogViewer() {
             <option value="">All Actions</option>
             <option value="CREATE">Create</option>
             <option value="UPDATE">Update</option>
+            <option value="DELETE">Delete</option>
+            <option value="SYNC">Sync</option>
+            <option value="PULL">Pull</option>
+            <option value="APPROVE">Approve</option>
+            <option value="REOPEN">Reopen</option>
+            <option value="DISCARD">Discard</option>
           </select>
           <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
             <svg className="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -303,15 +365,11 @@ export function AuditLogViewer() {
 
                       {/* Action badge */}
                       <td className="px-6 py-4 whitespace-nowrap">
-                        {log.actionType === 'CREATE' ? (
-                          <span className="bg-emerald-50 text-emerald-700 rounded-full text-xs font-medium px-2 py-0.5">
-                            CREATE
-                          </span>
-                        ) : (
-                          <span className="bg-sky-50 text-sky-700 rounded-full text-xs font-medium px-2 py-0.5">
-                            UPDATE
-                          </span>
-                        )}
+                        <span
+                          className={`${ACTION_BADGE_CLASSES[log.actionType] ?? 'bg-zinc-100 text-zinc-600'} rounded-full text-xs font-medium px-2 py-0.5`}
+                        >
+                          {log.actionType}
+                        </span>
                       </td>
 
                       {/* Entity badge */}

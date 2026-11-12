@@ -1,6 +1,6 @@
-import { notFound } from 'next/navigation'
+import { notFound, redirect } from 'next/navigation'
 import prisma from '@/lib/prisma'
-import { getRevisionEmployees, getRevisionHistory } from '@/features/payroll-correction/services/correction.service'
+import { getActiveCorrection, getRevisionEmployees } from '@/features/payroll-correction/services/correction.service'
 import { RevisedPreview } from '@/features/payroll-correction/components/RevisedPreview'
 import { AppShell } from '@/components/layout/AppShell'
 
@@ -36,23 +36,44 @@ export default async function RevisedPreviewPage({ params }: Props) {
 
   if (!run) notFound()
 
+  // The preview shows the draft. The current revision stays current until the draft is approved.
+  const draftRevision = run.revisions.find((r) => r.status === 'DRAFT')
   const currentRevision = run.revisions.find((r) => r.isCurrent)
-  const previousRevision = run.revisions.find((r) => !r.isCurrent)
 
+  if (!draftRevision) redirect(`/payroll/run/${payrollRunId}/correct`)
   if (!currentRevision) notFound()
+
+  // Back goes to the punches when this was an Attendance correction, otherwise to the reason step.
+  const activeSession = await getActiveCorrection(payrollRunId)
+  const editsPunches = !!activeSession?.hasPunchClone
+  const backHref = editsPunches
+    ? `/payroll/run/${payrollRunId}/correct/punches`
+    : `/payroll/run/${payrollRunId}/correct`
+
+  // Editing punches clears the session's draft pointer, so a draft the session no longer points
+  // at was calculated from earlier punches. Show the punches again instead of a stale preview.
+  if (activeSession && activeSession.draftRevisionId !== draftRevision.id) redirect(backHref)
 
   const weekLabel = formatWeekRange(run.payrollWeekStartDate, run.payrollWeekEndDate)
 
-  // Fetch employee data with diffs
-  const employees = await getRevisionEmployees(
-    currentRevision.id,
-    previousRevision?.id,
-  )
+  // Fetch employee data with diffs against the current revision
+  const employees = await getRevisionEmployees(draftRevision.id, currentRevision.id)
 
-  // Current totals
+  // Draft totals
   const totals = {
     totalRegularHours: employees.reduce((s, e) => s + e.regularHours, 0),
     totalOvertimeHours: employees.reduce((s, e) => s + e.overtimeHours, 0),
+    totalRegularPay: Number(draftRevision.totalRegularPay),
+    totalOvertimePay: Number(draftRevision.totalOvertimePay),
+    totalAdditions: Number(draftRevision.totalAdditions),
+    totalDeductions: Number(draftRevision.totalDeductions),
+    totalNetPayable: Number(draftRevision.totalNetPayable),
+  }
+
+  // Current revision totals for diff display
+  const previousTotals = {
+    totalRegularHours: 0,
+    totalOvertimeHours: 0,
     totalRegularPay: Number(currentRevision.totalRegularPay),
     totalOvertimePay: Number(currentRevision.totalOvertimePay),
     totalAdditions: Number(currentRevision.totalAdditions),
@@ -60,29 +81,19 @@ export default async function RevisedPreviewPage({ params }: Props) {
     totalNetPayable: Number(currentRevision.totalNetPayable),
   }
 
-  // Previous totals for diff display
-  const previousTotals = previousRevision
-    ? {
-        totalRegularHours: 0,
-        totalOvertimeHours: 0,
-        totalRegularPay: Number(previousRevision.totalRegularPay),
-        totalOvertimePay: Number(previousRevision.totalOvertimePay),
-        totalAdditions: Number(previousRevision.totalAdditions),
-        totalDeductions: Number(previousRevision.totalDeductions),
-        totalNetPayable: Number(previousRevision.totalNetPayable),
-      }
-    : null
-
   return (
     <AppShell>
       <RevisedPreview
         payrollRunId={payrollRunId}
-        revisionId={currentRevision.id}
-        revisionNumber={currentRevision.revisionNumber}
+        revisionId={draftRevision.id}
+        revisionNumber={draftRevision.revisionNumber}
+        currentRevisionNumber={currentRevision.revisionNumber}
         weekLabel={weekLabel}
         employees={employees}
         totals={totals}
         previousTotals={previousTotals}
+        backHref={backHref}
+        hasPunchEdits={editsPunches}
       />
     </AppShell>
   )

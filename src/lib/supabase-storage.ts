@@ -36,7 +36,7 @@ function getMockFilePath(bucket: string, storageKey: string) {
 
 export interface PresignedUploadUrl {
   signedUrl: string
-  storageKey: string // path within the bucket, e.g. "attendance/uuid_filename.xlsx"
+  storageKey: string // path within the bucket, e.g. "documents/uuid_filename.pdf"
   token: string
 }
 
@@ -184,7 +184,3 @@ export async function fileExists(
   })
   return res.ok
 }
-
-// ─── STORAGE_BUCKET ──────────────────────────────────────────────────────────
-// Single source of truth for the bucket name.
-export const ATTENDANCE_BUCKET = 'attendance-files'

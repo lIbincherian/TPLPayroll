@@ -24,6 +24,8 @@ The schema is managed with Prisma Migrate. `prisma/migrations/` is the source of
 - **Never edit, rename or delete a migration that has been merged.** Add a new migration instead. CI fails a PR that changes `schema.prisma` without a new migration directory, or that alters an existing `migration.sql`.
 - **How migrations reach Production and Staging**: the Vercel build runs the `vercel-build` script (`prisma migrate deploy && prisma generate && next build`), so each build migrates the database of its own environment before the app ships. Production builds migrate `tpl-payroll`; Preview builds (every preview branch) migrate `tpl-payroll-stage`. `DIRECT_DATABASE_URL` must be set in both Vercel environments, because migrations cannot run through the transaction pooler (port `6543`). The `build` script stays migration-free so local and CI builds never touch a database.
 - **Write migrations to be safe on a live database**: all Preview branches share the one staging database, and Production keeps serving the previous deployment until the new build succeeds. Prefer additive changes (add a column, backfill, then drop in a later migration).
+- **Existing rows that a schema change must fix go in the same migration**: add the columns, then the data steps, then the unique indexes that need them, and make the data steps stop with `RAISE EXCEPTION` (naming what is wrong) instead of guessing. The F12 migration, `prisma/migrations/20261111072041_f12_etimeoffice_attendance`, does this for the approved-week and active-week keys. `scripts/backfill-approved-week-start.js` and `scripts/backfill-active-week-start.js` are no longer release steps: they are re-runnable repair tools, and `src/__tests__/db/f12-migration.db.test.ts` checks that the migration's data steps follow the same rules.
+- **Releasing F12** is that one migration, applied by the deploy: a Preview build migrates `tpl-payroll-stage` first, the merge to `main` migrates `tpl-payroll`. Never `db push` it and never run the backfill scripts as a release step. The steps, expected counts and what to do if the migration stops are in `docs/ci-and-migrations.md` ("Releasing F12").
 - **CI** (`.github/workflows/ci.yml`) runs `lint-typecheck`, `unit`, `migrations`, `build` and `e2e` on every PR to `main`. See `docs/ci-and-migrations.md` for the one-time per-environment baseline, the paused-staging caveat and the branch protection settings.
 
 ## Database & Environment Separation Rules
@@ -47,4 +49,12 @@ The schema is managed with Prisma Migrate. `prisma/migrations/` is the source of
 
 - **Unused Variables**:
   - Do not use or configure client-side `NEXT_PUBLIC_SUPABASE_ANON_KEY` or `NEXT_PUBLIC_SUPABASE_URL` environment variables in Vercel as the app does not load any client-side Supabase libraries.
+
+- **eTimeOffice Attendance Sync (F12)**:
+  - Attendance enters only via eTimeOffice sync (F12); the Excel upload is removed.
+  - Set these five variables separately for Vercel **Production** and **Preview** before the F12 build deploys, so the first scheduled sync after the release finds them. All are server-only; never prefix them with `NEXT_PUBLIC_`, never log them, and never return them from an action or route.
+    - `ETIMEOFFICE_CORPORATE_ID`, `ETIMEOFFICE_USERNAME`, `ETIMEOFFICE_PASSWORD`: the eTimeOffice API login. Only `src/features/attendance-sync/services/etimeoffice.client.ts` reads them.
+    - `ETIMEOFFICE_BASE_URL`: optional, defaults to `https://api.etimeoffice.com/api/`.
+    - `CRON_SECRET`: Vercel Cron sends it as `Authorization: Bearer <CRON_SECRET>` to `/api/cron/attendance-sync` (schedule in `vercel.json`, `30 0 * * 4` UTC). The route rejects every request when it is missing or wrong, and when `CRON_SECRET` is unset.
+  - The in-app mock eTimeOffice API (`/api/mock-etimeoffice/...`) is active only when `ETIMEOFFICE_CORPORATE_ID` is unset and `VERCEL` is unset (local dev and e2e). Local `.env` needs `CRON_SECRET=local-cron-secret` for e2e and leaves `ETIMEOFFICE_*` unset. On Vercel with no login configured, every sync fails with "eTimeOffice login isn't configured."
 

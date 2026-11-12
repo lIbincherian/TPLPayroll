@@ -5,6 +5,7 @@ import prisma from '@/lib/prisma'
 import { ReportSection } from '@/features/payroll-reports/components/ReportSection'
 import { RevisionHistoryTable } from '@/features/payroll-correction/components/RevisionHistoryTable'
 import {
+  getActiveCorrection,
   getRevisionHistory,
 } from '@/features/payroll-correction/services/correction.service'
 import { beginPayrollCorrectionAction } from '@/features/payroll-correction/actions/correction.actions'
@@ -97,6 +98,10 @@ export default async function PayrollRunPage({ params }: Props) {
   // Fetch revision history
   const revisions = await getRevisionHistory(payrollRunId)
 
+  // A correction left open (for example by closing the tab) is resumed, not started again
+  const activeCorrection = await getActiveCorrection(payrollRunId)
+  const attendanceWeekId = run.payrollWeekStartDate.toISOString().slice(0, 10)
+
   // Use current revision totals if available
   const displayTotals = currentRevision
     ? {
@@ -147,16 +152,35 @@ export default async function PayrollRunPage({ params }: Props) {
         </div>
 
         {/* ── Action bar ──────────────────────────────────────────────── */}
-        <div className="mt-6 flex gap-3">
-          <form action={beginPayrollCorrectionAction.bind(null, payrollRunId)}>
-            <button
-              type="submit"
-              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700 transition-[background-color,transform] duration-150 ease-out hover:bg-zinc-50 active:scale-[0.98]"
-            >
-              <PencilSimple size={14} />
-              Correct Payroll
-            </button>
-          </form>
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          {activeCorrection ? (
+            <div className="flex items-center gap-3 rounded-xl border border-amber-200/60 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+              <PencilSimple size={14} className="text-amber-500" />
+              <span>Correction in progress</span>
+              <Link
+                href={`/payroll/run/${payrollRunId}/correct`}
+                className="font-medium text-amber-700 underline underline-offset-2 hover:text-amber-900"
+              >
+                Resume
+              </Link>
+            </div>
+          ) : (
+            <form action={beginPayrollCorrectionAction.bind(null, payrollRunId)}>
+              <button
+                type="submit"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700 transition-[background-color,transform] duration-150 ease-out hover:bg-zinc-50 active:scale-[0.98]"
+              >
+                <PencilSimple size={14} />
+                Correct
+              </button>
+            </form>
+          )}
+          <Link
+            href={`/attendance/${attendanceWeekId}/review`}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700 transition-[background-color,transform] duration-150 ease-out hover:bg-zinc-50 active:scale-[0.98]"
+          >
+            Attendance
+          </Link>
         </div>
 
         {/* ── Reports ─────────────────────────────────────────────────── */}

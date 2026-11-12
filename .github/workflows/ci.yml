@@ -200,7 +200,9 @@ jobs:
       # Playwright starts `npm run start`, which serves the production build.
       - name: Build
         run: npm run build
-      # setup-db.js truncates and seeds the service database, then Playwright runs.
+      # Playwright's global setup (e2e/utils/global-setup.ts) runs `prisma migrate deploy` again (nothing is
+      # pending here), starts from an empty base because the git-ignored real-data snapshot is absent, and refuses
+      # a database that is not on localhost.
       - name: Run e2e tests
         run: npm run test:e2e
       - name: Upload test results

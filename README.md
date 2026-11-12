@@ -7,7 +7,7 @@ A comprehensive payroll management system built with Next.js, designed to stream
 TPL Payroll is a modern web application that enables organizations to:
 
 - **Manage Employees**: Create, update, and maintain employee records with comprehensive personal and employment details
-- **Track Attendance**: Upload and validate weekly attendance records with automatic error detection and correction
+- **Track Attendance**: Sync each Thursday–Wednesday week of punches from eTimeOffice, review and edit them, and approve the week before payroll
 - **Generate Payroll**: Create payroll runs with multi-step verification, including attendance and adjustment reviews
 - **Handle Adjustments**: Create and approve payroll adjustments (bonuses, deductions, etc.) with a review workflow
 - **Bulk Import/Export**: Import employee data from Excel and export reports in standard formats
@@ -30,7 +30,7 @@ src/
 ├── features/         # Feature slices (each self-contained)
 │   ├── employee-management/
 │   ├── employee-import-export/
-│   ├── attendance-upload/
+│   ├── attendance-sync/
 │   ├── payroll-generation/
 │   └── payroll-adjustments/
 ├── services/         # Shared business logic (database queries)
@@ -63,6 +63,16 @@ For local development, the project comes with a `.env` file pre-configured to wo
 NEXT_PUBLIC_APP_URL="http://localhost:3000"
 ```
 
+Attendance sync (F12) uses these server-only variables. See `.env.example` for the full list.
+
+| Variable | Purpose |
+|----------|---------|
+| `ETIMEOFFICE_CORPORATE_ID`, `ETIMEOFFICE_USERNAME`, `ETIMEOFFICE_PASSWORD` | eTimeOffice API login. Leave `ETIMEOFFICE_CORPORATE_ID` unset locally to use the built-in mock API. |
+| `ETIMEOFFICE_BASE_URL` | Optional. Defaults to `https://api.etimeoffice.com/api/`. |
+| `CRON_SECRET` | Shared secret for `/api/cron/attendance-sync`. Vercel Cron sends it as `Authorization: Bearer <CRON_SECRET>`. Set it locally (for example `local-cron-secret`) to run the cron e2e spec. |
+
+None of these may use a `NEXT_PUBLIC_` prefix.
+
 ### 3. Start the Development Database
 
 The project leverages Prisma 7's development database capabilities. Before running the app, start the local Prisma Postgres server on the configured port:
@@ -81,11 +91,7 @@ Apply the committed migrations (`prisma/migrations/`) to the local database:
 npx prisma migrate deploy
 ```
 
-*(Optional)* You can seed the database with basic test data using the E2E setup utility:
-
-```bash
-node e2e/utils/setup-db.js
-```
+The e2e suite needs no separate seeding step: its global setup applies the migrations itself and loads its own data (see [e2e/README.md](e2e/README.md)).
 
 ### 5. Run the Development Server
 
@@ -117,11 +123,12 @@ The application will be available at [http://localhost:3000](http://localhost:30
 - Track wage history and employment changes
 - Store critical documents and identifiers (Aadhaar, bank account, etc.)
 
-### Attendance Upload
-- Upload weekly attendance data via Excel files
-- Automatic validation and error detection
-- Manual week selection for flexible scheduling
-- Employee matching and error flagging
+### Attendance Sync (eTimeOffice)
+- Scheduled weekly sync of the last completed Thursday–Wednesday week (`vercel.json`, Thursday 06:00 IST), plus **Pull now** for any week that isn't approved
+- Employee check: add, match or ignore unknown eTimeOffice codes, and approve or reject inactive and resigned employees
+- Punch review: every employee's in/out pairs per day, with editing, notes and a record of each change in the audit log
+- Approve week, then pass the daily regular and overtime hours to payroll; reopen before payroll is approved, or use **Correct** afterward
+- Weeks from the Excel era stay readable, but the Excel upload has been removed
 
 ### Payroll Generation
 - Multi-step payroll creation workflow with verification gates
@@ -171,7 +178,7 @@ There are two recommended workflows for running E2E tests, depending on your nee
    npm run test:e2e
    ```
 
-Ensure your PostgreSQL database is running (`npx prisma dev`) before running E2E tests. The test suite will automatically set up a test database and seed it.
+Ensure your PostgreSQL database is running (`npx prisma dev`) before running E2E tests. The suite's global setup applies the committed migrations (`prisma migrate deploy`) and then replaces the database's data with its own base, so use a throwaway local database: it refuses any host that is not localhost. A local database that was created earlier with `prisma db push` has no migration history and is refused; reset it with `npx prisma migrate reset --force`. See [e2e/README.md](e2e/README.md).
 
 ### Hot Reload
 
@@ -196,6 +203,8 @@ npx prisma migrate reset
 Never run `prisma db push`, `migrate reset` or `migrate dev` against the Supabase Production or Staging databases. Vercel applies migrations on deploy via `prisma migrate deploy`. See [docs/ci-and-migrations.md](docs/ci-and-migrations.md) for details.
 
 ## Production Deployment
+
+Vercel builds run `vercel-build`, which applies the pending migrations to the environment's own database (Production builds migrate `tpl-payroll`, Preview builds migrate `tpl-payroll-stage`) before `next build`. Nothing else is run by hand: schema changes and their data steps ship as migrations, never as `prisma db push` or loose scripts. Attendance sync (F12) is released this way, as one migration, with Staging first through a Preview build. See [docs/ci-and-migrations.md](docs/ci-and-migrations.md#releasing-f12-etimeoffice-attendance) for the steps, what the migration does to existing data, and what to do if it stops.
 
 ### Build for Production
 

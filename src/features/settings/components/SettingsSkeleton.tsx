@@ -9,8 +9,8 @@ export function SettingsSkeleton() {
         <div className="max-w-md space-y-3">
           {/* Label */}
           <div className="h-3 w-40 rounded bg-zinc-100" />
-          {/* Select */}
-          <div className="h-9 w-full rounded-xl bg-zinc-100" />
+          {/* Read-only value with locked chip */}
+          <div className="h-4 w-36 rounded bg-zinc-100" />
           {/* Helper text lines */}
           <div className="space-y-1.5 pt-1">
             <div className="h-3 w-full max-w-[55ch] rounded bg-zinc-100" />
@@ -37,11 +37,6 @@ export function SettingsSkeleton() {
             <div className="h-4 w-28 rounded bg-zinc-100" />
           </div>
         </div>
-      </div>
-
-      {/* Actions skeleton */}
-      <div className="pt-8 border-t border-zinc-200/60 flex justify-end">
-        <div className="h-9 w-28 rounded-xl bg-zinc-100" />
       </div>
     </div>
   )

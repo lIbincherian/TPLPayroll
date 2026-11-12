@@ -21,10 +21,16 @@ import {
 
 type Mode = 'create' | 'edit'
 
-export interface AttendanceReturnContext {
-  sessionId: string
-  sheetEmployeeName: string
-  returnTo?: string
+/** Where the form came from, so it can pre-fill, show a matching back link, and return there after saving. */
+export interface EmployeeReturnContext {
+  /** An /attendance or /payroll path to go back to after saving. */
+  returnTo: string
+  /** Label of the back link, e.g. "Return to employee check". */
+  backLabel: string
+  /** Pre-fills the Employee Name when creating. */
+  prefillName?: string
+  /** Shown under the Employee ID when creating, e.g. why the ID must end in certain digits. */
+  employeeIdHint?: string
 }
 
 interface EmployeeFormProps {
@@ -35,10 +41,9 @@ interface EmployeeFormProps {
   currentSalary?: number
   /** Current hourly rate — from wage history, passed in on edit */
   currentHourlyRate?: number
-  /** Present when the form was opened from the attendance upload flow.
-   * Pre-fills the name field and re-routes the back link + post-save
-   * navigation back into the upload session. */
-  returnContext?: AttendanceReturnContext
+  /** Present when the form was opened from another screen (the attendance employee check).
+   * Re-routes the back link and the post-save navigation back there. */
+  returnContext?: EmployeeReturnContext
 }
 
 // ─── Internal form value shape ────────────────────────────────────────────────
@@ -154,7 +159,7 @@ export function EmployeeForm({
 
   const defaultValues: FormValues = {
     employeeId: employee?.employeeId ?? '',
-    employeeName: employee?.employeeName ?? returnContext?.sheetEmployeeName ?? '',
+    employeeName: employee?.employeeName ?? returnContext?.prefillName ?? '',
     designation: employee?.designation ?? '',
     designationShort: employee?.designationShort ?? '',
     nationalId: employee?.nationalId ?? '',
@@ -227,7 +232,7 @@ export function EmployeeForm({
           setServerError(result.error)
           return
         }
-        router.push(`/employees/${employee.id}`)
+        router.push(returnContext?.returnTo ?? `/employees/${employee.id}`)
       } else {
         const payload: CreateEmployeeInput = {
           employeeId: data.employeeId,
@@ -264,12 +269,7 @@ export function EmployeeForm({
           return
         }
         if (returnContext) {
-          const params = new URLSearchParams({
-            resumeSession: returnContext.sessionId,
-            newEmployeeId: result.data.id,
-          })
-          const targetPath = returnContext.returnTo || '/attendance'
-          router.push(`${targetPath}?${params.toString()}`)
+          router.push(returnContext.returnTo)
           return
         }
         router.push(`/employees/${result.data.id}`)
@@ -285,14 +285,11 @@ export function EmployeeForm({
       {returnContext ? (
         <button
           type="button"
-          onClick={() => {
-            const targetPath = returnContext.returnTo || '/attendance'
-            router.push(`${targetPath}?resumeSession=${returnContext.sessionId}`)
-          }}
+          onClick={() => router.push(returnContext.returnTo)}
           className="inline-flex items-center gap-1.5 text-sm text-emerald-600 hover:text-emerald-800 transition-colors duration-200 mb-6"
         >
           <ArrowLeft size={16} />
-          Return to attendance upload
+          {returnContext.backLabel}
         </button>
       ) : (
         <button
@@ -332,6 +329,11 @@ export function EmployeeForm({
                 placeholder="EMP-042"
                 className={errors.employeeId ? errorInputCls : inputCls}
               />
+              {returnContext?.employeeIdHint && !isEdit && (
+                <p className="text-xs text-zinc-500 mt-0.5" data-testid="employee-id-hint">
+                  {returnContext.employeeIdHint}
+                </p>
+              )}
             </FieldWrapper>
 
             <FieldWrapper label="Employee Name" required error={errors.employeeName?.message}>

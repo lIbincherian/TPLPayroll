@@ -1,0 +1,3 @@
+# Real production data (names, bank details, pay). Never commit anything here.
+*
+!.gitignore
