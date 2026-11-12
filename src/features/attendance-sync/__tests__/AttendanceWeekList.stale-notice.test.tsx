@@ -34,7 +34,7 @@ beforeAll(() => {
   })
 })
 
-const NOTICE = 'Newer data may be available. Pull now to replace this week, discarding your edits.'
+const NOTICE = 'Newer data may be available. Pull now to replace this week, discarding your changes and decisions.'
 const STALE = '2026-11-12T00:30:00.000Z'
 
 function week(overrides: Partial<AttendanceWeekListItem> = {}): AttendanceWeekListItem {

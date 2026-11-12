@@ -123,7 +123,7 @@ function WeekNotices({ week }: { week: AttendanceWeekListItem }) {
       )}
       {staleNotice && (
         <span className="block text-xs text-amber-700" data-testid="week-stale-notice">
-          Newer data may be available. Pull now to replace this week, discarding your edits.
+          Newer data may be available. Pull now to replace this week, discarding your changes and decisions.
         </span>
       )}
     </div>
