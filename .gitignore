@@ -53,21 +53,13 @@ next-env.d.ts
 /src/generated/prisma
 
 
-# Claude (local-only, except the software factory's skill and agents)
-.claude/*
-!.claude/skills/
-.claude/skills/*
-!.claude/skills/factory/
-!.claude/agents/
-.claude/agents/*
-!.claude/agents/intake.md
-!.claude/agents/spec-writer.md
-!.claude/agents/builder.md
-!.claude/agents/reviewer-code.md
-!.claude/agents/reviewer-security.md
-!.claude/agents/reviewer-ux.md
-!.claude/agents/reviewer-ui.md
-!.claude/agents/approver.md
+# Claude: the project's agents, skills, commands, helpers and settings are committed;
+# machine-local state is not.
+.claude/worktrees/
+.claude/settings.local.json
+.claude/*.bak*
+# Downloaded on first run by the impeccable launcher (19 MB binary).
+.claude/skills/impeccable/scripts/bin/
 .claude-flow
 
 # graphify
