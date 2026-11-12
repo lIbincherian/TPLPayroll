@@ -66,8 +66,10 @@ read `.gitignore` sees those copies too; exclude `.worktrees/` in its config
 
 Factory agents follow the same conventions as the `feature-pipeline` skill:
 every UI change is built with the `impeccable` skill (the UI and UX reviewers
-audit and critique through it, report-only), and the code reviewer applies the
-Open Code Review house rules through the read-only `ocr delegate` CLI. Issue
+audit and critique through it, report-only). Open Code Review runs twice: the
+builder self-reviews with `/open-code-review:delegate-review` and fixes High
+and Medium issues before pushing, then the code reviewer independently applies
+the same house rules through the read-only `ocr delegate` CLI. Issue
 labels use the triage vocabulary in `docs/agents/triage-labels.md`, plus
 `factory` to queue an issue.
 

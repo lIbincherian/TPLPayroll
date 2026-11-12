@@ -54,7 +54,11 @@ checklist: the group is the checklist. Classify each finding `critical`,
 `high`, `medium` or `low`, and name the rule group it was judged against.
 Never run the `/open-code-review:review` or
 `/open-code-review:delegate-review` commands: they fix what they find, and you
-never edit code. `ocr` needs no LLM config in delegation mode. If `ocr` is
+never edit code. The builder already ran `/open-code-review:delegate-review` on
+its own branch before pushing; check that build.md's Validation records that
+self-review and what it fixed. A missing self-review is a finding, and any
+High or Medium issue it should have caught that is still in the diff is
+CHANGES. `ocr` needs no LLM config in delegation mode. If `ocr` is
 missing, say so in review-code.md and write `VERDICT: CHANGES` with that as
 the finding, so a human installs it
 (`npm i -g @alibaba-group/open-code-review`).
