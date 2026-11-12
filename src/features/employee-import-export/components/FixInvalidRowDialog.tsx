@@ -24,11 +24,9 @@ const ERROR_LABELS: Record<ImportRowErrorCode, string> = {
   MISSING_EMPLOYEE_ID: 'Missing Employee ID',
   MISSING_EMPLOYEE_NAME: 'Missing Name',
   MISSING_DESIGNATION: 'Missing Designation',
-  MISSING_SALARY: 'Missing Salary',
-  MISSING_HOURLY_RATE: 'Missing Hourly Rate',
+  MISSING_SALARY: 'Missing Daily Wage',
   MISSING_ACTIVE: 'Missing Status',
-  INVALID_SALARY: 'Invalid Salary',
-  INVALID_HOURLY_RATE: 'Invalid Hourly Rate',
+  INVALID_SALARY: 'Invalid Daily Wage',
   INVALID_ACTIVE_VALUE: 'Invalid Status value',
 }
 
@@ -45,9 +43,6 @@ function needsDesignation(errors: ImportRowErrorCode[]) {
 }
 function needsSalary(errors: ImportRowErrorCode[]) {
   return errors.includes('MISSING_SALARY') || errors.includes('INVALID_SALARY')
-}
-function needsHourlyRate(errors: ImportRowErrorCode[]) {
-  return errors.includes('MISSING_HOURLY_RATE') || errors.includes('INVALID_HOURLY_RATE')
 }
 function needsActive(errors: ImportRowErrorCode[]) {
   return errors.includes('MISSING_ACTIVE') || errors.includes('INVALID_ACTIVE_VALUE')
@@ -101,10 +96,7 @@ export function FixInvalidRowDialog({
     contextChips.push({ label: 'Designation', value: partial.designation })
   }
   if (partial.salary !== undefined && !needsSalary(rowErrors)) {
-    contextChips.push({ label: 'Salary', value: `₱${partial.salary.toLocaleString()}` })
-  }
-  if (partial.hourlyRate !== undefined && !needsHourlyRate(rowErrors)) {
-    contextChips.push({ label: 'Hourly Rate', value: `₱${partial.hourlyRate}/hr` })
+    contextChips.push({ label: 'Daily Wage', value: `₱${partial.salary.toLocaleString()}` })
   }
   if (partial.isActive !== undefined && !needsActive(rowErrors)) {
     contextChips.push({ label: 'Status', value: partial.isActive ? 'Active' : 'Inactive' })
@@ -128,12 +120,6 @@ export function FixInvalidRowDialog({
       }
       if (resultErrors.includes('MISSING_SALARY') || resultErrors.includes('INVALID_SALARY')) {
         setError('salary', { message: 'Must be a positive number' })
-      }
-      if (
-        resultErrors.includes('MISSING_HOURLY_RATE') ||
-        resultErrors.includes('INVALID_HOURLY_RATE')
-      ) {
-        setError('hourlyRate', { message: 'Must be a positive number' })
       }
       if (resultErrors.includes('MISSING_ACTIVE')) {
         setError('isActive', { message: 'Status is required' })
@@ -251,7 +237,7 @@ export function FixInvalidRowDialog({
 
             {needsSalary(rowErrors) && (
               <div>
-                <label htmlFor="fix-salary" className={labelClass}>Salary (PHP)</label>
+                <label htmlFor="fix-salary" className={labelClass}>Daily Wage (PHP)</label>
                 <input
                   {...register('salary')}
                   id="fix-salary"
@@ -264,25 +250,6 @@ export function FixInvalidRowDialog({
                 <p className="text-xs text-zinc-400 mt-1">Must be a positive number</p>
                 {errors.salary && (
                   <p role="alert" className="text-xs text-rose-600 mt-1">{errors.salary.message}</p>
-                )}
-              </div>
-            )}
-
-            {needsHourlyRate(rowErrors) && (
-              <div>
-                <label htmlFor="fix-hourlyRate" className={labelClass}>Hourly Rate (PHP)</label>
-                <input
-                  {...register('hourlyRate')}
-                  id="fix-hourlyRate"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  placeholder="0.00"
-                  className={inputClass}
-                />
-                <p className="text-xs text-zinc-400 mt-1">Must be a positive number</p>
-                {errors.hourlyRate && (
-                  <p role="alert" className="text-xs text-rose-600 mt-1">{errors.hourlyRate.message}</p>
                 )}
               </div>
             )}

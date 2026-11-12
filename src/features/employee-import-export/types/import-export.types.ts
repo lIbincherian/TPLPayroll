@@ -13,8 +13,9 @@ export const IMPORT_COLUMNS = {
   dateOfJoining: 'Date of Joining',
   aadhaarId: 'Aadhaar ID',
   policeVerificationId: 'Police Verification ID',
-  salary: 'Salary',
-  hourlyRate: 'Hourly Rate',
+  salary: 'Daily Wage',
+  legacySalary: 'Salary', // read when an older file has no 'Daily Wage' column
+  hourlyRate: 'Hourly Rate', // exported for reference; ignored on import
   phone: 'Phone',
   dateOfBirth: 'D.O.B',
   healthCardId: 'Health Card ID',
@@ -35,10 +36,8 @@ export type ImportRowErrorCode =
   | 'MISSING_EMPLOYEE_NAME'
   | 'MISSING_DESIGNATION'
   | 'MISSING_SALARY'
-  | 'MISSING_HOURLY_RATE'
   | 'MISSING_ACTIVE'
   | 'INVALID_SALARY'
-  | 'INVALID_HOURLY_RATE'
   | 'INVALID_ACTIVE_VALUE'
 
 // ─── Row-level types ──────────────────────────────────────────────────────────
@@ -53,7 +52,6 @@ export interface ImportRowData {
   aadhaarId: string | null
   policeVerificationId: string | null
   salary: number
-  hourlyRate: number
   phone: string | null
   dateOfBirth: Date | null
   healthCardId: string | null
@@ -87,7 +85,6 @@ export interface FixRowFormValues {
   employeeName?: string
   designation?: string
   salary?: string       // string from input, parsed to number in applyRowFix
-  hourlyRate?: string   // string from input
   isActive?: 'true' | 'false'  // radio button value
 }
 
@@ -125,7 +122,6 @@ export const ImportRowSchema = z.object({
   employeeName: z.string().min(1),
   designation: z.string().min(1),
   salary: z.number().min(0),
-  hourlyRate: z.number().min(0),
   isActive: z.boolean(),
 })
 

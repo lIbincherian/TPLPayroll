@@ -40,7 +40,6 @@ function makeRowData(employeeId: string, employeeName: string): ImportRowData {
     aadhaarId: null,
     policeVerificationId: null,
     salary: 12000,
-    hourlyRate: 62.5,
     phone: null,
     dateOfBirth: null,
     healthCardId: null,
@@ -66,7 +65,6 @@ function makeInvalidRow(
     partialData: {
       designation: 'Guard',
       salary: 12000,
-      hourlyRate: 62.5,
       isActive: true,
       ...partialData,
     },
@@ -90,7 +88,6 @@ function renderDialog({
     employeeName: 'Test Employee',
     designation: 'Guard',
     salary: 12000,
-    hourlyRate: 62.5,
     isActive: true,
   }),
   existingEmployeeIds = new Set<string>(),
@@ -121,7 +118,6 @@ describe('FixInvalidRowDialog', () => {
       const invalidRow = makeInvalidRow(5, ['MISSING_EMPLOYEE_ID', 'INVALID_SALARY'], {
         employeeName: 'Juan dela Cruz',
         designation: 'Guard',
-        hourlyRate: 62.5,
         isActive: true,
       })
 
@@ -130,14 +126,13 @@ describe('FixInvalidRowDialog', () => {
       // Employee ID field should be present (it has an error)
       expect(screen.getByLabelText(/employee id/i)).toBeInTheDocument()
       // Salary field should be present (INVALID_SALARY is in errors)
-      expect(screen.getByLabelText(/salary/i)).toBeInTheDocument()
+      expect(screen.getByLabelText(/daily wage/i)).toBeInTheDocument()
     })
 
     it('does NOT render an input for Employee Name when it is not in errors', () => {
       const invalidRow = makeInvalidRow(5, ['MISSING_EMPLOYEE_ID', 'INVALID_SALARY'], {
         employeeName: 'Juan dela Cruz',
         designation: 'Guard',
-        hourlyRate: 62.5,
         isActive: true,
       })
 
@@ -151,7 +146,6 @@ describe('FixInvalidRowDialog', () => {
       const invalidRow = makeInvalidRow(6, ['MISSING_EMPLOYEE_NAME', 'MISSING_DESIGNATION'], {
         employeeId: 'EMP-010',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
 
@@ -165,7 +159,6 @@ describe('FixInvalidRowDialog', () => {
       const invalidRow = makeInvalidRow(6, ['MISSING_EMPLOYEE_NAME', 'MISSING_DESIGNATION'], {
         employeeId: 'EMP-010',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
 
@@ -181,7 +174,6 @@ describe('FixInvalidRowDialog', () => {
       const invalidRow = makeInvalidRow(7, ['MISSING_EMPLOYEE_NAME', 'MISSING_DESIGNATION'], {
         employeeId: 'EMP-020',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
 
@@ -196,13 +188,12 @@ describe('FixInvalidRowDialog', () => {
         employeeId: 'EMP-030',
         employeeName: 'Alice',
         designation: 'Guard',
-        hourlyRate: 62.5,
         isActive: true,
       })
 
       renderDialog({ invalidRow })
 
-      expect(screen.getByText(/invalid.*salary/i)).toBeInTheDocument()
+      expect(screen.getByText(/invalid daily wage/i)).toBeInTheDocument()
     })
   })
 
@@ -213,7 +204,6 @@ describe('FixInvalidRowDialog', () => {
         employeeName: 'Juan dela Cruz',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
 
@@ -227,7 +217,6 @@ describe('FixInvalidRowDialog', () => {
         employeeName: 'Priya Nair',
         designation: 'Security Officer',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
 
@@ -255,7 +244,6 @@ describe('FixInvalidRowDialog', () => {
         employeeName: 'Test Employee',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
 
@@ -288,7 +276,6 @@ describe('FixInvalidRowDialog', () => {
         employeeId: 'EMP-010',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
 
@@ -314,7 +301,6 @@ describe('FixInvalidRowDialog', () => {
         employeeId: 'EMP-020',
         employeeName: 'Alice',
         designation: 'Guard',
-        hourlyRate: 62.5,
         isActive: true,
       })
 
@@ -362,7 +348,6 @@ describe('FixInvalidRowDialog', () => {
         employeeName: 'Test Employee',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
 
