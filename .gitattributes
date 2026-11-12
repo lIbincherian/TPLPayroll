@@ -1,0 +1,3 @@
+# Software factory scripts run under Git Bash and Python: keep LF, or the shebang and bash break
+factory/bin/* text eol=lf
+factory/checks.sh text eol=lf

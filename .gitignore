@@ -53,8 +53,21 @@ next-env.d.ts
 /src/generated/prisma
 
 
-# Claude
-.claude
+# Claude (local-only, except the software factory's skill and agents)
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/factory/
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/intake.md
+!.claude/agents/spec-writer.md
+!.claude/agents/builder.md
+!.claude/agents/reviewer-code.md
+!.claude/agents/reviewer-security.md
+!.claude/agents/reviewer-ux.md
+!.claude/agents/reviewer-ui.md
+!.claude/agents/approver.md
 .claude-flow
 
 # graphify
@@ -62,3 +75,7 @@ graphify-out/cache/
 graphify-out/.graphify_python
 graphify-out/.graphify_root
 graphify-out/.graphify_uncached.txt
+
+# Software factory runtime state and job worktrees
+/factory/jobs/
+/.worktrees/
