@@ -224,6 +224,19 @@ describe('FixInvalidRowDialog', () => {
 
       expect(screen.getByText('Security Officer')).toBeInTheDocument()
     })
+
+    it('labels the daily wage chip', () => {
+      const invalidRow = makeInvalidRow(10, ['MISSING_EMPLOYEE_ID'], {
+        employeeName: 'Priya Nair',
+        designation: 'Security Officer',
+        salary: 800,
+        isActive: true,
+      })
+
+      renderDialog({ invalidRow })
+
+      expect(screen.getByText('Daily Wage ₱800')).toBeInTheDocument()
+    })
   })
 
   // ── Successful fix: onRowFixed called and dialog closes ────────────────────

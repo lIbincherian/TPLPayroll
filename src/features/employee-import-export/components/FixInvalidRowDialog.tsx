@@ -96,7 +96,7 @@ export function FixInvalidRowDialog({
     contextChips.push({ label: 'Designation', value: partial.designation })
   }
   if (partial.salary !== undefined && !needsSalary(rowErrors)) {
-    contextChips.push({ label: 'Daily Wage', value: `₱${partial.salary.toLocaleString()}` })
+    contextChips.push({ label: 'Daily Wage', value: `Daily Wage ₱${partial.salary.toLocaleString()}` })
   }
   if (partial.isActive !== undefined && !needsActive(rowErrors)) {
     contextChips.push({ label: 'Status', value: partial.isActive ? 'Active' : 'Inactive' })
