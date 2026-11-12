@@ -8,7 +8,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 - **Fresh checkout or worktree**: `npm ci`, then `npx prisma generate` (the client in `src/generated/prisma` is gitignored). Env files are gitignored too: copy `.env` from the main checkout (or fill one in from `.env.example`). Never commit an env file.
 - **Dev server on a given port**: `npx next dev -p <port>` (`npm run dev` uses port 3000). Pages that read data need the database in `.env`.
-- **Validation** (what `factory/checks.sh` runs): `npm run lint`, `npx tsc --noEmit`, `npm run test:run` (vitest, no watch), `npm run build`. E2E tests (`npm run test:e2e`) need a local PostgreSQL and are run separately (see Testing Rules).
+- **Validation** (what `factory/checks.sh` runs, mirroring CI's `lint-typecheck`, `unit` and `build` jobs and its migration-history guard): `npx prisma generate`, `npm run lint`, `npx tsc --noEmit`, `npm run test:run` (vitest, no watch), `npm run build`. CI's `migrations` and `e2e` jobs need PostgreSQL and run on the PR; locally, run E2E tests separately (see Testing Rules).
 
 ## Architecture Rules
 

@@ -20,7 +20,8 @@
   },
   "protected_paths": [
     "factory/checks.sh",
-    "factory/config.json"
+    "factory/config.json",
+    "prisma/migrations/*/migration.sql"
   ],
   "ports": { "base": 5100, "step": 10 },
   "prices_usd_per_mtok": {

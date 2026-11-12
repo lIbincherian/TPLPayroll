@@ -8,7 +8,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/__tests__/setup.ts'],
-    exclude: ['**/node_modules/**', '**/e2e/**', '**/dist/**', '**/.{git,cache,output,temp}/**', '**/.worktrees/**'],
+    exclude: ['**/node_modules/**', '**/e2e/**', '**/dist/**', '**/.{git,cache,output,temp}/**', '**/.worktrees/**', '.claude/**', '.claude-flow/**', '.agents/**', '.gemini/**', '.codex/**', '.swarm/**'],
   },
   resolve: {
     alias: {
