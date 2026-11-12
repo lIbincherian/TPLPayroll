@@ -78,6 +78,17 @@ describe('EmployeeForm — daily wage', () => {
     expect(screen.getByTestId('computed-hourly-rate')).toHaveTextContent('—')
   })
 
+  it('on edit, keeps showing the stored rate until the daily wage changes', () => {
+    render(<EmployeeForm mode="edit" employee={existingEmployee} currentSalary={2500} currentHourlyRate={62.5} />)
+
+    expect(screen.getByTestId('computed-hourly-rate')).toHaveTextContent('₹62.50')
+    expect(screen.getByTestId('hourly-rate-hint')).toHaveTextContent('Current rate')
+
+    fireEvent.change(placeholder('800'), { target: { value: '1000' } })
+    expect(screen.getByTestId('computed-hourly-rate')).toHaveTextContent('₹125.00')
+    expect(screen.getByTestId('hourly-rate-hint')).toHaveTextContent('was ₹62.50')
+  })
+
   it('does not send an hourly rate when saving', async () => {
     vi.mocked(createEmployeeAction).mockResolvedValue({ ok: true, data: { id: 'new-emp-id' } } as never)
     render(<EmployeeForm mode="create" />)

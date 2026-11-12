@@ -53,6 +53,7 @@ export default async function EditEmployeePage({ params, searchParams }: EditEmp
         mode="edit"
         employee={employee}
         currentSalary={currentWage?.weeklySalary}
+        currentHourlyRate={currentWage?.hourlyRate}
         returnContext={buildEditReturnContext({ returnTo })}
       />
     </AppShell>

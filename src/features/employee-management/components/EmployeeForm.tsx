@@ -40,6 +40,8 @@ interface EmployeeFormProps {
   employee?: EmployeeRecord
   /** Current daily wage — from wage history, passed in on edit */
   currentSalary?: number
+  /** Stored hourly rate — kept while the daily wage is unchanged, so it may differ from daily / 8 */
+  currentHourlyRate?: number
   /** Present when the form was opened from another screen (the attendance employee check).
    * Re-routes the back link and the post-save navigation back there. */
   returnContext?: EmployeeReturnContext
@@ -143,6 +145,7 @@ export function EmployeeForm({
   mode,
   employee,
   currentSalary,
+  currentHourlyRate,
   returnContext,
 }: EmployeeFormProps) {
   const router = useRouter()
@@ -192,6 +195,15 @@ export function EmployeeForm({
   const dailyWage = parseFloat(watch('salary'))
   const computedHourlyRate =
     !isNaN(dailyWage) && dailyWage >= 0 ? computeHourlyRate(dailyWage) : null
+  // On edit, an unchanged daily wage keeps the stored rate; only a new wage gets daily / 8.
+  const keepsStoredRate = currentHourlyRate !== undefined && dailyWage === currentSalary
+  const shownHourlyRate = keepsStoredRate ? currentHourlyRate : computedHourlyRate
+  let hourlyRateHint = 'Daily wage ÷ 8 hours'
+  if (keepsStoredRate) {
+    hourlyRateHint = 'Current rate. Recalculated if the daily wage changes'
+  } else if (currentHourlyRate !== undefined && computedHourlyRate !== null) {
+    hourlyRateHint = `New rate (daily wage ÷ 8), was ₹${currentHourlyRate.toFixed(2)}`
+  }
 
   async function onSubmit(data: FormValues) {
     setServerError(null)
@@ -441,17 +453,18 @@ export function EmployeeForm({
             </FieldWrapper>
 
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium uppercase tracking-wider text-zinc-400">
+              <span id="hourly-rate-label" className="text-xs font-medium uppercase tracking-wider text-zinc-400">
                 Hourly Rate (₹)
               </span>
               <output
                 data-testid="computed-hourly-rate"
-                aria-live="polite"
+                aria-labelledby="hourly-rate-label"
+                aria-describedby="hourly-rate-hint"
                 className="py-2 text-sm text-zinc-900 font-mono tabular-nums"
               >
-                {computedHourlyRate !== null ? `₹${computedHourlyRate.toFixed(2)}` : '—'}
+                {shownHourlyRate !== null ? `₹${shownHourlyRate.toFixed(2)}` : '—'}
               </output>
-              <p className="text-xs text-zinc-500">Daily wage ÷ 8 hours</p>
+              <p id="hourly-rate-hint" data-testid="hourly-rate-hint" className="text-xs text-zinc-500">{hourlyRateHint}</p>
             </div>
 
           </div>
