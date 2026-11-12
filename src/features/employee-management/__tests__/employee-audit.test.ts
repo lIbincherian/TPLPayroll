@@ -108,7 +108,7 @@ describe('createEmployee — audit log detailsJson', () => {
             employeeName: 'Ravi Kumar',
             designation: 'Guard',
             salary: 12000,
-            hourlyRate: 62.5,
+            hourlyRate: 1500,
           }),
         }),
       })
@@ -238,7 +238,7 @@ describe('updateEmployee — WAGE_HISTORY audit log', () => {
     })
   })
 
-  it('WAGE_HISTORY audit log includes effectiveFrom and employeeId when hourlyRate changes', async () => {
+  it('WAGE_HISTORY audit log includes effectiveFrom, employeeId and the computed hourly rates when the daily wage changes', async () => {
     // GIVEN employee with hourlyRate=62.50
     const existing = makeEmployee()
     const existingWage = makeWageHistory({ hourlyRate: 62.5 as unknown as EmployeeWageHistory['hourlyRate'] })
@@ -250,8 +250,8 @@ describe('updateEmployee — WAGE_HISTORY audit log', () => {
     vi.mocked(prisma.employeeWageHistory.create).mockResolvedValue(makeWageHistory())
     vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
 
-    // WHEN updateEmployee is called with { hourlyRate: 75.00 }
-    await updateEmployee('uuid-1', { hourlyRate: 75.0 })
+    // WHEN updateEmployee is called with { salary: 800 }
+    await updateEmployee('uuid-1', { salary: 800 })
 
     // THEN WAGE_HISTORY auditLog detailsJson includes employeeId, effectiveFrom, oldHourlyRate, newHourlyRate
     const auditCalls = vi.mocked(prisma.auditLog.create).mock.calls
@@ -265,7 +265,7 @@ describe('updateEmployee — WAGE_HISTORY audit log', () => {
           employeeId: 'uuid-1',
           effectiveFrom: expect.any(Date),
           oldHourlyRate: 62.5,
-          newHourlyRate: 75.0,
+          newHourlyRate: 100,
         }),
       }),
     })
