@@ -23,7 +23,9 @@ fi
 
 # Migration history (CI's guard): a changed schema.prisma ships with a new
 # migration, and existing migrations are never edited, renamed or deleted.
-range="origin/main...HEAD"
+# Compared with the factory's base branch (config.json base_branch).
+base="$(sed -n 's/.*"base_branch": *"\([^"]*\)".*/\1/p' "$(dirname "$0")/config.json")"
+range="origin/${base:-main}...HEAD"
 if ! git diff --quiet "$range" -- prisma/schema.prisma; then
   if [ -z "$(git diff --name-only --diff-filter=A "$range" -- 'prisma/migrations/*/migration.sql')" ]; then
     echo "prisma/schema.prisma changed but no new prisma/migrations/<name>/migration.sql was added." >&2

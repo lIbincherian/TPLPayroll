@@ -32,7 +32,7 @@ The schema is managed with Prisma Migrate. `prisma/migrations/` is the source of
 - **Write migrations to be safe on a live database**: all Preview branches share the one staging database, and Production keeps serving the previous deployment until the new build succeeds. Prefer additive changes (add a column, backfill, then drop in a later migration).
 - **Existing rows that a schema change must fix go in the same migration**: add the columns, then the data steps, then the unique indexes that need them, and make the data steps stop with `RAISE EXCEPTION` (naming what is wrong) instead of guessing. The F12 migration, `prisma/migrations/20261111072041_f12_etimeoffice_attendance`, does this for the approved-week and active-week keys. `scripts/backfill-approved-week-start.js` and `scripts/backfill-active-week-start.js` are no longer release steps: they are re-runnable repair tools, and `src/__tests__/db/f12-migration.db.test.ts` checks that the migration's data steps follow the same rules.
 - **Releasing F12** is that one migration, applied by the deploy: a Preview build migrates `tpl-payroll-stage` first, the merge to `main` migrates `tpl-payroll`. Never `db push` it and never run the backfill scripts as a release step. The steps, expected counts and what to do if the migration stops are in `docs/ci-and-migrations.md` ("Releasing F12").
-- **CI** (`.github/workflows/ci.yml`) runs `lint-typecheck`, `unit`, `migrations`, `build` and `e2e` on every PR to `main`. See `docs/ci-and-migrations.md` for the one-time per-environment baseline, the paused-staging caveat and the branch protection settings.
+- **CI** (`.github/workflows/ci.yml`) runs `lint-typecheck`, `unit`, `migrations`, `build` and `e2e` on every PR to `main` or `development`. See `docs/ci-and-migrations.md` for the one-time per-environment baseline, the paused-staging caveat and the branch protection settings.
 
 ## Database & Environment Separation Rules
 
@@ -71,6 +71,13 @@ intake → spec → build → gate → review → approve, one PR per issue. Sta
 `factory/jobs/` (gitignored); `factory/bin/job` is its only writer. Checks:
 `factory/checks.sh`. Dashboard: `cd factory && python -m http.server`, then
 open http://localhost:8000/dashboard.html.
+
+**Branches:** the factory works only against `development`
+(`factory/config.json` `base_branch`). Every job branches from
+`origin/development`, opens its PR into `development`, and the approver merges
+only there. Nothing the factory builds reaches `main` (production) until a
+person merges `development` into `main`, after several features have
+collected. Run `/factory` from a checkout of `development`.
 
 Each job works in its own git worktree, a full checkout of the repo at
 `.worktrees/<job-id>` (gitignored). A tool run from the repo root that doesn't
