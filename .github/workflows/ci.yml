@@ -5,9 +5,10 @@ name: CI
 # Do not rename them or add path filters to the triggers: a skipped required check blocks merges.
 on:
   pull_request:
-    branches: [main]
+    # development collects software factory PRs; it is merged into main for production.
+    branches: [main, development]
   push:
-    branches: [main]
+    branches: [main, development]
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
