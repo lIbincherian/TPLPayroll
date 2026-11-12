@@ -77,7 +77,9 @@ open http://localhost:8000/dashboard.html.
 `origin/development`, opens its PR into `development`, and the approver merges
 only there. Nothing the factory builds reaches `main` (production) until a
 person merges `development` into `main`, after several features have
-collected. Run `/factory` from a checkout of `development`.
+collected. When a job's PR merges into `development`, the factory closes its
+issue with a comment (GitHub only auto-closes issues for merges into `main`).
+Run `/factory` from a checkout of `development`.
 
 Each job works in its own git worktree, a full checkout of the repo at
 `.worktrees/<job-id>` (gitignored). A tool run from the repo root that doesn't
