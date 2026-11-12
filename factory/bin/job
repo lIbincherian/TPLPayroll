@@ -398,6 +398,13 @@ def advance(job, stage):
         require(job["pr"] and pr_state(job) == "MERGED", "the PR isn't merged")
         if old == "needs-human":
             label("issue", job["issue"], remove=LABELS["needs_human"])
+        # GitHub closes "Closes #n" issues only for merges into the default
+        # branch, so a merge into development leaves the issue open: close it.
+        if gh_json("issue", "view", str(job["issue"]), "--json", "state")["state"] == "OPEN":
+            gh("issue", "close", str(job["issue"]), "--comment",
+               f"{MARKER}\n### Factory: merged into `{BASE}`\n\n"
+               f"PR #{job['pr']} is merged into `{BASE}`. It reaches production when "
+               f"`{BASE}` is merged into `main`.")
 
     elif stage == "rejected" and old in WAITING:
         require((d / "rejection.md").exists(), "use `job reject` to reject a waiting job")
