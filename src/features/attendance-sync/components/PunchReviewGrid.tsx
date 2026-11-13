@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
@@ -26,6 +26,7 @@ import {
   reopenWeekAction,
 } from '../actions/attendance-sync.actions'
 import { formatHoursTotal, formatIstDateTime, formatIstTime, plural } from '../lib/format'
+import { describeStatusChanges } from '../lib/employee-status'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 import {
   applySaveResult,
@@ -202,6 +203,10 @@ interface GridBaseProps {
   backHref: string
   backLabel: string
   title: string
+  /** Shown below the header, inside the grid's column (for example the approval's status changes). */
+  notice?: ReactNode
+  /** Employees the week's approval marked inactive: they left the grid, so the header counts them. */
+  markedInactiveCount?: number
 }
 
 /** A correction review must come with its actions; a live one must not. */
@@ -215,7 +220,7 @@ export type PunchReviewGridProps =
  * (editable, or locked once approved) and a payroll correction.
  */
 export function PunchReviewGrid(props: PunchReviewGridProps) {
-  const { initialReview, backHref, backLabel, title } = props
+  const { initialReview, backHref, backLabel, title, notice, markedInactiveCount = 0 } = props
   const correction = props.correction ?? null
   const router = useRouter()
   const isDesktop = useMediaQuery('(min-width: 768px)')
@@ -421,10 +426,14 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
 
     const res = await approveWeekAction(weekId)
     if (!res.ok) return { ok: false, error: res.error, code: res.code }
+    const statusLine = describeStatusChanges(res.data.statusChanges)
     toast.success('Week approved', {
+      description: statusLine ? `${statusLine}.` : undefined,
       action: { label: 'Go to payroll', onClick: () => router.push(`/payroll/generate/${weekId}`) },
     })
     await reload()
+    // The status notice and the header count are rendered by the page, so fetch them again.
+    router.refresh()
     setApproveOpen(false)
     return { ok: true }
   }
@@ -440,6 +449,7 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
     }
     toast.success('Week reopened')
     await reload()
+    router.refresh()
     setReopenOpen(false)
     return { ok: true }
   }
@@ -594,6 +604,8 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
         </div>
       </header>
 
+      {notice}
+
       {mode.kind === 'CORRECTION' && correction && (
         <CorrectionBanner
           payrollRunId={mode.payrollRunId}
@@ -612,6 +624,7 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
             <span className="font-mono tabular-nums">{formatHoursTotal(review.totals.regular)}</span> regular ·{' '}
             <span className="font-mono tabular-nums">{formatHoursTotal(review.totals.overtime)}</span> overtime
             {leftOutCount !== null ? ` · ${leftOutCount} left out` : ''}
+            {markedInactiveCount > 0 ? ` · ${markedInactiveCount} marked inactive (no punches)` : ''}
           </p>
           {payrollApproved && (
             <p className="flex items-start gap-2.5 text-sm text-zinc-500" data-testid="payroll-lock-note">

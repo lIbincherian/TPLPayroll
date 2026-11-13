@@ -435,11 +435,11 @@ describe('pullWeekAction', () => {
 describe('approveWeekAction', () => {
   it('approves, serialises the approval time to ISO and revalidates /attendance and /payroll', async () => {
     const approvedAt = new Date('2026-11-13T03:00:00Z')
-    services.approveWeek.mockResolvedValue({ approvedAt, summary: SUMMARY })
+    services.approveWeek.mockResolvedValue({ approvedAt, summary: SUMMARY, statusChanges: { markedInactive: [], reactivated: [] } })
 
     await expect(approveWeekAction(WEEK_ID)).resolves.toEqual({
       ok: true,
-      data: { approvedAt: '2026-11-13T03:00:00.000Z', summary: SUMMARY },
+      data: { approvedAt: '2026-11-13T03:00:00.000Z', summary: SUMMARY, statusChanges: { markedInactive: [], reactivated: [] } },
     })
     expectRevalidated()
   })
