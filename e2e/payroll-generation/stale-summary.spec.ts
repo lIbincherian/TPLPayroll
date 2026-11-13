@@ -54,7 +54,8 @@ test.describe('E2E: a payroll summary for attendance that changed', () => {
     await approveWeekInUi(page)
     await settled(page)
     await openPayrollSummary(page, W)
-    const totalCell = page.locator('tfoot td').last()
+    // The Net Pay total is the last footer cell with an amount; Payment Date and Reference follow it empty.
+    const totalCell = page.locator('tfoot td').filter({ hasText: '₹' }).last()
     const oldTotal = (await totalCell.innerText()).trim()
     const approvedBefore = (await getWeekRow(W))?.approvedAt
 
@@ -89,7 +90,7 @@ test.describe('E2E: a payroll summary for attendance that changed', () => {
     await page.getByRole('button', { name: /Continue to (Payroll )?Summary/ }).click()
     await expect(page.locator('h2:has-text("Payroll Summary")')).toBeVisible({ timeout: 15000 })
     await expect(page.getByText(CHANGED)).toHaveCount(0)
-    const newTotal = (await page.locator('tfoot td').last().innerText()).trim()
+    const newTotal = (await page.locator('tfoot td').filter({ hasText: '₹' }).last().innerText()).trim()
     expect(newTotal).not.toBe(oldTotal)
     await page.getByRole('button', { name: 'Approve Payroll' }).click()
     await page.getByRole('button', { name: 'Confirm Approval' }).click()

@@ -8,7 +8,9 @@ import {
   hasWeekEnded,
   isFutureWeek,
   isThursdayISO,
+  isoWeekOf,
   parseWeekId,
+  paymentReference,
   todayInIST,
   toISODate,
   toUtcDate,
@@ -177,5 +179,37 @@ describe('formatWeekLabel', () => {
 
   it('shows both years when the week spans New Year', () => {
     expect(formatWeekLabel({ start: '2026-12-31', end: '2027-01-06' })).toBe('31 Dec 2026 – 6 Jan 2027')
+  })
+})
+
+describe('isoWeekOf / paymentReference', () => {
+  it('builds YYYY-WW-<EMP ID> from the week start', () => {
+    expect(paymentReference('2026-11-05', 'TPLGOASHT231')).toBe('2026-45-TPLGOASHT231')
+  })
+
+  it('keeps a payroll week crossing New Year in the old ISO year (2026 has 53 weeks)', () => {
+    expect(isoWeekOf('2026-12-31')).toEqual({ year: 2026, week: 53 })
+    expect(paymentReference('2026-12-31', 'E1')).toBe('2026-53-E1')
+  })
+
+  it('puts the first payroll week of 2027 in week 01', () => {
+    expect(paymentReference('2027-01-07', 'E1')).toBe('2027-01-E1')
+  })
+
+  it('puts a Thursday 1 January in week 01 of that year', () => {
+    expect(paymentReference('2026-01-01', 'E1')).toBe('2026-01-E1')
+  })
+
+  it('handles the 53-week year 2020', () => {
+    expect(paymentReference('2020-12-31', 'E1')).toBe('2020-53-E1')
+  })
+
+  it('pads the week to two digits', () => {
+    expect(paymentReference('2027-01-07', 'E1')).toContain('-01-')
+    expect(paymentReference('2027-03-04', 'E1')).toBe('2027-09-E1')
+  })
+
+  it('assigns an early-January Sunday to the previous ISO year', () => {
+    expect(isoWeekOf('2027-01-03')).toEqual({ year: 2026, week: 53 })
   })
 })
