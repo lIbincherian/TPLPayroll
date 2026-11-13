@@ -218,3 +218,54 @@ describe('EmployeeForm — clearing an optional field on edit (issue #36)', () =
     )
   })
 })
+
+describe('EmployeeForm — wage effective from (#37)', () => {
+  function wageInput() {
+    return screen.getByLabelText('Wage effective from') as HTMLInputElement
+  }
+
+  function isoDaysFromToday(days: number) {
+    const now = new Date()
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + days))
+      .toISOString()
+      .split('T')[0]
+  }
+
+  it('shows the field with its default hint in create mode', () => {
+    render(<EmployeeForm mode="create" />)
+    expect(wageInput()).toBeInTheDocument()
+    expect(screen.getByText('Leave blank to use the date of joining, or the 1st of this month.')).toBeInTheDocument()
+  })
+
+  it('has no wage effective field in edit mode', () => {
+    render(<EmployeeForm mode="edit" employee={existingEmployee} currentSalary={15000} currentHourlyRate={70} />)
+    expect(screen.queryByLabelText('Wage effective from')).not.toBeInTheDocument()
+  })
+
+  it('warns when earlier than the date of joining, and still saves with that date', async () => {
+    vi.mocked(createEmployeeAction).mockResolvedValue({ ok: true, data: { id: 'new-id' } } as never)
+    const { container } = render(<EmployeeForm mode="create" />)
+    fillRequiredCreateFields('EMP-777')
+    fireEvent.change(placeholder('Lakshmi Venkatesh'), { target: { value: 'Asha Nair' } })
+    const joining = container.querySelector('input[name="dateOfJoining"]') as HTMLInputElement
+    fireEvent.change(joining, { target: { value: '2026-10-10' } })
+    fireEvent.change(wageInput(), { target: { value: '2026-10-01' } })
+
+    expect(screen.getByText('Earlier than the date of joining')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /save employee/i }))
+    await waitFor(() => expect(createEmployeeAction).toHaveBeenCalled())
+    expect(vi.mocked(createEmployeeAction).mock.calls[0][0].wageEffectiveFrom?.toISOString()).toBe('2026-10-01T00:00:00.000Z')
+  })
+
+  it('shows an inline error for a date 8 days ahead and does not submit', async () => {
+    render(<EmployeeForm mode="create" />)
+    fillRequiredCreateFields('EMP-778')
+    fireEvent.change(placeholder('Lakshmi Venkatesh'), { target: { value: 'Asha Nair' } })
+    fireEvent.change(wageInput(), { target: { value: isoDaysFromToday(8) } })
+    fireEvent.click(screen.getByRole('button', { name: /save employee/i }))
+
+    expect(await screen.findByText("Wage effective date can't be more than one week in the future.")).toBeInTheDocument()
+    expect(createEmployeeAction).not.toHaveBeenCalled()
+  })
+})

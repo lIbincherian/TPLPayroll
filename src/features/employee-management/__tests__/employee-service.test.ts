@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { Employee, EmployeeWageHistory, AuditLog } from '@prisma/client'
 
 // ─── Mock Prisma ─────────────────────────────────────────────────────────────
@@ -154,6 +154,70 @@ describe('createEmployee', () => {
         }),
       })
     )
+  })
+
+  describe('first wage row effectiveFrom (#37)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-11-13T10:30:00.000Z'))
+      vi.mocked(prisma.employee.findUnique).mockResolvedValue(null)
+      vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
+      vi.mocked(prisma.employee.create).mockResolvedValue(makeEmployee())
+      vi.mocked(prisma.employeeWageHistory.create).mockResolvedValue(makeWageHistory())
+      vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    function storedEffectiveFrom(): Date {
+      return vi.mocked(prisma.employeeWageHistory.create).mock.calls[0][0].data.effectiveFrom as Date
+    }
+
+    it('stores an explicit wage effective date at UTC midnight', async () => {
+      await createEmployee({ ...validInput, wageEffectiveFrom: new Date('2026-10-01T15:45:00.000Z') })
+      expect(storedEffectiveFrom().toISOString()).toBe('2026-10-01T00:00:00.000Z')
+    })
+
+    it('defaults to the date of joining when the field is blank', async () => {
+      await createEmployee({ ...validInput, dateOfJoining: new Date('2026-09-15') })
+      expect(storedEffectiveFrom().toISOString()).toBe('2026-09-15T00:00:00.000Z')
+    })
+
+    it('defaults to the 1st of the current month when both are blank', async () => {
+      await createEmployee(validInput)
+      expect(storedEffectiveFrom().toISOString()).toBe('2026-11-01T00:00:00.000Z')
+    })
+
+    it('accepts a date exactly 7 days ahead', async () => {
+      await createEmployee({ ...validInput, wageEffectiveFrom: new Date('2026-11-20') })
+      expect(storedEffectiveFrom().toISOString()).toBe('2026-11-20T00:00:00.000Z')
+    })
+
+    it('rejects a date 8 days ahead', async () => {
+      await expect(
+        createEmployee({ ...validInput, wageEffectiveFrom: new Date('2026-11-21') })
+      ).rejects.toMatchObject({
+        code: 'VALIDATION_ERROR',
+        message: "Wage effective date can't be more than one week in the future.",
+      })
+      expect(prisma.employeeWageHistory.create).not.toHaveBeenCalled()
+    })
+
+    it('accepts a date earlier than the date of joining', async () => {
+      await createEmployee({
+        ...validInput,
+        dateOfJoining: new Date('2026-11-10'),
+        wageEffectiveFrom: new Date('2026-10-01'),
+      })
+      expect(storedEffectiveFrom().toISOString()).toBe('2026-10-01T00:00:00.000Z')
+    })
+
+    it('the update schema does not accept the field', () => {
+      const parsed = UpdateEmployeeSchema.safeParse({ wageEffectiveFrom: new Date('2026-10-01') })
+      expect(parsed.success && 'wageEffectiveFrom' in parsed.data).toBe(false)
+    })
   })
 
   it('creates audit log with actionType CREATE and entityType EMPLOYEE', async () => {

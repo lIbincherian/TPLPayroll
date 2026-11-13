@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx'
 import prisma from '@/lib/prisma'
 import { normalizeEmployeeId } from '../utils/normalize'
 import { computeHourlyRate } from '@/features/employee-management/utils/wage'
+import { resolveInitialWageEffectiveFrom } from '@/features/employee-management/lib/wage-effective-from'
 import {
   IMPORT_SHEET_NAME,
   IMPORT_COLUMNS,
@@ -260,7 +261,7 @@ export async function executeImport(
     // Use the array form of $transaction (no callback) — all pure inserts, no reads
     // mid-flight, so it resolves in milliseconds even for large files.
     let createdCount = 0
-    const createdEmployees: { id: string; employeeId: string; salary: number }[] = []
+    const createdEmployees: { id: string; employeeId: string; salary: number; effectiveFrom: Date }[] = []
 
     if (toCreate.length > 0) {
       const results = await prisma.$transaction(
@@ -297,6 +298,7 @@ export async function executeImport(
           id: created.id,
           employeeId: created.employeeId,
           salary: toCreate[i].data.salary,
+          effectiveFrom: resolveInitialWageEffectiveFrom(null, toCreate[i].data.dateOfJoining, today),
         })
       })
       createdCount = results.length
@@ -309,7 +311,7 @@ export async function executeImport(
           employeeId: e.id,
           weeklySalary: e.salary,
           hourlyRate: computeHourlyRate(e.salary),
-          effectiveFrom: today,
+          effectiveFrom: e.effectiveFrom,
           effectiveTo: null,
           changeSource: 'IMPORT',
           employeeImportBatchId: batch.id,
