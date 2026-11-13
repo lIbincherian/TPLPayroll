@@ -432,8 +432,8 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
       action: { label: 'Go to payroll', onClick: () => router.push(`/payroll/generate/${weekId}`) },
     })
     await reload()
-    // The status notice above the grid is rendered by the page, so fetch it again.
-    if (statusLine) router.refresh()
+    // The status notice and the header count are rendered by the page, so fetch them again.
+    router.refresh()
     setApproveOpen(false)
     return { ok: true }
   }
@@ -449,6 +449,7 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
     }
     toast.success('Week reopened')
     await reload()
+    router.refresh()
     setReopenOpen(false)
     return { ok: true }
   }
