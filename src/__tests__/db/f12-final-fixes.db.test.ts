@@ -151,10 +151,14 @@ describe.skipIf(!enabled)('F12 final fixes (real database)', { timeout: 120000 }
       },
     })
 
+  let activeBefore: string[] = []
+
   beforeAll(async () => {
     process.env.DIRECT_DATABASE_URL = URL
     process.env.DATABASE_URL = URL
     prisma = (await import('@/lib/prisma')).default
+    // Approving a week sets employee status (issue #35); afterAll puts back who was active.
+    activeBefore = (await prisma.employee.findMany({ where: { isActive: true }, select: { id: true } })).map((e) => e.id)
     ;({ approveWeek, reopenWeek } = await import('@/features/attendance-sync/services/week-approval.service'))
     ;({ listAttendanceWeeks } = await import('@/features/attendance-sync/services/week-list.service'))
     ;({ calculatePayroll, approvePayroll, checkAttendanceReadiness, getAvailablePayrollWeeks } = await import('@/features/payroll-generation/services/payroll.service'))
@@ -173,6 +177,7 @@ describe.skipIf(!enabled)('F12 final fixes (real database)', { timeout: 120000 }
   }, 60000)
 
   afterAll(async () => {
+    await prisma.employee.updateMany({ where: { id: { in: activeBefore } }, data: { isActive: true } })
     await cleanup()
     if (originalSettings) {
       await prisma.$executeRawUnsafe(`UPDATE "Settings" SET "payrollWeekStartDay" = '${originalSettings.payrollWeekStartDay}', "updatedAt" = $1 WHERE id = 'singleton'`, originalSettings.updatedAt)
@@ -198,7 +203,10 @@ describe.skipIf(!enabled)('F12 final fixes (real database)', { timeout: 120000 }
   /** An approved week and an approved payroll run for it, with an adjustment application on one employee. */
   async function payrollWeek(week: string, o: { punches?: Array<{ id: string }>; adjustment?: NewAdjustment } = {}) {
     const upload = await seedWeek(week, 'REVIEW')
-    await seedPunches(upload.id, week, o.punches ?? [empA, empB])
+    const punches = o.punches ?? [empA, empB]
+    await seedPunches(upload.id, week, punches)
+    // These employees work this week: an earlier approval may have marked them inactive for having no punches.
+    await prisma.employee.updateMany({ where: { id: { in: punches.map((e) => e.id) } }, data: { isActive: true } })
     await approveWeek(week)
 
     let adjustmentId: string | null = null
@@ -573,23 +581,29 @@ describe.skipIf(!enabled)('F12 final fixes (real database)', { timeout: 120000 }
       uploadId = (await seedWeek(week, 'REVIEW')).id
       // A and B work. C is active with no punches (zero hours). D is inactive with punches and was REJECTED.
       await seedPunches(uploadId, week, [empA, empB, empD])
+      // C must be active when this week is approved; an earlier approval may have marked her inactive.
+      await prisma.employee.update({ where: { id: empC.id }, data: { isActive: true } })
       await prisma.attendanceEmployeeDecision.create({ data: { attendanceUploadId: uploadId, employeeId: empD.id, reason: 'INACTIVE', decision: 'REJECTED' } })
     }, 60000)
 
     const stored = async () => (await prisma.attendanceUpload.findUniqueOrThrow({ where: { id: uploadId } })).approvedLeftOutCount
     const zeroHourActives = async () =>
       (await prisma.employee.count({ where: { isActive: true } })) - 2 // everyone active except A and B (who have punches)
+    let firstCount = 0
 
     it('a week in review has no stored count', async () => {
       expect(await stored()).toBeNull()
     })
 
     it('approving stores the count the summary showed: every active employee without hours, plus the rejected one', async () => {
+      // Counted before approving: the approval marks the zero-hour actives inactive (issue #35).
+      const expected = (await zeroHourActives()) + 1
       const { summary } = await approveWeek(week)
 
       expect(summary.leftOut.map((l) => l.reason).filter((r) => r === 'REJECTED')).toHaveLength(1)
       expect(await stored()).toBe(summary.leftOut.length)
-      expect(await stored()).toBe((await zeroHourActives()) + 1)
+      expect(await stored()).toBe(expected)
+      firstCount = expected
     })
 
     it('payroll shows the stored number, and keeps showing it when the live punches change afterwards', async () => {
@@ -599,6 +613,8 @@ describe.skipIf(!enabled)('F12 final fixes (real database)', { timeout: 120000 }
 
       // C starts to have punches in the live set (they were never approved). A recount from the live grid would say one fewer.
       await seedPunches(uploadId, week, [empC])
+      // The approval marked C inactive for having no punches; she is a working employee again.
+      await prisma.employee.update({ where: { id: empC.id }, data: { isActive: true } })
 
       expect(await checkAttendanceReadiness(utc(week), utc(addDays(week, 6)))).toMatchObject({ leftOutCount: count })
     })
@@ -619,7 +635,11 @@ describe.skipIf(!enabled)('F12 final fixes (real database)', { timeout: 120000 }
 
       const { summary } = await approveWeek(week)
       expect(await stored()).toBe(summary.leftOut.length)
-      expect(await stored()).toBe((await zeroHourActives()) - 1 + 1) // C now has hours, D is still rejected
+      // C now has hours and D is still rejected. Zero-hour actives the first approval marked inactive (when no later
+      // week was approved) are no longer counted, so the new number is at most one fewer.
+      expect(summary.leftOut.map((l) => l.employeeId)).not.toContain(empC.id)
+      expect(summary.leftOut.filter((l) => l.reason === 'REJECTED')).toHaveLength(1)
+      expect(await stored()).toBeLessThanOrEqual(firstCount - 1)
     })
   })
 
