@@ -20,7 +20,7 @@ function renderGroup(label: string, employees: StatusChangedEmployee[]) {
 }
 
 /**
- * Who the week's latest approval marked inactive or reactivated, as one line above the grid. The names
+ * Who this week's approvals marked inactive or reactivated, as one line above the grid. The names
  * stay folded away so a long list never pushes the grid down. Renders nothing when nobody changed.
  */
 export function StatusChangesNotice({ changes }: { changes: StatusChangeSummary }) {
@@ -45,7 +45,7 @@ export function StatusChangesNotice({ changes }: { changes: StatusChangeSummary 
         </span>
       </summary>
       <dl className="mt-2 flex max-h-48 flex-col gap-1.5 overflow-y-auto rounded-lg pb-1 pl-6 outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
-        tabIndex={0}>
+        tabIndex={0} aria-label="Employees whose status changed">
         {renderGroup('Marked inactive', changes.markedInactive)}
         {renderGroup('Reactivated', changes.reactivated)}
       </dl>

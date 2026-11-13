@@ -1,24 +1,29 @@
 import type { Prisma } from '@prisma/client'
-import { computeStatusChanges, summarizeStatusChanges, type StatusEmployee } from '../lib/employee-status'
+import prisma from '@/lib/prisma'
+import {
+  computeStatusChanges,
+  summarizeStatusChanges,
+  type EmployeeStatusChange,
+  type StatusEmployee,
+} from '../lib/employee-status'
 import { plural } from '../lib/format'
 import { formatWeekLabel, toUtcDate } from '../lib/week'
 import type { ISODate, PunchMatchStatus, StatusChangeSummary, WeekRange } from '../types/attendance-sync.types'
 
-/**
- * Set employee status from an approved week. Runs inside the approval transaction (`tx`), after the
- * week row is locked, so the punches read here are the ones being approved. Older weeks never change
- * status: nothing happens when a later eTimeOffice week is already approved.
- */
-export async function applyApprovalStatusChanges(
-  tx: Prisma.TransactionClient,
-  input: { uploadId: string; week: WeekRange; today: ISODate; rejectedIds: ReadonlySet<string> },
-): Promise<StatusChangeSummary> {
-  const { uploadId, week, today, rejectedIds } = input
+type ApprovalStatusInput = { uploadId: string; week: WeekRange; today: ISODate; rejectedIds: ReadonlySet<string> }
 
-  const laterWeeks = await tx.attendanceUpload.count({
+/**
+ * The status changes approving this week would make, read through `db`. Older weeks never change
+ * status: nothing changes when a later eTimeOffice week is already approved.
+ */
+async function readStatusChanges(
+  db: Prisma.TransactionClient,
+  { uploadId, week, today, rejectedIds }: ApprovalStatusInput,
+): Promise<EmployeeStatusChange[]> {
+  const laterWeeks = await db.attendanceUpload.count({
     where: { source: 'ETIMEOFFICE', payrollWeekStartDate: { gt: toUtcDate(week.start) }, status: 'APPROVED' },
   })
-  const employees = (await tx.employee.findMany({
+  const employees: StatusEmployee[] = await db.employee.findMany({
     select: {
       id: true,
       employeeId: true,
@@ -27,8 +32,8 @@ export async function applyApprovalStatusChanges(
       dateOfJoining: true,
       dateOfResignation: true,
     },
-  })) as StatusEmployee[]
-  const rows = await tx.attendancePunch.findMany({
+  })
+  const rows = await db.attendancePunch.findMany({
     where: { attendanceUploadId: uploadId, correctionId: null },
     select: {
       employeeId: true,
@@ -41,7 +46,7 @@ export async function applyApprovalStatusChanges(
     },
   })
 
-  const changes = computeStatusChanges({
+  return computeStatusChanges({
     week,
     today,
     employees,
@@ -53,6 +58,23 @@ export async function applyApprovalStatusChanges(
     laterWeekApproved: laterWeeks > 0,
     rejectedIds,
   })
+}
+
+/** What the approval dialog shows before approving: the same rule, read-only. */
+export async function previewApprovalStatusChanges(input: ApprovalStatusInput): Promise<StatusChangeSummary> {
+  return summarizeStatusChanges(await readStatusChanges(prisma, input))
+}
+
+/**
+ * Set employee status from an approved week. Runs inside the approval transaction (`tx`), after the
+ * week row is locked, so the punches read here are the ones being approved.
+ */
+export async function applyApprovalStatusChanges(
+  tx: Prisma.TransactionClient,
+  input: ApprovalStatusInput,
+): Promise<StatusChangeSummary> {
+  const { week } = input
+  const changes = await readStatusChanges(tx, input)
 
   for (const to of [false, true]) {
     const ids = changes.filter((c) => c.to === to).map((c) => c.employeeDbId)

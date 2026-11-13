@@ -13,7 +13,7 @@ import {
   type StatusChangeSummary,
 } from '../types/attendance-sync.types'
 import { auditEntry } from './attendance-audit.service'
-import { applyApprovalStatusChanges } from './employee-status.service'
+import { applyApprovalStatusChanges, previewApprovalStatusChanges } from './employee-status.service'
 import { getPunchReview } from './punch-review.service'
 import { requireApiWeek } from './week-list.service'
 import { assertNotSyncing, lockWeekRow } from './week-lock.service'
@@ -36,6 +36,10 @@ async function loadDecisionInputs(
     employeeName: row.employee.employeeName,
     decision: row.decision as EmployeeDecisionValue,
   }))
+}
+
+function rejectedIdsOf(decisions: ApprovalDecisionInput[]): Set<string> {
+  return new Set(decisions.filter((d) => d.decision === 'REJECTED').map((d) => d.employeeId))
 }
 
 /** For a correction: how many employee-days differ from the approved punches. */
@@ -67,8 +71,18 @@ async function countChangedDays(uploadId: string, correctionId: string): Promise
 /** The numbers shown before approving: employee count, hours, edited days, who is left out. */
 export async function getApprovalSummary(weekId: string, mode: ReviewMode = { kind: 'LIVE' }): Promise<ApprovalSummary> {
   const review = await getPunchReview(weekId, mode)
-  const { upload } = await requireApiWeek(weekId)
-  const summary = buildApprovalSummary(review, await loadDecisionInputs(upload.id))
+  const { upload, week } = await requireApiWeek(weekId)
+  const decisions = await loadDecisionInputs(upload.id)
+  const summary = buildApprovalSummary(review, decisions)
+
+  if (mode.kind === 'LIVE' && review.status === 'REVIEW') {
+    summary.statusChanges = await previewApprovalStatusChanges({
+      uploadId: upload.id,
+      week,
+      today: todayInIST(new Date()),
+      rejectedIds: rejectedIdsOf(decisions),
+    })
+  }
 
   if (mode.kind === 'CORRECTION') {
     summary.changedDaysInCorrection = await countChangedDays(upload.id, mode.correctionId)
@@ -150,7 +164,7 @@ export async function approveWeek(
         uploadId: upload.id,
         week,
         today: todayInIST(approvedAt),
-        rejectedIds: new Set(decisions.filter((d) => d.decision === 'REJECTED').map((d) => d.employeeId)),
+        rejectedIds: rejectedIdsOf(decisions),
       })
 
       await auditEntry(

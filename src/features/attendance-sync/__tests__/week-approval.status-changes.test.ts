@@ -7,7 +7,7 @@ vi.mock('@/features/attendance-sync/services/etimeoffice.client', () => ({ fetch
 import prisma from '@/lib/prisma'
 import { fetchPunchData } from '@/features/attendance-sync/services/etimeoffice.client'
 import { syncWeek } from '@/features/attendance-sync/services/sync.service'
-import { approveWeek } from '@/features/attendance-sync/services/week-approval.service'
+import { approveWeek, getApprovalSummary } from '@/features/attendance-sync/services/week-approval.service'
 import { AttendanceSyncError } from '@/features/attendance-sync/types/attendance-sync.types'
 import {
   auditRows,
@@ -171,5 +171,26 @@ describe('a pull never changes employee status', () => {
     expect(outcome.outcome).toBe('LOADED')
     expect(db.employee.updateMany).not.toHaveBeenCalled()
     expect(db.tx.employee.updateMany).not.toHaveBeenCalled()
+  })
+})
+
+describe('getApprovalSummary previews the status changes', () => {
+  it('lists who approving would mark inactive and reactivate, without writing anything', async () => {
+    const summary = await getApprovalSummary(WEEK_ID)
+
+    expect(summary.statusChanges).toEqual({
+      markedInactive: [{ id: 'emp-5', employeeId: 'TPLGOAHLP005', employeeName: 'Ravi Kumar' }],
+      reactivated: [{ id: 'emp-8', employeeId: 'TPLGOAHLP008', employeeName: 'Bala Singh' }],
+    })
+    expect(db.employee.updateMany).not.toHaveBeenCalled()
+    expect(db.tx.employee.updateMany).not.toHaveBeenCalled()
+  })
+
+  it('has no preview for an approved week', async () => {
+    serveUpload(db, makeUpload({ id: 'upload-1', status: 'APPROVED' }))
+
+    const summary = await getApprovalSummary(WEEK_ID)
+
+    expect(summary.statusChanges).toBeUndefined()
   })
 })

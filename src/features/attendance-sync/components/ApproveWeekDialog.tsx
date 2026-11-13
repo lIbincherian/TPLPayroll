@@ -6,8 +6,9 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { getApprovalSummaryAction } from '../actions/attendance-sync.actions'
+import { describeStatusChanges } from '../lib/employee-status'
 import { formatDayShort, formatHoursTotal, plural } from '../lib/format'
-import type { ApprovalSummary, ISODate, ReviewMode } from '../types/attendance-sync.types'
+import type { ApprovalSummary, ISODate, ReviewMode, StatusChangedEmployee } from '../types/attendance-sync.types'
 
 const LABEL = 'text-xs font-medium uppercase tracking-wider text-zinc-500'
 
@@ -49,6 +50,36 @@ function SummaryStrip({ summary, correction }: { summary: ApprovalSummary | null
   )
 }
 
+// ─── Employee status changes ──────────────────────────────────────────────────
+
+function StatusChangesPreview({ summary }: { summary: ApprovalSummary }) {
+  const changes = summary.statusChanges
+  const sentence = changes ? describeStatusChanges(changes) : null
+  if (!changes || sentence === null) return null
+
+  const names = (list: StatusChangedEmployee[]) => list.map((e) => e.employeeName).join(', ')
+  return (
+    <section className="pt-4" data-testid="approval-status-changes">
+      <h3 className="text-sm font-medium text-zinc-900">Approving also changes employee status</h3>
+      <p className="mt-1 text-sm text-zinc-600">{sentence}.</p>
+      <dl className="mt-2 max-h-32 space-y-1 overflow-y-auto text-sm">
+        {changes.markedInactive.length > 0 && (
+          <div>
+            <dt className="inline font-medium text-zinc-700">Marked inactive (no punches): </dt>
+            <dd className="inline text-zinc-600">{names(changes.markedInactive)}</dd>
+          </div>
+        )}
+        {changes.reactivated.length > 0 && (
+          <div>
+            <dt className="inline font-medium text-zinc-700">Reactivated (has punches): </dt>
+            <dd className="inline text-zinc-600">{names(changes.reactivated)}</dd>
+          </div>
+        )}
+      </dl>
+    </section>
+  )
+}
+
 // ─── Left out and edited days ─────────────────────────────────────────────────
 
 function LeftOutList({
@@ -58,6 +89,7 @@ function LeftOutList({
   summary: ApprovalSummary
   onShowEmployee: (employeeCode: string) => void
 }) {
+  const markedInactive = new Set(summary.statusChanges?.markedInactive.map((e) => e.id))
   if (summary.leftOut.length === 0) {
     return (
       <section className="pt-4" data-testid="approval-left-out">
@@ -76,7 +108,11 @@ function LeftOutList({
               <span className="min-w-0 flex-1 truncate text-sm text-zinc-900">{item.employeeName}</span>
               <span className="font-mono text-xs text-zinc-500">{item.employeeCode}</span>
               <span className="w-40 text-right text-xs text-zinc-600">
-                {item.reason === 'ZERO_HOURS' ? 'Zero hours' : 'Rejected in employee check'}
+                {item.reason === 'REJECTED'
+                  ? 'Rejected in employee check'
+                  : markedInactive.has(item.employeeId)
+                    ? 'No punches, marked inactive'
+                    : 'Zero hours'}
               </span>
             </>
           )
@@ -213,6 +249,7 @@ function ApproveBody({
       {summary && (
         <>
           <LeftOutList summary={summary} onShowEmployee={onShowEmployee} />
+          <StatusChangesPreview summary={summary} />
           <EditedDays summary={summary} />
         </>
       )}

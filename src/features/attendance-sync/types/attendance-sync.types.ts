@@ -57,7 +57,7 @@ export interface DiscardSummary {
   edits: DiscardedEdit[]
 }
 
-/** An employee whose status a pull changed. `employeeId` is the Employee ID code, `id` the database id. */
+/** An employee whose status a week's approval changed. `employeeId` is the Employee ID code, `id` the database id. */
 export interface StatusChangedEmployee {
   id: string
   employeeId: string
@@ -274,6 +274,8 @@ export interface ApprovalSummary {
     reason: 'ZERO_HOURS' | 'REJECTED'
   }>
   changedDaysInCorrection?: number
+  /** Live week in review: the employee status changes approving it would make. */
+  statusChanges?: StatusChangeSummary
 }
 
 // ─── Week list ────────────────────────────────────────────────────────────────

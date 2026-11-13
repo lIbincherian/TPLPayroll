@@ -112,7 +112,7 @@ export function computeStatusChanges(input: {
   return changes
 }
 
-/** The changes grouped for the sync outcome and the LOADED audit entry. */
+/** The changes grouped for the approval dialog, the approval result and the APPROVE audit entry. */
 export function summarizeStatusChanges(changes: EmployeeStatusChange[]): StatusChangeSummary {
   const pick = (c: EmployeeStatusChange) => ({ id: c.employeeDbId, employeeId: c.employeeId, employeeName: c.employeeName })
   return {

@@ -203,8 +203,10 @@ interface GridBaseProps {
   backHref: string
   backLabel: string
   title: string
-  /** Shown below the header, inside the grid's column (for example the pull's status changes). */
+  /** Shown below the header, inside the grid's column (for example the approval's status changes). */
   notice?: ReactNode
+  /** Employees the week's approval marked inactive: they left the grid, so the header counts them. */
+  markedInactiveCount?: number
 }
 
 /** A correction review must come with its actions; a live one must not. */
@@ -218,7 +220,7 @@ export type PunchReviewGridProps =
  * (editable, or locked once approved) and a payroll correction.
  */
 export function PunchReviewGrid(props: PunchReviewGridProps) {
-  const { initialReview, backHref, backLabel, title, notice } = props
+  const { initialReview, backHref, backLabel, title, notice, markedInactiveCount = 0 } = props
   const correction = props.correction ?? null
   const router = useRouter()
   const isDesktop = useMediaQuery('(min-width: 768px)')
@@ -621,6 +623,7 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
             <span className="font-mono tabular-nums">{formatHoursTotal(review.totals.regular)}</span> regular ·{' '}
             <span className="font-mono tabular-nums">{formatHoursTotal(review.totals.overtime)}</span> overtime
             {leftOutCount !== null ? ` · ${leftOutCount} left out` : ''}
+            {markedInactiveCount > 0 ? ` · ${markedInactiveCount} marked inactive (no punches)` : ''}
           </p>
           {payrollApproved && (
             <p className="flex items-start gap-2.5 text-sm text-zinc-500" data-testid="payroll-lock-note">
