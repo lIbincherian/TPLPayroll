@@ -4,9 +4,14 @@
  * decimals (4512.5 → "4,512.50") so the screen matches what was paid. No currency symbol.
  */
 export function formatNetPay(amount: number): string {
-  const whole = Number.isInteger(Math.round(amount * 100) / 100)
+  const whole = isWholeRupees(amount)
   return new Intl.NumberFormat('en-IN', {
     minimumFractionDigits: whole ? 0 : 2,
     maximumFractionDigits: whole ? 0 : 2,
   }).format(amount)
+}
+
+/** True when the amount, read to the paisa, has no paise. */
+export function isWholeRupees(amount: number): boolean {
+  return Number.isInteger(Math.round(amount * 100) / 100)
 }

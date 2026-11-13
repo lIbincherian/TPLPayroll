@@ -11,7 +11,7 @@ import {
 } from '@/features/payroll-reports/types/report.types'
 import { formatPunchesCell, pairsFromStoredPunches } from '@/features/attendance-sync/lib/hours'
 import { toISODate } from '@/features/attendance-sync/lib/week'
-import { formatNetPay } from '@/features/payroll-generation/lib/format-net-pay'
+import { formatNetPay, isWholeRupees } from '@/features/payroll-generation/lib/format-net-pay'
 
 let fontsConfigured = false
 
@@ -80,7 +80,7 @@ export function formatNetPayPdf(amount: number): string {
 
 /** The Excel number format for a net-pay cell: no decimals when the amount is whole. */
 export function netPayXlsxFormat(amount: number): string {
-  return Number.isInteger(Math.round(amount * 100) / 100) ? '"₹"#,##0' : '"₹"#,##0.00'
+  return isWholeRupees(amount) ? '"₹"#,##0' : '"₹"#,##0.00'
 }
 
 export function formatHours(hours: number): string {
