@@ -481,6 +481,8 @@ test.describe('E2E-37: Unknown code can be ignored and the choice is saved', () 
 
   test('the pull warning lists a week-ignored code beside the employee decisions', async ({ request, page }) => {
     await loadWeek(request)
+    // The pull reactivates an inactive employee with punches (issue #35); set them inactive again to test the decision.
+    await prisma.employee.update({ where: { employeeId: 'E2E-HLP-9002' }, data: { isActive: false } })
     await openEmployeeCheck(page)
     await page.getByTestId('decision-reject-E2E-HLP-9002').click()
     await expect(page.getByTestId('decision-row-E2E-HLP-9002')).toHaveAttribute('data-decision', 'REJECTED')

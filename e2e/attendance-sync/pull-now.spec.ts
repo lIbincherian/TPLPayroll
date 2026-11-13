@@ -243,9 +243,11 @@ test.describe('E2E-30: A new pull replaces the previous pull after a warning', (
     expect(await getDecisionRows(completed.start)).toHaveLength(0)
     expect((await getWeekRow(completed.start))?.status).toBe('REVIEW')
 
-    // Employee decisions must be made again
+    // The pull reactivated 9002, who has punches (issue #35), so no decision is asked for them
+    expect((await prisma.employee.findUnique({ where: { employeeId: 'E2E-HLP-9002' } }))?.isActive).toBe(true)
     await page.goto(`/attendance/${completed.start}/employee-check`)
-    await expect(page.getByTestId('decision-row-E2E-HLP-9002')).toHaveAttribute('data-decision', 'NONE')
+    await expect(page.getByTestId('employee-check')).toBeVisible({ timeout: 15000 })
+    await expect(page.getByTestId('decision-row-E2E-HLP-9002')).toHaveCount(0)
 
     // The audit log keeps the discarded edits: the earlier edit entry is still there, and the pull entry lists them
     const auditAfter = await getAuditRows('ATTENDANCE_PUNCH')
