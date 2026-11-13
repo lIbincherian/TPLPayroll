@@ -94,7 +94,7 @@ describe('PayrollSummaryStep', () => {
       '₹125.00',
       '₹100.00',
       '₹50.00',
-      '₹2,675.00',
+      '₹2,675',
       '',
       '2026-45-TPLGOASHT231',
     ])
@@ -115,7 +115,7 @@ describe('PayrollSummaryStep', () => {
       '₹250.00',
       '₹200.00',
       '₹100.00',
-      '₹5,350.00',
+      '₹5,350',
       '',
     ])
     expect(cells[0].getAttribute('colspan')).toBe('2')
