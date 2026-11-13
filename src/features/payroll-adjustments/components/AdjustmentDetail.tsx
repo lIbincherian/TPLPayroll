@@ -16,6 +16,7 @@ import {
   Trash,
   Warning,
   SpinnerGap,
+  Prohibit,
 } from '@phosphor-icons/react'
 import { cancelAdjustmentAction } from '@/features/payroll-adjustments/actions/adjustment.actions'
 import type {
@@ -50,7 +51,13 @@ function formatWeek(start: Date, end: Date) {
 
 // ─── Application status badge ─────────────────────────────────────────────────
 
-function AppStatusBadge({ status }: { status: ApprovalStatus }) {
+function AppStatusBadge({
+  status,
+  carriedTo,
+}: {
+  status: ApprovalStatus
+  carriedTo?: Date | null
+}) {
   if (status === 'APPROVED') {
     return (
       <span className="inline-flex items-center gap-1.5 text-sm font-medium text-emerald-700">
@@ -63,7 +70,7 @@ function AppStatusBadge({ status }: { status: ApprovalStatus }) {
     return (
       <span className="inline-flex items-center gap-1.5 text-sm text-zinc-400">
         <XCircle size={15} weight="fill" className="text-zinc-300" />
-        Skipped
+        {carriedTo ? `Skipped, carried to week of ${formatDate(carriedTo)}` : 'Skipped'}
       </span>
     )
   }
@@ -101,6 +108,10 @@ export function AdjustmentDetail({ adjustment: adj }: Props) {
   const hasApprovedApp = adj.applications.some((a) => a.approvalStatus === 'APPROVED')
   const canEdit = adj.status === 'ACTIVE' && !hasApprovedApp
   const canDelete = adj.status === 'ACTIVE'
+  const isCancelled = adj.status === 'CANCELLED'
+  const historyApps = isCancelled
+    ? adj.applications.filter((a) => a.approvalStatus !== 'PENDING')
+    : adj.applications
 
   function handleDelete() {
     setDeleteError(null)
@@ -327,7 +338,7 @@ export function AdjustmentDetail({ adjustment: adj }: Props) {
       <div>
         <h2 className="mb-4 text-sm font-semibold text-zinc-700">Application History</h2>
 
-        {adj.applications.length === 0 ? (
+        {historyApps.length === 0 && !isCancelled ? (
           <p className="text-sm text-zinc-400">No applications yet.</p>
         ) : (
           <div className="overflow-x-auto rounded-2xl border border-zinc-200/60">
@@ -345,7 +356,7 @@ export function AdjustmentDetail({ adjustment: adj }: Props) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100 bg-white">
-                {adj.applications.map((app: AdjustmentApplicationRecord, i) => (
+                {historyApps.map((app: AdjustmentApplicationRecord, i) => (
                   <tr
                     key={app.id}
                     className={app.approvalStatus === 'SKIPPED' ? 'opacity-50' : ''}
@@ -373,7 +384,10 @@ export function AdjustmentDetail({ adjustment: adj }: Props) {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <AppStatusBadge status={app.approvalStatus} />
+                      <AppStatusBadge
+                        status={app.approvalStatus}
+                        carriedTo={app.carriedForwardToPayrollWeekStartDate}
+                      />
                     </td>
                     <td className="px-4 py-3">
                       <span className="text-sm text-zinc-500">
@@ -386,6 +400,19 @@ export function AdjustmentDetail({ adjustment: adj }: Props) {
                     </td>
                   </tr>
                 ))}
+                {isCancelled && (
+                  <tr data-testid="history-cancelled-entry">
+                    <td className="px-4 py-3 text-sm text-zinc-400">—</td>
+                    <td className="px-4 py-3 text-sm text-zinc-400">—</td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center gap-1.5 text-sm font-medium text-rose-600">
+                        <Prohibit size={15} weight="bold" className="text-rose-500" />
+                        Cancelled
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-zinc-400">—</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
