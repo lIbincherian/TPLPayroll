@@ -376,7 +376,7 @@ export function AdjustmentDetail({ adjustment: adj }: Props) {
                     <td className="px-4 py-3">
                       <span
                         className={`font-mono tabular-nums text-sm ${
-                          app.approvalStatus === 'SKIPPED' ? 'line-through text-zinc-400' : 'text-zinc-900'
+                          app.approvalStatus === 'SKIPPED' ? 'line-through text-zinc-500' : 'text-zinc-900'
                         }`}
                       >
                         ₹{formatAmount(app.appliedAmount)}

@@ -225,7 +225,7 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
                       <td className="px-4 py-3">
                         <span
                           className={`font-mono tabular-nums text-sm ${
-                            isMuted ? 'text-zinc-400 line-through' : 'text-zinc-900'
+                            isMuted ? 'text-zinc-500 line-through' : 'text-zinc-900'
                           }`}
                         >
                           ₹{formatAmount(item.appliedAmount)}
