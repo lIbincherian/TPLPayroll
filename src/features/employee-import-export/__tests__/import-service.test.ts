@@ -62,8 +62,7 @@ function makeValidRow(overrides: Record<string, unknown> = {}): Record<string, u
     'Employee ID': 'EMP-001',
     'Employee Name': 'Ravi Kumar',
     'Designation': 'Guard',
-    'Salary': 12000,
-    'Hourly Rate': 62.5,
+    'Daily Wage': 12000,
     'Active': 'Active',
     'Site': 'North Gate',
     ...overrides,
@@ -242,6 +241,27 @@ describe('parseImportFile', () => {
     expect(result.invalidRows[0].errors).toContain('INVALID_SALARY')
   })
 
+  it('reads the daily wage from a "Daily Wage" column with no "Hourly Rate" column', async () => {
+    vi.mocked(prisma.employee.findMany).mockResolvedValue([])
+
+    const buf = makeXlsxBuffer('Employee Master List', [makeValidRow({ 'Daily Wage': 800 })])
+    const result = await parseImportFile(buf)
+
+    expect(result.invalidRows).toHaveLength(0)
+    expect(result.validRows[0].data.salary).toBe(800)
+  })
+
+  it('reads the daily wage from the legacy "Salary" column', async () => {
+    vi.mocked(prisma.employee.findMany).mockResolvedValue([])
+
+    const row = makeValidRow({ 'Salary': 900, 'Hourly Rate': 999 })
+    delete row['Daily Wage']
+    const result = await parseImportFile(makeXlsxBuffer('Employee Master List', [row]))
+
+    expect(result.invalidRows).toHaveLength(0)
+    expect(result.validRows[0].data.salary).toBe(900)
+  })
+
   it('marks existing employees as UPDATE action', async () => {
     vi.mocked(prisma.employee.findMany).mockResolvedValue([makeEmployee()])
 
@@ -345,7 +365,7 @@ describe('executeImport', () => {
     expect(result.createdEmployeeCount).toBe(0)
   })
 
-  it('creates wage history when hourly rate changes', async () => {
+  it('writes a wage row with the computed hourly rate when the daily wage changes', async () => {
     vi.mocked(prisma.employee.findMany).mockResolvedValue([
       makeEmployee({ employeeId: 'EMP-001' }),
     ])
@@ -354,21 +374,74 @@ describe('executeImport', () => {
     } as never)
     vi.mocked(prisma.employee.update).mockResolvedValue(makeEmployee())
     vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([
-      makeWageHistory({ hourlyRate: 60 as unknown as EmployeeWageHistory['hourlyRate'] }),
+      makeWageHistory({ weeklySalary: 800 as unknown as EmployeeWageHistory['weeklySalary'] }),
     ])
 
-    const rows = [makeValidRow({ 'Employee ID': 'EMP-001', 'Hourly Rate': 70 })]
+    const rows = [makeValidRow({ 'Employee ID': 'EMP-001', 'Daily Wage': 1000 })]
     const buf = makeXlsxBuffer('Employee Master List', rows)
     await executeImport(buf, 'employees.xlsx', '/tmp/employees.xlsx')
 
     expect(prisma.employeeWageHistory.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.arrayContaining([
-          expect.objectContaining({ hourlyRate: 70 }),
+          expect.objectContaining({ weeklySalary: 1000, hourlyRate: 125 }),
         ]),
       })
     )
     expect(prisma.employeeWageHistory.updateMany).toHaveBeenCalled()
+  })
+
+  it('writes no wage row when the daily wage is unchanged, even if the stored hourly rate is not daily / 8', async () => {
+    vi.mocked(prisma.employee.findMany).mockResolvedValue([
+      makeEmployee({ employeeId: 'EMP-001' }),
+    ])
+    vi.mocked(prisma.employeeImportBatch.create).mockResolvedValue({
+      id: 'batch-1',
+    } as never)
+    vi.mocked(prisma.employee.update).mockResolvedValue(makeEmployee())
+    vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([
+      makeWageHistory({
+        weeklySalary: 800 as unknown as EmployeeWageHistory['weeklySalary'],
+        hourlyRate: 60 as unknown as EmployeeWageHistory['hourlyRate'],
+      }),
+    ])
+
+    const rows = [makeValidRow({ 'Employee ID': 'EMP-001', 'Daily Wage': 800, 'Hourly Rate': 70 })]
+    const buf = makeXlsxBuffer('Employee Master List', rows)
+    await executeImport(buf, 'employees.xlsx', '/tmp/employees.xlsx')
+
+    expect(prisma.employeeWageHistory.createMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.arrayContaining([expect.objectContaining({ employeeId: 'uuid-1' })]),
+      })
+    )
+    expect(prisma.employeeWageHistory.updateMany).not.toHaveBeenCalled()
+  })
+
+  it('stores daily / 8 for an old file with Salary and Hourly Rate columns, ignoring the hourly rate', async () => {
+    vi.mocked(prisma.employee.findMany).mockResolvedValue([])
+    vi.mocked(prisma.employeeImportBatch.create).mockResolvedValue({
+      id: 'batch-1',
+    } as never)
+    vi.mocked(prisma.employee.create).mockResolvedValue(makeEmployee())
+
+    const rows = [{
+      'Employee ID': 'EMP-001',
+      'Employee Name': 'Ravi Kumar',
+      'Designation': 'Guard',
+      'Salary': 800,
+      'Hourly Rate': 999,
+      'Active': 'Active',
+    }]
+    const buf = makeXlsxBuffer('Employee Master List', rows)
+    const result = await executeImport(buf, 'employees.xlsx', '/tmp/employees.xlsx')
+
+    expect(result.rejectedRowCount).toBe(0)
+    expect(prisma.employeeWageHistory.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [expect.objectContaining({ weeklySalary: 800, hourlyRate: 100 })],
+      })
+    )
   })
 
   it('skips invalid rows and counts them in rejectedRowCount', async () => {

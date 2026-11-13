@@ -16,6 +16,7 @@ import {
   createEmployeeAction,
   updateEmployeeAction,
 } from '@/features/employee-management/actions/employee.actions'
+import { computeHourlyRate } from '@/features/employee-management/utils/wage'
 import {
   isWageEffectiveTooFarAhead,
   WAGE_EFFECTIVE_TOO_FAR_AHEAD,
@@ -41,9 +42,9 @@ interface EmployeeFormProps {
   mode: Mode
   /** Populated when mode = 'edit' */
   employee?: EmployeeRecord
-  /** Current salary — from wage history, passed in on edit */
+  /** Current daily wage — from wage history, passed in on edit */
   currentSalary?: number
-  /** Current hourly rate — from wage history, passed in on edit */
+  /** Stored hourly rate — kept while the daily wage is unchanged, so it may differ from daily / 8 */
   currentHourlyRate?: number
   /** Present when the form was opened from another screen (the attendance employee check).
    * Re-routes the back link and the post-save navigation back there. */
@@ -71,7 +72,6 @@ type FormValues = {
   dateOfResignation: string
   isActive: boolean
   salary: string
-  hourlyRate: string
   wageEffectiveFrom: string
 }
 
@@ -203,7 +203,6 @@ export function EmployeeForm({
       : '',
     isActive: employee?.isActive ?? true,
     salary: currentSalary !== undefined ? String(currentSalary) : '',
-    hourlyRate: currentHourlyRate !== undefined ? String(currentHourlyRate) : '',
     wageEffectiveFrom: '',
   }
 
@@ -216,6 +215,18 @@ export function EmployeeForm({
   } = useForm<FormValues>({ defaultValues })
 
   const isActive = watch('isActive')
+  const dailyWage = parseFloat(watch('salary'))
+  const computedHourlyRate =
+    !isNaN(dailyWage) && dailyWage >= 0 ? computeHourlyRate(dailyWage) : null
+  // On edit, an unchanged daily wage keeps the stored rate; only a new wage gets daily / 8.
+  const keepsStoredRate = currentHourlyRate !== undefined && dailyWage === currentSalary
+  const shownHourlyRate = keepsStoredRate ? currentHourlyRate : computedHourlyRate
+  let hourlyRateHint = 'Daily wage ÷ 8 hours'
+  if (keepsStoredRate) {
+    hourlyRateHint = 'Current rate. Recalculated if the daily wage changes'
+  } else if (currentHourlyRate !== undefined && computedHourlyRate !== null) {
+    hourlyRateHint = `New rate (daily wage ÷ 8), was ₹${currentHourlyRate.toFixed(2)}`
+  }
   const wageEffectiveFrom = watch('wageEffectiveFrom')
   const dateOfJoining = watch('dateOfJoining')
   // Non-blocking: both are yyyy-mm-dd strings, so they compare as dates.
@@ -226,7 +237,6 @@ export function EmployeeForm({
     setIsSubmitting(true)
     try {
       const salaryNum = parseFloat(data.salary)
-      const hourlyNum = parseFloat(data.hourlyRate)
 
       if (isEdit && employee) {
         const payload: UpdateEmployeeInput = {
@@ -246,7 +256,6 @@ export function EmployeeForm({
           dateOfResignation: toDateOrNull(data.dateOfResignation),
           isActive: data.isActive,
           salary: isNaN(salaryNum) ? undefined : salaryNum,
-          hourlyRate: isNaN(hourlyNum) ? undefined : hourlyNum,
         }
         // Client-side validate update schema
         const parsed = UpdateEmployeeSchema.safeParse(payload)
@@ -280,7 +289,6 @@ export function EmployeeForm({
           dateOfResignation: toDateOrUndefined(data.dateOfResignation),
           isActive: data.isActive,
           salary: salaryNum,
-          hourlyRate: hourlyNum,
         }
         const parsed = CreateEmployeeSchema.safeParse(payload)
         if (!parsed.success) {
@@ -460,27 +468,32 @@ export function EmployeeForm({
           <p className="text-sm font-medium text-zinc-900 mb-6">Compensation</p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-5">
 
-            <FieldWrapper label="Monthly Salary (₹)" required error={errors.salary?.message}>
+            <FieldWrapper label="Daily Wage (₹)" required error={errors.salary?.message}>
               <input
-                {...register('salary', { required: 'Salary is required' })}
+                {...register('salary', { required: 'Daily wage is required' })}
+                aria-label="Daily Wage (₹)"
                 type="number"
                 step="0.01"
                 min="0"
-                placeholder="14375"
+                placeholder="800"
                 className={`${errors.salary ? errorInputCls : inputCls} font-mono tabular-nums`}
               />
             </FieldWrapper>
 
-            <FieldWrapper label="Hourly Rate (₹)" required error={errors.hourlyRate?.message}>
-              <input
-                {...register('hourlyRate', { required: 'Hourly Rate is required' })}
-                type="number"
-                step="0.01"
-                min="0"
-                placeholder="68.75"
-                className={`${errors.hourlyRate ? errorInputCls : inputCls} font-mono tabular-nums`}
-              />
-            </FieldWrapper>
+            <div className="flex flex-col gap-1.5">
+              <span id="hourly-rate-label" className="text-xs font-medium uppercase tracking-wider text-zinc-400">
+                Hourly Rate (₹)
+              </span>
+              <output
+                data-testid="computed-hourly-rate"
+                aria-labelledby="hourly-rate-label"
+                aria-describedby="hourly-rate-hint"
+                className="py-2 text-sm text-zinc-900 font-mono tabular-nums"
+              >
+                {shownHourlyRate !== null ? `₹${shownHourlyRate.toFixed(2)}` : '—'}
+              </output>
+              <p id="hourly-rate-hint" data-testid="hourly-rate-hint" className="text-xs text-zinc-500">{hourlyRateHint}</p>
+            </div>
 
             {!isEdit && (
               <FieldWrapper

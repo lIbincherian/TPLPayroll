@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx'
 import prisma from '@/lib/prisma'
 import { normalizeEmployeeId } from '../utils/normalize'
+import { computeHourlyRate } from '@/features/employee-management/utils/wage'
 import { resolveInitialWageEffectiveFrom } from '@/features/employee-management/lib/wage-effective-from'
 import {
   IMPORT_SHEET_NAME,
@@ -87,8 +88,8 @@ function validateAndParseRow(raw: RawRow):
   const employeeId = rawEmployeeId ? normalizeEmployeeId(rawEmployeeId) : null
   const employeeName = str(d[IMPORT_COLUMNS.employeeName])
   const designation = str(d[IMPORT_COLUMNS.designation])
-  const salaryRaw = d[IMPORT_COLUMNS.salary]
-  const hourlyRateRaw = d[IMPORT_COLUMNS.hourlyRate]
+  const salaryRaw =
+    IMPORT_COLUMNS.salary in d ? d[IMPORT_COLUMNS.salary] : d[IMPORT_COLUMNS.legacySalary]
   const activeRaw = str(d[IMPORT_COLUMNS.active])
 
   if (!employeeId) errors.push('MISSING_EMPLOYEE_ID')
@@ -101,14 +102,6 @@ function validateAndParseRow(raw: RawRow):
   } else {
     salary = parseNumber(salaryRaw)
     if (salary === null) errors.push('INVALID_SALARY')
-  }
-
-  let hourlyRate: number | null = null
-  if (hourlyRateRaw == null || hourlyRateRaw === '') {
-    errors.push('MISSING_HOURLY_RATE')
-  } else {
-    hourlyRate = parseNumber(hourlyRateRaw)
-    if (hourlyRate === null) errors.push('INVALID_HOURLY_RATE')
   }
 
   let isActive: boolean | null = null
@@ -134,7 +127,6 @@ function validateAndParseRow(raw: RawRow):
       aadhaarId: str(d[IMPORT_COLUMNS.aadhaarId]),
       policeVerificationId: str(d[IMPORT_COLUMNS.policeVerificationId]),
       ...(salary !== null ? { salary } : {}),
-      ...(hourlyRate !== null ? { hourlyRate } : {}),
       phone: str(d[IMPORT_COLUMNS.phone]),
       dateOfBirth: parseExcelDate(d[IMPORT_COLUMNS.dateOfBirth]),
       healthCardId: str(d[IMPORT_COLUMNS.healthCardId]),
@@ -159,7 +151,6 @@ function validateAndParseRow(raw: RawRow):
       aadhaarId: str(d[IMPORT_COLUMNS.aadhaarId]),
       policeVerificationId: str(d[IMPORT_COLUMNS.policeVerificationId]),
       salary: salary!,
-      hourlyRate: hourlyRate!,
       phone: str(d[IMPORT_COLUMNS.phone]),
       dateOfBirth: parseExcelDate(d[IMPORT_COLUMNS.dateOfBirth]),
       healthCardId: str(d[IMPORT_COLUMNS.healthCardId]),
@@ -270,7 +261,7 @@ export async function executeImport(
     // Use the array form of $transaction (no callback) — all pure inserts, no reads
     // mid-flight, so it resolves in milliseconds even for large files.
     let createdCount = 0
-    const createdEmployees: { id: string; employeeId: string; salary: number; hourlyRate: number; effectiveFrom: Date }[] = []
+    const createdEmployees: { id: string; employeeId: string; salary: number; effectiveFrom: Date }[] = []
 
     if (toCreate.length > 0) {
       const results = await prisma.$transaction(
@@ -307,7 +298,6 @@ export async function executeImport(
           id: created.id,
           employeeId: created.employeeId,
           salary: toCreate[i].data.salary,
-          hourlyRate: toCreate[i].data.hourlyRate,
           effectiveFrom: resolveInitialWageEffectiveFrom(null, toCreate[i].data.dateOfJoining, today),
         })
       })
@@ -320,7 +310,7 @@ export async function executeImport(
         data: createdEmployees.map((e) => ({
           employeeId: e.id,
           weeklySalary: e.salary,
-          hourlyRate: e.hourlyRate,
+          hourlyRate: computeHourlyRate(e.salary),
           effectiveFrom: e.effectiveFrom,
           effectiveTo: null,
           changeSource: 'IMPORT',
@@ -395,12 +385,11 @@ export async function executeImport(
         const dbId = existingIdMap.get(r.data.employeeId)
         if (!dbId) continue
         const cw = currentWageMap.get(dbId)
-        const wageChanged = cw
-          ? Number(cw.weeklySalary) !== r.data.salary || Number(cw.hourlyRate) !== r.data.hourlyRate
-          : true
+        // Keyed on the daily wage only, so a stored hourly rate that isn't daily / 8 is left alone
+        const wageChanged = cw ? Number(cw.weeklySalary) !== r.data.salary : true
         if (wageChanged) {
           wageChangedIds.push(dbId)
-          newWageRows.push({ employeeId: dbId, weeklySalary: r.data.salary, hourlyRate: r.data.hourlyRate })
+          newWageRows.push({ employeeId: dbId, weeklySalary: r.data.salary, hourlyRate: computeHourlyRate(r.data.salary) })
         }
       }
 

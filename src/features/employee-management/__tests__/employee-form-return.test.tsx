@@ -36,8 +36,7 @@ function placeholder(text: string) {
 function fillRequiredCreateFields(employeeId: string) {
   fireEvent.change(placeholder('EMP-042'), { target: { value: employeeId } })
   fireEvent.change(placeholder('Guard'), { target: { value: 'Guard' } })
-  fireEvent.change(placeholder('14375'), { target: { value: '15000' } })
-  fireEvent.change(placeholder('68.75'), { target: { value: '70' } })
+  fireEvent.change(placeholder('800'), { target: { value: '15000' } })
 }
 
 const existingEmployee = {
@@ -62,6 +61,45 @@ const existingEmployee = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+})
+
+describe('EmployeeForm — daily wage', () => {
+  it('has no hourly-rate input and shows the hourly rate computed from the daily wage', () => {
+    render(<EmployeeForm mode="create" />)
+
+    expect(screen.queryByPlaceholderText('68.75')).not.toBeInTheDocument()
+    expect(screen.getByText('Daily Wage (₹)')).toBeInTheDocument()
+    expect(screen.getByTestId('computed-hourly-rate')).toHaveTextContent('—')
+
+    fireEvent.change(placeholder('800'), { target: { value: '800' } })
+    expect(screen.getByTestId('computed-hourly-rate')).toHaveTextContent('₹100.00')
+
+    fireEvent.change(placeholder('800'), { target: { value: '' } })
+    expect(screen.getByTestId('computed-hourly-rate')).toHaveTextContent('—')
+  })
+
+  it('on edit, keeps showing the stored rate until the daily wage changes', () => {
+    render(<EmployeeForm mode="edit" employee={existingEmployee} currentSalary={2500} currentHourlyRate={62.5} />)
+
+    expect(screen.getByTestId('computed-hourly-rate')).toHaveTextContent('₹62.50')
+    expect(screen.getByTestId('hourly-rate-hint')).toHaveTextContent('Current rate')
+
+    fireEvent.change(placeholder('800'), { target: { value: '1000' } })
+    expect(screen.getByTestId('computed-hourly-rate')).toHaveTextContent('₹125.00')
+    expect(screen.getByTestId('hourly-rate-hint')).toHaveTextContent('was ₹62.50')
+  })
+
+  it('does not send an hourly rate when saving', async () => {
+    vi.mocked(createEmployeeAction).mockResolvedValue({ ok: true, data: { id: 'new-emp-id' } } as never)
+    render(<EmployeeForm mode="create" />)
+
+    fillRequiredCreateFields('TPLGOAHLP999')
+    fireEvent.change(placeholder('Lakshmi Venkatesh'), { target: { value: 'Someone' } })
+    fireEvent.click(screen.getByRole('button', { name: /save employee/i }))
+
+    await waitFor(() => expect(createEmployeeAction).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(createEmployeeAction).mock.calls[0][0]).not.toHaveProperty('hourlyRate')
+  })
 })
 
 describe('EmployeeForm — create from the employee check', () => {
@@ -90,7 +128,7 @@ describe('EmployeeForm — create from the employee check', () => {
 
     await waitFor(() => expect(createEmployeeAction).toHaveBeenCalledTimes(1))
     expect(createEmployeeAction).toHaveBeenCalledWith(
-      expect.objectContaining({ employeeId: 'TPLGOAHLP999', employeeName: 'Empname0999', designation: 'Guard', salary: 15000, hourlyRate: 70 }),
+      expect.objectContaining({ employeeId: 'TPLGOAHLP999', employeeName: 'Empname0999', designation: 'Guard', salary: 15000 }),
     )
     await waitFor(() => expect(push).toHaveBeenCalledWith(RETURN_TO))
     expect(push).not.toHaveBeenCalledWith('/employees/new-emp-id')
@@ -136,7 +174,7 @@ describe('EmployeeForm — edit from the employee check', () => {
   const editContext: EmployeeReturnContext = { returnTo: RETURN_TO, backLabel: 'Return to employee check' }
 
   it('shows the back link to the employee check and no Employee ID hint', () => {
-    render(<EmployeeForm mode="edit" employee={existingEmployee} currentSalary={15000} currentHourlyRate={70} returnContext={editContext} />)
+    render(<EmployeeForm mode="edit" employee={existingEmployee} currentSalary={15000} returnContext={editContext} />)
 
     expect(screen.getByRole('button', { name: /return to employee check/i })).toBeInTheDocument()
     expect(screen.queryByTestId('employee-id-hint')).not.toBeInTheDocument()
@@ -145,7 +183,7 @@ describe('EmployeeForm — edit from the employee check', () => {
 
   it('returns to the employee check after saving a corrected employee', async () => {
     vi.mocked(updateEmployeeAction).mockResolvedValue({ ok: true, data: {} } as never)
-    render(<EmployeeForm mode="edit" employee={existingEmployee} currentSalary={15000} currentHourlyRate={70} returnContext={editContext} />)
+    render(<EmployeeForm mode="edit" employee={existingEmployee} currentSalary={15000} returnContext={editContext} />)
 
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
 
@@ -155,7 +193,7 @@ describe('EmployeeForm — edit from the employee check', () => {
 
   it('opens the employee profile after saving when there is no return context', async () => {
     vi.mocked(updateEmployeeAction).mockResolvedValue({ ok: true, data: {} } as never)
-    render(<EmployeeForm mode="edit" employee={existingEmployee} currentSalary={15000} currentHourlyRate={70} />)
+    render(<EmployeeForm mode="edit" employee={existingEmployee} currentSalary={15000} />)
 
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
 
