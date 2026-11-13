@@ -68,8 +68,8 @@ function AppStatusBadge({
   }
   if (status === 'SKIPPED') {
     return (
-      <span className="inline-flex items-center gap-1.5 text-sm text-zinc-400">
-        <XCircle size={15} weight="fill" className="text-zinc-300" />
+      <span className="inline-flex items-center gap-1.5 text-sm text-zinc-600">
+        <XCircle size={15} weight="fill" className="text-zinc-400" />
         {carriedTo ? `Skipped, carried to week of ${formatDate(carriedTo)}` : 'Skipped'}
       </span>
     )
@@ -359,7 +359,6 @@ export function AdjustmentDetail({ adjustment: adj }: Props) {
                 {historyApps.map((app: AdjustmentApplicationRecord, i) => (
                   <tr
                     key={app.id}
-                    className={app.approvalStatus === 'SKIPPED' ? 'opacity-50' : ''}
                     style={{
                       opacity: app.approvalStatus === 'SKIPPED' ? undefined : 0,
                       animation:
@@ -370,7 +369,7 @@ export function AdjustmentDetail({ adjustment: adj }: Props) {
                     }}
                   >
                     <td className="px-4 py-3">
-                      <span className="text-sm text-zinc-700">
+                      <span className={`text-sm ${app.approvalStatus === 'SKIPPED' ? 'text-zinc-500' : 'text-zinc-700'}`}>
                         {formatWeek(app.payrollWeekStartDate, app.payrollWeekEndDate)}
                       </span>
                     </td>

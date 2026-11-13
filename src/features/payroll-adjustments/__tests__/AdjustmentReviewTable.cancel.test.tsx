@@ -132,3 +132,35 @@ describe('AdjustmentReviewTable: cancel adjustment', () => {
     expect(screen.getByText(/Cancelled adjustments stop and won.t be offered again/)).toBeTruthy()
   })
 })
+
+describe('AdjustmentReviewTable: cancel confirmation focus', () => {
+  it('focuses Keep adjustment on open and returns focus to the row button on Keep and Escape', () => {
+    renderTable()
+    const trigger = within(rowOf('Worker 1')).getByRole('button', { name: 'Cancel adjustment' })
+    fireEvent.click(trigger)
+    const dialog = screen.getByRole('alertdialog', { name: 'Cancel this adjustment for good?' })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep adjustment' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep adjustment' }))
+    expect(document.activeElement).toBe(trigger)
+
+    fireEvent.click(trigger)
+    fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape' })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+    expect(dialog).toBeTruthy()
+  })
+
+  it('returns focus to the row button after a refused cancel and clears the error when reopened', async () => {
+    cancel.mockResolvedValue({ ok: false, error: 'A correction is open.' } as never)
+    renderTable()
+    const trigger = within(rowOf('Worker 1')).getByRole('button', { name: 'Cancel adjustment' })
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, cancel it' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
+    expect(document.activeElement).toBe(trigger)
+
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})

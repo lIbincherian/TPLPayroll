@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useState, useTransition } from 'react'
+import { Fragment, useEffect, useRef, useState, useTransition } from 'react'
 import { Check, X, Info, Prohibit, Warning } from '@phosphor-icons/react'
 import {
   approveAdjustmentApplicationAction,
@@ -28,8 +28,8 @@ function formatWeek(start: Date) {
 type RowAction = 'APPROVED' | 'SKIPPED' | 'CANCELLED' | null
 
 const DECISION_LABEL: Record<NonNullable<RowAction>, { label: string; className: string }> = {
-  APPROVED: { label: 'Approved', className: 'text-emerald-600' },
-  SKIPPED: { label: 'Skipped', className: 'text-zinc-400' },
+  APPROVED: { label: 'Approved', className: 'text-emerald-700' },
+  SKIPPED: { label: 'Skipped', className: 'text-zinc-500' },
   CANCELLED: { label: 'Cancelled', className: 'text-rose-600' },
 }
 
@@ -48,6 +48,23 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
   const [pending, setPending] = useState<Record<string, boolean>>({})
   const [confirmingCancel, setConfirmingCancel] = useState<string | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const cancelButtons = useRef<Record<string, HTMLButtonElement | null>>({})
+  const keepButton = useRef<HTMLButtonElement | null>(null)
+  const lastConfirming = useRef<string | null>(null)
+
+  // Focus moves to the safe choice when the confirmation opens, and back to the row's Cancel adjustment
+  // button when it closes without cancelling (Keep, Escape or a refused cancel).
+  useEffect(() => {
+    const closed = lastConfirming.current
+    lastConfirming.current = confirmingCancel
+    if (confirmingCancel != null) keepButton.current?.focus()
+    else if (closed != null) cancelButtons.current[closed]?.focus()
+  }, [confirmingCancel])
+
+  const openCancelConfirm = (applicationId: string) => {
+    setErrors((e) => ({ ...e, [applicationId]: '' }))
+    setConfirmingCancel(applicationId)
+  }
 
   const allActioned = items.length > 0 && items.every((item) => decisions[item.applicationId] != null)
 
@@ -88,15 +105,17 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
     })
   }
 
+  const isOpen = (applicationId: string) => decisions[applicationId] == null && !pending[applicationId]
+
   const handleApproveAll = () => {
     items
-      .filter((item) => decisions[item.applicationId] == null)
+      .filter((item) => isOpen(item.applicationId))
       .forEach((item) => handleApprove(item.applicationId))
   }
 
   const handleSkipAll = () => {
     items
-      .filter((item) => decisions[item.applicationId] == null)
+      .filter((item) => isOpen(item.applicationId))
       .forEach((item) => handleSkip(item.applicationId))
   }
 
@@ -181,7 +200,7 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-0.5">
                           <span
-                            className={`text-sm font-medium ${isMuted ? 'text-zinc-400' : 'text-zinc-900'}`}
+                            className={`text-sm font-medium ${isMuted ? 'text-zinc-500' : 'text-zinc-900'}`}
                           >
                             {item.employeeName}
                           </span>
@@ -215,7 +234,7 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
 
                       {/* Reason */}
                       <td className="px-4 py-3">
-                        <span className={`text-sm ${isMuted ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                        <span className={`text-sm ${isMuted ? 'text-zinc-500' : 'text-zinc-600'}`}>
                           {item.reason}
                         </span>
                       </td>
@@ -246,7 +265,10 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
                               <button
                                 type="button"
                                 disabled={isLoading}
-                                onClick={() => setConfirmingCancel(item.applicationId)}
+                                ref={(el) => {
+                                  cancelButtons.current[item.applicationId] = el
+                                }}
+                                onClick={() => openCancelConfirm(item.applicationId)}
                                 aria-label="Cancel adjustment"
                                 title="Cancel adjustment"
                                 className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-[0.98] disabled:opacity-40"
@@ -265,14 +287,22 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
                     {isConfirming && (
                       <tr>
                         <td colSpan={5} className="px-4 pb-3">
-                          <div className="space-y-3 rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                          <div
+                            role="alertdialog"
+                            aria-labelledby={`cancel-title-${item.applicationId}`}
+                            aria-describedby={`cancel-desc-${item.applicationId}`}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape' && !isLoading) setConfirmingCancel(null)
+                            }}
+                            className="space-y-3 rounded-2xl border border-rose-200 bg-rose-50 p-4"
+                          >
                             <div className="flex items-start gap-3">
                               <Warning size={18} weight="fill" className="mt-0.5 shrink-0 text-rose-500" />
                               <div>
-                                <p className="text-sm font-semibold text-rose-800">
+                                <p id={`cancel-title-${item.applicationId}`} className="text-sm font-semibold text-rose-800">
                                   Cancel this adjustment for good?
                                 </p>
-                                <p className="mt-1 text-sm text-rose-700">
+                                <p id={`cancel-desc-${item.applicationId}`} className="mt-1 text-sm text-rose-700">
                                   This will cancel the adjustment and remove any pending applications, so it
                                   won&apos;t be offered again. Any already-approved applications will remain in
                                   the record for audit purposes.
@@ -281,6 +311,7 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
                             </div>
                             <div className="flex items-center justify-end gap-2">
                               <button
+                                ref={keepButton}
                                 type="button"
                                 onClick={() => setConfirmingCancel(null)}
                                 disabled={isLoading}
