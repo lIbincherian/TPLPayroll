@@ -27,6 +27,12 @@ function formatWeek(start: Date) {
 
 type RowAction = 'APPROVED' | 'SKIPPED' | 'CANCELLED' | null
 
+const DECISION_LABEL: Record<NonNullable<RowAction>, { label: string; className: string }> = {
+  APPROVED: { label: 'Approved', className: 'text-emerald-600' },
+  SKIPPED: { label: 'Skipped', className: 'text-zinc-400' },
+  CANCELLED: { label: 'Cancelled', className: 'text-rose-600' },
+}
+
 // ─── AdjustmentReviewTable ────────────────────────────────────────────────────
 
 interface Props {
@@ -249,16 +255,8 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
                               </button>
                             </>
                           ) : (
-                            <span
-                              className={`text-xs font-medium ${
-                                isApproved
-                                  ? 'text-emerald-600'
-                                  : isCancelled
-                                    ? 'text-rose-600'
-                                    : 'text-zinc-400'
-                              }`}
-                            >
-                              {isApproved ? 'Approved' : isCancelled ? 'Cancelled' : 'Skipped'}
+                            <span className={`text-xs font-medium ${DECISION_LABEL[decision].className}`}>
+                              {DECISION_LABEL[decision].label}
                             </span>
                           )}
                         </div>
