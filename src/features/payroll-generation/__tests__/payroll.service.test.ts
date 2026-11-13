@@ -264,34 +264,46 @@ describe('calculateOvertimePay', () => {
 })
 
 describe('calculateNetPayable', () => {
+  // 5 Nov 2026: a week under the whole-rupee rule.
+  const ROUNDED_WEEK = new Date('2026-11-05T00:00:00.000Z')
+
   it('includes approved additions and deductions', () => {
     // grossPay=3250, additions=200, deductions=500 → 2950
-    const result = calculateNetPayable(3250, 200, 500)
+    const result = calculateNetPayable(3250, 200, 500, ROUNDED_WEEK)
     expect(result).toBe(2950)
   })
 
   it('returns grossPay when there are no adjustments', () => {
-    expect(calculateNetPayable(3250, 0, 0)).toBe(3250)
+    expect(calculateNetPayable(3250, 0, 0, ROUNDED_WEEK)).toBe(3250)
   })
 
   it('rounds .49 down and .50 up to the whole rupee', () => {
-    expect(calculateNetPayable(4512.49, 0, 0)).toBe(4512)
-    expect(calculateNetPayable(4512.5, 0, 0)).toBe(4513)
+    expect(calculateNetPayable(4512.49, 0, 0, ROUNDED_WEEK)).toBe(4512)
+    expect(calculateNetPayable(4512.5, 0, 0, ROUNDED_WEEK)).toBe(4513)
   })
 
   it('returns 0 for a zero amount', () => {
-    expect(calculateNetPayable(0, 0, 0)).toBe(0)
+    expect(calculateNetPayable(0, 0, 0, ROUNDED_WEEK)).toBe(0)
   })
 
   it('rounds negative halves toward +infinity and never returns -0', () => {
-    expect(calculateNetPayable(0, 0, 4512.5)).toBe(-4512)
-    expect(calculateNetPayable(0, 0, 4512.51)).toBe(-4513)
-    expect(Object.is(calculateNetPayable(0, 0, 0.5), 0)).toBe(true)
-    expect(Object.is(calculateNetPayable(0, 0, 0.49), 0)).toBe(true)
+    expect(calculateNetPayable(0, 0, 4512.5, ROUNDED_WEEK)).toBe(-4512)
+    expect(calculateNetPayable(0, 0, 4512.51, ROUNDED_WEEK)).toBe(-4513)
+    expect(Object.is(calculateNetPayable(0, 0, 0.5, ROUNDED_WEEK), 0)).toBe(true)
+    expect(Object.is(calculateNetPayable(0, 0, 0.49, ROUNDED_WEEK), 0)).toBe(true)
   })
 
   it('rounds to paise first so floating-point noise does not drop a half', () => {
-    expect(calculateNetPayable(4512.1, 0.4, 0)).toBe(4513)
+    expect(calculateNetPayable(4512.1, 0.4, 0, ROUNDED_WEEK)).toBe(4513)
+  })
+
+  it('rounds weeks starting on or after 1 Nov 2026', () => {
+    expect(calculateNetPayable(4512.5, 0, 0, new Date('2026-11-01T00:00:00.000Z'))).toBe(4513)
+  })
+
+  it('leaves net pay of weeks before 1 Nov 2026 unrounded', () => {
+    expect(calculateNetPayable(4512.5, 0, 0, new Date('2026-10-29T00:00:00.000Z'))).toBe(4512.5)
+    expect(calculateNetPayable(3250, 200, 500.25, WEEK_START)).toBe(2949.75)
   })
 })
 
@@ -791,11 +803,34 @@ describe('calculatePayroll', () => {
       ) as never,
     )
 
-    const summary = await calculatePayroll(WEEK_START, WEEK_END)
+    const summary = await calculatePayroll(new Date('2026-11-05T00:00:00.000Z'), new Date('2026-11-11T00:00:00.000Z'))
 
     expect(summary.employees.map((e) => e.grossPay)).toEqual([10.5, 10.5, 10.5])
     expect(summary.employees.map((e) => e.netPayable)).toEqual([11, 11, 11])
     expect(summary.totals.totalNetPayable).toBe(33)
+  })
+
+  it('keeps paise on the rows and total of a week before 1 Nov 2026', async () => {
+    // Weeks before the rounding rule stay as they were paid.
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload())
+    vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue(
+      ['emp-1', 'emp-2', 'emp-3'].map((id, i) =>
+        makeRecordWithEmployee({
+          id: `r${i}`,
+          employeeDbId: id,
+          code: `E${i}`,
+          date: '2025-03-06',
+          regular: 1,
+          wageHistory: makeWageHistory(10.5),
+        }),
+      ) as never,
+    )
+
+    const summary = await calculatePayroll(WEEK_START, WEEK_END)
+
+    expect(summary.employees.map((e) => e.grossPay)).toEqual([10.5, 10.5, 10.5])
+    expect(summary.employees.map((e) => e.netPayable)).toEqual([10.5, 10.5, 10.5])
+    expect(summary.totals.totalNetPayable).toBe(31.5)
   })
 
   // US-12.25 AC1: a zero-hour employee gets no AttendanceRecord rows at approval, so no payroll row

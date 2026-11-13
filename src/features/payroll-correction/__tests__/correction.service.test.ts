@@ -349,6 +349,14 @@ describe('recalculateAndCreateRevision', () => {
 
   it('rounds each draft row to the whole rupee and totals the rounded rows', async () => {
     setupRecalculateMocks()
+    // A week under the whole-rupee rule (5 Nov 2026).
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue({
+      ...makePayrollRun({
+        payrollWeekStartDate: new Date('2026-11-05T00:00:00.000Z'),
+        payrollWeekEndDate: new Date('2026-11-11T00:00:00.000Z'),
+      }),
+      revisions: [makeRevision()],
+    } as never)
     // Each employee's gross is 10.50 → 11. The rows sum to 33; rounding the unrounded 31.50 would give 32.
     vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue(
       ['emp-a', 'emp-b', 'emp-c'].map((id) => ({
@@ -385,6 +393,47 @@ describe('recalculateAndCreateRevision', () => {
     expect(rows.map((r) => r.netPayable)).toEqual([11, 11, 11])
     expect(prisma.payrollRevision.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ totalNetPayable: 33 }) }),
+    )
+  })
+
+  it('keeps paise when correcting a run for a week before 1 Nov 2026', async () => {
+    setupRecalculateMocks()
+    // An older run is a record of payments made, so a correction keeps its paise.
+    vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue(
+      ['emp-a', 'emp-b', 'emp-c'].map((id) => ({
+        id: `rec-${id}`,
+        attendanceUploadId: 'upload-uuid-1',
+        employeeId: id,
+        attendanceDate: WEEK_START,
+        regularHours: 1,
+        overtimeHours: 0,
+        employee: {
+          id,
+          employeeId: id.toUpperCase(),
+          employeeName: `Name ${id}`,
+          designation: 'Guard',
+          designationShort: 'Guard',
+          site: null,
+          gPay: null,
+          bankAccount: null,
+          wageHistory: [{ weeklySalary: 500, hourlyRate: 10.5, effectiveFrom: new Date('2025-01-01') }],
+        },
+      })) as never,
+    )
+
+    await recalculateAndCreateRevision({
+      payrollRunId: 'run-uuid-1',
+      correctionReason: null,
+      correctionTypes: ['ADJUSTMENTS'],
+    })
+
+    const rows = (vi.mocked(prisma.payrollRunEmployee.createMany).mock.calls[0][0] as {
+      data: Array<{ regularPay: number; netPayable: number }>
+    }).data
+    expect(rows.map((r) => r.regularPay)).toEqual([10.5, 10.5, 10.5])
+    expect(rows.map((r) => r.netPayable)).toEqual([10.5, 10.5, 10.5])
+    expect(prisma.payrollRevision.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ totalNetPayable: 31.5 }) }),
     )
   })
 

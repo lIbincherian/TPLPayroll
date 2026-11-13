@@ -39,13 +39,20 @@ export function calculateOvertimePay(
   return { overtimeHours, overtimePay }
 }
 
+/** Payroll weeks starting on or after this date round net pay to the whole rupee. Older weeks keep their paise. */
+export const NET_PAY_ROUNDING_FROM = new Date('2026-11-01T00:00:00.000Z')
+
 export function calculateNetPayable(
   grossPay: number,
   additions: number,
   deductions: number,
+  weekStart: Date,
 ): number {
+  const net = grossPay + additions - deductions
+  // Weeks before the rounding rule are records of payments already made, so they stay as calculated.
+  if (weekStart < NET_PAY_ROUNDING_FROM) return net
   // Round to paise first to drop floating-point noise, then to the whole rupee with halves up.
-  const paise = Math.round((grossPay + additions - deductions) * 100)
+  const paise = Math.round(net * 100)
   const rupees = Math.floor((paise + 50) / 100)
   return rupees === 0 ? 0 : rupees
 }
@@ -268,7 +275,7 @@ export async function calculatePayroll(
     const grossPay = regularPay + overtimePay
 
     const adjs = adjByEmployee.get(employee.id) ?? { additions: 0, deductions: 0 }
-    const netPayable = calculateNetPayable(grossPay, adjs.additions, adjs.deductions)
+    const netPayable = calculateNetPayable(grossPay, adjs.additions, adjs.deductions, weekStart)
 
     employeeRows.push({
       employeeId: employee.id,
