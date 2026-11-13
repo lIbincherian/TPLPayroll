@@ -76,7 +76,9 @@ export function computeStatusChanges(input: {
   const rowsByEmployee = new Map<string, PunchRow[]>()
   for (const row of rows) {
     if (row.matchStatus !== 'MATCHED' || row.employeeId === null) continue
-    rowsByEmployee.set(row.employeeId, [...(rowsByEmployee.get(row.employeeId) ?? []), row])
+    const own = rowsByEmployee.get(row.employeeId)
+    if (own) own.push(row)
+    else rowsByEmployee.set(row.employeeId, [row])
   }
 
   const changes: EmployeeStatusChange[] = []
