@@ -3,7 +3,7 @@ import { render, screen, within } from '@testing-library/react'
 import { PayrollSummaryStep } from '@/features/payroll-generation/components/PayrollSummaryStep'
 import type { EmployeePayrollRow, PayrollSummary } from '@/features/payroll-generation/types/payroll.types'
 
-function employee(code: string, phone: string | null): EmployeePayrollRow {
+function employee(code: string, bankAccount: string | null = 'ACC1'): EmployeePayrollRow {
   return {
     employeeId: `id-${code}`,
     employeeCode: code,
@@ -12,8 +12,7 @@ function employee(code: string, phone: string | null): EmployeePayrollRow {
     designationShort: null,
     site: null,
     gPay: null,
-    phone,
-    bankAccount: 'ACC1',
+    bankAccount,
     weeklySalaryUsed: 2500,
     hourlyRateUsed: 62.5,
     regularHours: 40,
@@ -31,7 +30,7 @@ const SUMMARY: PayrollSummary = {
   weekStart: new Date('2026-11-05T00:00:00.000Z'),
   weekEnd: new Date('2026-11-11T00:00:00.000Z'),
   attendanceApprovedAt: new Date('2026-11-12T08:00:00.000Z'),
-  employees: [employee('TPLGOASHT231', '9123456780'), employee('TPLGOASHT232', '  ')],
+  employees: [employee('TPLGOASHT231'), employee('TPLGOASHT232', '  ')],
   totals: {
     totalRegularHours: 80,
     totalOvertimeHours: 4,
@@ -51,7 +50,7 @@ function renderStep() {
 }
 
 describe('PayrollSummaryStep', () => {
-  it('shows the 15 payment columns in order and no Bank Acct.', () => {
+  it('shows the 16 payment columns in order', () => {
     const table = renderStep()
     const headers = within(table).getAllByRole('columnheader').map((th) => th.textContent)
     expect(headers).toEqual([
@@ -60,6 +59,7 @@ describe('PayrollSummaryStep', () => {
       'Emp Name',
       'GPay No.',
       'WhatsApp No.',
+      'Bank Acct.',
       'Paid Name (if diff.)',
       'Salary from',
       'Salary to',
@@ -76,7 +76,7 @@ describe('PayrollSummaryStep', () => {
     )
   })
 
-  it('fills each row with Sl No., phone, UTC salary dates and the payment reference', () => {
+  it('fills each row with Sl No., bank account, UTC salary dates and the payment reference', () => {
     const table = renderStep()
     const [, first, second] = within(table).getAllByRole('row')
     const cells = within(first).getAllByRole('cell').map((td) => td.textContent)
@@ -85,7 +85,8 @@ describe('PayrollSummaryStep', () => {
       'TPLGOASHT231',
       'Name TPLGOASHT231',
       '—',
-      '9123456780',
+      '—',
+      'ACC1',
       '',
       '05 Nov 2026',
       '11 Nov 2026',
@@ -99,7 +100,7 @@ describe('PayrollSummaryStep', () => {
     ])
     const secondCells = within(second).getAllByRole('cell').map((td) => td.textContent)
     expect(secondCells[0]).toBe('2')
-    expect(secondCells[4]).toBe('—')
+    expect(secondCells[5]).toBe('—')
   })
 
   it('totals the pay columns under their headers', () => {
@@ -118,14 +119,14 @@ describe('PayrollSummaryStep', () => {
       '',
     ])
     expect(cells[0].getAttribute('colspan')).toBe('2')
-    expect(cells[2].getAttribute('colspan')).toBe('5')
+    expect(cells[2].getAttribute('colspan')).toBe('6')
   })
 
   it('numbers rows in Emp ID order, like the Excel, whatever order the service returns', () => {
     render(
       <PayrollSummaryStep
         weekLabel="5 – 11 Nov 2026"
-        summary={{ ...SUMMARY, employees: [employee('TPL-B', null), employee('TPL-A', null)] }}
+        summary={{ ...SUMMARY, employees: [employee('TPL-B'), employee('TPL-A')] }}
         onBack={vi.fn()}
         onApprove={vi.fn()}
       />,

@@ -32,6 +32,7 @@ const HEADERS = [
   'Emp Name',
   'GPay No.',
   'WhatsApp No.',
+  'Bank Acct.',
   'Paid Name (if diff.)',
   'Salary from',
   'Salary to',
@@ -91,7 +92,11 @@ function EmployeeRow({
         <span className={CODE}>{row.gPay?.trim() || '—'}</span>
       </td>
       <td className={CELL}>
-        <span className={CODE}>{row.phone?.trim() || '—'}</span>
+        {/* WhatsApp numbers aren't stored yet */}
+        <span className={CODE}>—</span>
+      </td>
+      <td className={CELL}>
+        <span className={CODE}>{row.bankAccount?.trim() || '—'}</span>
       </td>
       <td className={CELL} />
       <td className={CELL}>
@@ -259,7 +264,7 @@ export function PayrollSummaryStep({ weekLabel, summary, onBack, onApprove }: Pr
                 >
                   Total
                 </td>
-                <td className={FOOTER_CELL} colSpan={5} />
+                <td className={FOOTER_CELL} colSpan={6} />
                 {[
                   totals.totalRegularPay,
                   totals.totalOvertimePay,
