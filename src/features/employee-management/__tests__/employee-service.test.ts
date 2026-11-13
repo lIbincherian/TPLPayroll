@@ -33,7 +33,7 @@ import {
   getDistinctDesignations,
   getDistinctSites,
 } from '@/features/employee-management/services/employee.service'
-import { EmployeeServiceError } from '@/features/employee-management/types/employee.types'
+import { EmployeeServiceError, UpdateEmployeeSchema } from '@/features/employee-management/types/employee.types'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -805,5 +805,78 @@ describe('getEmployeeList — filtering', () => {
         })
       })
     )
+  })
+})
+
+// Issue #36: clearing an optional field on edit writes null
+const OPTIONAL_FIELD_VALUES = {
+  designationShort: 'GRD',
+  nationalId: 'NID-1',
+  aadhaarId: '1234 5678 9012',
+  policeVerificationId: 'PV-1',
+  phone: '9876543210',
+  site: 'North Gate',
+  healthCardId: 'HC-1',
+  gPay: '9876543210',
+  bankAccount: 'HDFC 1234',
+  dateOfBirth: new Date('1990-01-01'),
+  dateOfJoining: new Date('2024-01-01'),
+  dateOfResignation: new Date('2025-06-01'),
+} as const
+
+const OPTIONAL_FIELDS = Object.keys(OPTIONAL_FIELD_VALUES) as (keyof typeof OPTIONAL_FIELD_VALUES)[]
+
+describe('updateEmployee — clearing optional fields', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([makeWageHistory()])
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
+    vi.mocked(prisma.employee.update).mockResolvedValue(makeEmployee())
+    vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
+  })
+
+  it('writes gPay: null when GPay is cleared (regression)', async () => {
+    vi.mocked(prisma.employee.findUnique).mockResolvedValue(makeEmployee({ gPay: '9876543210' }))
+
+    await updateEmployee('uuid-1', { gPay: null })
+
+    expect(prisma.employee.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ gPay: null }) })
+    )
+  })
+
+  it.each(OPTIONAL_FIELDS)('writes %s: null when it is cleared', async (field) => {
+    vi.mocked(prisma.employee.findUnique).mockResolvedValue(
+      makeEmployee({ [field]: OPTIONAL_FIELD_VALUES[field] } as Partial<Employee>)
+    )
+
+    await updateEmployee('uuid-1', { [field]: null })
+
+    expect(prisma.employee.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ [field]: null }) })
+    )
+  })
+
+  it('leaves a field alone when it is absent', async () => {
+    vi.mocked(prisma.employee.findUnique).mockResolvedValue(makeEmployee({ gPay: '9876543210' }))
+
+    await updateEmployee('uuid-1', { phone: '1111111111' })
+
+    const [args] = vi.mocked(prisma.employee.update).mock.calls[0]
+    expect(args.data).not.toHaveProperty('gPay')
+  })
+})
+
+describe('UpdateEmployeeSchema — nullable optional fields', () => {
+  it.each(OPTIONAL_FIELDS)('accepts null for %s', (field) => {
+    expect(UpdateEmployeeSchema.safeParse({ [field]: null }).success).toBe(true)
+  })
+
+  it.each(['employeeName', 'designation', 'salary', 'hourlyRate'])('rejects null for %s', (field) => {
+    expect(UpdateEmployeeSchema.safeParse({ [field]: null }).success).toBe(false)
+  })
+
+  it.each(['employeeName', 'designation'])('rejects "" for %s', (field) => {
+    expect(UpdateEmployeeSchema.safeParse({ [field]: '' }).success).toBe(false)
   })
 })

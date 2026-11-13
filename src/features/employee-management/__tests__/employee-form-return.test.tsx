@@ -200,3 +200,21 @@ describe('EmployeeForm — edit from the employee check', () => {
     await waitFor(() => expect(push).toHaveBeenCalledWith('/employees/emp-uuid-1'))
   })
 })
+
+describe('EmployeeForm — clearing an optional field on edit (issue #36)', () => {
+  it('sends gPay: null when GPay Number is cleared', async () => {
+    vi.mocked(updateEmployeeAction).mockResolvedValue({ ok: true, data: {} } as never)
+    const withGPay = { ...existingEmployee, gPay: '9876543210' } as EmployeeRecord
+    render(<EmployeeForm mode="edit" employee={withGPay} currentSalary={15000} currentHourlyRate={70} />)
+
+    // Phone and GPay share a placeholder; GPay is the second field.
+    const gPayInput = screen.getAllByPlaceholderText('+91 98765 43210')[1] as HTMLInputElement
+    expect(gPayInput.value).toBe('9876543210')
+    fireEvent.change(gPayInput, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+
+    await waitFor(() =>
+      expect(updateEmployeeAction).toHaveBeenCalledWith('emp-uuid-1', expect.objectContaining({ gPay: null })),
+    )
+  })
+})

@@ -317,6 +317,8 @@ export async function updateEmployee(
     const newValue = parsed.data[field]
     if (newValue === undefined) continue
     const oldVal = existing[field]
+    // A blank stored value cleared to null is not a change
+    if (newValue === null && (oldVal === null || oldVal === '')) continue
     if (String(oldVal) !== String(newValue)) {
       changedFields[field] = { old: oldVal, new: newValue }
     }
