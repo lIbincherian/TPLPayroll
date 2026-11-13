@@ -409,9 +409,9 @@ describe('read actions return ok with the service result and never revalidate', 
 
 describe('pullWeekAction', () => {
   it('pulls the week, then revalidates /attendance and /payroll', async () => {
-    services.pullNow.mockResolvedValue({ outcome: 'LOADED', punchCount: 4, discarded: null })
+    services.pullNow.mockResolvedValue({ outcome: 'LOADED', punchCount: 4, discarded: null, statusChanges: { markedInactive: [], reactivated: [] } })
 
-    await expect(pullWeekAction(WEEK_ID)).resolves.toEqual({ ok: true, data: { outcome: 'LOADED', punchCount: 4, discarded: null } })
+    await expect(pullWeekAction(WEEK_ID)).resolves.toEqual({ ok: true, data: { outcome: 'LOADED', punchCount: 4, discarded: null, statusChanges: { markedInactive: [], reactivated: [] } } })
 
     expect(services.pullNow).toHaveBeenCalledWith(WEEK_ID)
     expectRevalidated()

@@ -8,6 +8,7 @@
 import { vi } from 'vitest'
 import type { AttendanceUpload, PayrollCorrectionSession, PayrollRun } from '@prisma/client'
 import { punchSetSignature } from '../lib/day-signature'
+import type { StatusEmployee } from '../lib/employee-status'
 import type { LockedWeekRow } from '../services/week-lock.service'
 import type { EmployeeLite, HHmm, ISODate } from '../types/attendance-sync.types'
 
@@ -15,12 +16,12 @@ type Fn = ReturnType<typeof vi.fn>
 type ModelMock = Record<string, Fn>
 
 const MODEL_METHODS = {
-  attendanceUpload: ['findFirst', 'findMany', 'create', 'update', 'updateMany'],
+  attendanceUpload: ['findFirst', 'findMany', 'count', 'create', 'update', 'updateMany'],
   attendancePunch: ['findMany', 'count', 'create', 'createMany', 'update', 'updateMany', 'delete', 'deleteMany'],
   attendanceEmployeeDecision: ['findMany', 'findUnique', 'create', 'update', 'count', 'deleteMany'],
   attendanceCodeException: ['findMany', 'findUnique', 'upsert', 'delete'],
   attendanceRecord: ['findMany', 'groupBy', 'count', 'deleteMany', 'createMany'],
-  employee: ['findMany', 'findUnique'],
+  employee: ['findMany', 'findUnique', 'update'],
   payrollRun: ['findFirst', 'findMany'],
   payrollCorrectionSession: ['findFirst', 'findUnique', 'update'],
   auditLog: ['create'],
@@ -107,6 +108,7 @@ export function resetDb(db: Db): void {
     }
     models.attendanceUpload.findFirst.mockResolvedValue(null)
     models.attendanceUpload.findMany.mockResolvedValue([])
+    models.attendanceUpload.count.mockResolvedValue(0)
     models.attendancePunch.findMany.mockResolvedValue([])
     models.attendancePunch.count.mockResolvedValue(0)
     models.attendanceEmployeeDecision.findMany.mockResolvedValue([])
@@ -116,6 +118,7 @@ export function resetDb(db: Db): void {
     models.attendanceRecord.groupBy.mockResolvedValue([])
     models.attendanceRecord.count.mockResolvedValue(0)
     models.employee.findMany.mockResolvedValue([])
+    models.employee.update.mockResolvedValue({})
     models.payrollRun.findFirst.mockResolvedValue(null)
     models.payrollRun.findMany.mockResolvedValue([])
     models.payrollCorrectionSession.findFirst.mockResolvedValue(null)
@@ -219,12 +222,13 @@ export function makeExcelUpload(overrides: Partial<AttendanceUpload> = {}): Atte
   })
 }
 
-export function makeEmployee(overrides: Partial<EmployeeLite> = {}): EmployeeLite {
+export function makeEmployee(overrides: Partial<StatusEmployee> = {}): StatusEmployee {
   return {
     id: 'emp-36',
     employeeId: 'TPLGOAHLP036',
     employeeName: 'Asha Rao',
     isActive: true,
+    dateOfJoining: null,
     dateOfResignation: null,
     ...overrides,
   }

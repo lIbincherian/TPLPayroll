@@ -201,7 +201,7 @@ describe('SCHEDULED pull: an edit lands while the API call runs', () => {
   it('a week with edits that appear in neither read still loads (contrast: nothing to skip)', async () => {
     const outcome = await runScheduledSync(SCHEDULED_NOW)
 
-    expect(outcome).toEqual({ outcome: 'LOADED', punchCount: 4, discarded: null })
+    expect(outcome).toEqual({ outcome: 'LOADED', punchCount: 4, discarded: null, statusChanges: { markedInactive: [], reactivated: [] } })
     expect(db.tx.attendancePunch.deleteMany).toHaveBeenCalled()
     expect(db.tx.attendancePunch.createMany).toHaveBeenCalled()
   })

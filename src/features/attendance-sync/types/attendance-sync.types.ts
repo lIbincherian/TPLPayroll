@@ -57,8 +57,20 @@ export interface DiscardSummary {
   edits: DiscardedEdit[]
 }
 
+/** An employee whose status a pull changed. `employeeId` is the Employee ID code, `id` the database id. */
+export interface StatusChangedEmployee {
+  id: string
+  employeeId: string
+  employeeName: string
+}
+
+export interface StatusChangeSummary {
+  markedInactive: StatusChangedEmployee[]
+  reactivated: StatusChangedEmployee[]
+}
+
 export type SyncOutcome =
-  | { outcome: 'LOADED'; punchCount: number; discarded: DiscardSummary | null }
+  | { outcome: 'LOADED'; punchCount: number; discarded: DiscardSummary | null; statusChanges: StatusChangeSummary }
   | { outcome: 'FAILED'; code: SyncFailureCode; message: string }
   | { outcome: 'SKIPPED_HAS_EDITS' }
   | { outcome: 'SKIPPED_APPROVED' }

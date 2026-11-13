@@ -84,7 +84,7 @@ describe('runScheduledSync stores a loaded week as ready for review (US-12.1)', 
   it('replaces the week in one transaction: delete punches, decisions and records, then create the new punches', async () => {
     const outcome = await runScheduledSync(SCHEDULED_NOW)
 
-    expect(outcome).toEqual({ outcome: 'LOADED', punchCount: 4, discarded: null })
+    expect(outcome).toEqual({ outcome: 'LOADED', punchCount: 4, discarded: null, statusChanges: { markedInactive: [], reactivated: [] } })
 
     const where = { attendanceUploadId: 'upload-1' }
     expect(db.tx.attendancePunch.deleteMany).toHaveBeenCalledWith({ where: { ...where, correctionId: null } })
@@ -508,7 +508,7 @@ describe('pullNow', () => {
 
     const outcome = await pullNow('2026-11-05')
 
-    expect(outcome).toEqual({ outcome: 'LOADED', punchCount: 4, discarded: null })
+    expect(outcome).toEqual({ outcome: 'LOADED', punchCount: 4, discarded: null, statusChanges: { markedInactive: [], reactivated: [] } })
     expect(db.tx.attendanceUpload.update).toHaveBeenCalledWith({
       where: { id: 'upload-1' },
       data: expect.objectContaining({ status: 'REVIEW', lastSyncError: null }),
