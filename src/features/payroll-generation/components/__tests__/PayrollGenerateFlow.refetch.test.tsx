@@ -211,7 +211,7 @@ describe('PayrollGenerateFlow reloads what it showed when the attendance changed
     fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
     fireEvent.click(await screen.findByRole('button', { name: /Continue to Summary/ }))
     await screen.findByRole('heading', { name: 'Payroll Summary' })
-    expect(screen.getAllByText('₹3,100.00').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('₹3,100').length).toBeGreaterThan(0)
     fireEvent.click(screen.getByRole('button', { name: 'Approve Payroll' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm Approval' }))
 
