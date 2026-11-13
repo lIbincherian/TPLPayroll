@@ -82,6 +82,11 @@ function StatusChangesPreview({ summary }: { summary: ApprovalSummary }) {
 
 // ─── Left out and edited days ─────────────────────────────────────────────────
 
+function leftOutReason(item: ApprovalSummary['leftOut'][number], markedInactive: ReadonlySet<string>): string {
+  if (item.reason === 'REJECTED') return 'Rejected in employee check'
+  return markedInactive.has(item.employeeId) ? 'No punches, marked inactive' : 'Zero hours'
+}
+
 function LeftOutList({
   summary,
   onShowEmployee,
@@ -108,11 +113,7 @@ function LeftOutList({
               <span className="min-w-0 flex-1 truncate text-sm text-zinc-900">{item.employeeName}</span>
               <span className="font-mono text-xs text-zinc-500">{item.employeeCode}</span>
               <span className="w-40 text-right text-xs text-zinc-600">
-                {item.reason === 'REJECTED'
-                  ? 'Rejected in employee check'
-                  : markedInactive.has(item.employeeId)
-                    ? 'No punches, marked inactive'
-                    : 'Zero hours'}
+                {leftOutReason(item, markedInactive)}
               </span>
             </>
           )
