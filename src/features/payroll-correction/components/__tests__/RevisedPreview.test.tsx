@@ -117,9 +117,9 @@ describe('RevisedPreview — draft and current revision', () => {
 
     const arun = screen.getByText('Arun Kumar').closest('tr') as HTMLElement
     expect(within(arun).getByText('Left out')).toBeInTheDocument()
-    // The pay figure is not shown as ₹0.00; the previous amount is in the tooltip.
-    expect(within(arun).queryByText('₹0.00')).not.toBeInTheDocument()
-    expect(within(arun).getByText(/Previous: ₹3,100.00/)).toBeInTheDocument()
+    // The pay figure is not shown as ₹0; the previous amount is in the tooltip.
+    expect(within(arun).queryByText('₹0')).not.toBeInTheDocument()
+    expect(within(arun).getByText(/Previous: ₹3,100$/)).toBeInTheDocument()
     const kavitha = screen.getByText('Kavitha Rajan').closest('tr') as HTMLElement
     expect(within(kavitha).queryByText('Left out')).not.toBeInTheDocument()
   })

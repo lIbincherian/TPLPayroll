@@ -1,16 +1,10 @@
 'use client'
 
 import type { RevisionHistoryItem } from '@/features/payroll-correction/types/correction.types'
+import { formatNetPay } from '@/features/payroll-generation/lib/format-net-pay'
 
 interface RevisionHistoryTableProps {
   revisions: RevisionHistoryItem[]
-}
-
-function formatCurrency(amount: number) {
-  return new Intl.NumberFormat('en-IN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount)
 }
 
 function formatDate(date: Date | null) {
@@ -63,7 +57,7 @@ export function RevisionHistoryTable({ revisions }: RevisionHistoryTableProps) {
                   {rev.correctionReason ?? '—'}
                 </td>
                 <td className="py-2.5 pr-4 font-mono tabular-nums text-zinc-800">
-                  ₹{formatCurrency(rev.totalNetPayable)}
+                  ₹{formatNetPay(rev.totalNetPayable)}
                 </td>
                 <td className="py-2.5 text-sm text-zinc-500">
                   {formatDate(rev.approvedAt ?? rev.generatedAt)}

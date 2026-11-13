@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { ArrowLeft, WarningCircle } from '@phosphor-icons/react'
 import type { PayrollSummary, EmployeePayrollRow } from '@/features/payroll-generation/types/payroll.types'
 import { paymentReference, toISODate } from '@/features/attendance-sync/lib/week'
+import { formatNetPay } from '@/features/payroll-generation/lib/format-net-pay'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -119,7 +120,7 @@ function EmployeeRow({
       </td>
       <td className={`${CELL} text-right`}>
         <span className="font-mono tabular-nums text-sm font-semibold text-zinc-900">
-          ₹{fmt(row.netPayable)}
+          ₹{formatNetPay(row.netPayable)}
         </span>
       </td>
       <td className={CELL} />
@@ -276,7 +277,7 @@ export function PayrollSummaryStep({ weekLabel, summary, onBack, onApprove }: Pr
                   </td>
                 ))}
                 <td className={`${FOOTER_CELL} text-right font-mono tabular-nums text-sm font-bold text-zinc-900`}>
-                  ₹{fmt(totals.totalNetPayable)}
+                  ₹{formatNetPay(totals.totalNetPayable)}
                 </td>
                 <td className={FOOTER_CELL} colSpan={2} />
               </tr>

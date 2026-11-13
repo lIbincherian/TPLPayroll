@@ -69,6 +69,8 @@ import {
   formatZipFileName,
   formatSlipPdfName,
   formatCurrencyPdf,
+  formatNetPayPdf,
+  netPayXlsxFormat,
   formatHours,
   buildSlipData,
   generatePayrollSummaryPdf,
@@ -263,6 +265,23 @@ describe('formatCurrencyPdf', () => {
 
   it('formats zero correctly', () => {
     expect(formatCurrencyPdf(0)).toBe('₹0.00')
+  })
+})
+
+describe('formatNetPayPdf', () => {
+  it('shows whole-rupee net pay without decimals', () => {
+    expect(formatNetPayPdf(2950)).toBe('₹2,950')
+  })
+
+  it('keeps the paise of an older stored amount', () => {
+    expect(formatNetPayPdf(1331.25)).toBe('₹1,331.25')
+  })
+})
+
+describe('netPayXlsxFormat', () => {
+  it('uses no decimals for a whole amount and two for an amount with paise', () => {
+    expect(netPayXlsxFormat(2950)).toBe('"₹"#,##0')
+    expect(netPayXlsxFormat(1331.25)).toBe('"₹"#,##0.00')
   })
 })
 
@@ -589,6 +608,34 @@ describe('generatePayrollSummaryXlsx', () => {
     expect(Buffer.from(sheetXml.content as Uint8Array).toString('utf8')).toContain(
       '<pane xSplit="3" ySplit="5" topLeftCell="D6" activePane="bottomRight" state="frozen"/>',
     )
+  })
+
+  it('formats whole net pay without decimals and keeps the other columns at two', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makePayrollRun() as never)
+
+    const { buffer } = await generatePayrollSummaryXlsx('run-uuid-1')
+    // sheetStubs keeps the totals row's SUM cells, which are written without a cached value.
+    const wb = XLSX.read(buffer, { cellNF: true, cellFormula: true, sheetStubs: true })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+
+    expect(ws.N6.v).toBe(2950)
+    expect(ws.N6.z).toBe('"₹"#,##0')
+    expect(ws.N7.z).toBe('"₹"#,##0')
+    expect(ws.J6.z).toBe('"₹"#,##0.00')
+  })
+
+  it('keeps two decimals on a stored net amount with paise', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(
+      makePayrollRun({ runEmployees: [makeRunEmployee({ netPayable: 1331.25 })] }) as never,
+    )
+
+    const { buffer } = await generatePayrollSummaryXlsx('run-uuid-1')
+    // sheetStubs keeps the totals row's SUM cells, which are written without a cached value.
+    const wb = XLSX.read(buffer, { cellNF: true, cellFormula: true, sheetStubs: true })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+
+    expect(ws.N6.z).toBe('"₹"#,##0.00')
+    expect(ws.N7.z).toBe('"₹"#,##0.00')
   })
 
   it('throws PAYROLL_RUN_NOT_FOUND when run does not exist', async () => {

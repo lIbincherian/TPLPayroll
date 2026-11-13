@@ -825,7 +825,7 @@ export async function recalculateAndCreateRevision(
         const grossPay = regularPay + overtimePay
 
         const adjs = adjustmentSums.get(employee.id) ?? { additions: 0, deductions: 0 }
-        const netPayable = calculateNetPayable(grossPay, adjs.additions, adjs.deductions)
+        const netPayable = calculateNetPayable(grossPay, adjs.additions, adjs.deductions, weekStart)
 
         const prev = prevByEmployee.get(employee.id)
 

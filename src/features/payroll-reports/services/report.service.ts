@@ -11,6 +11,7 @@ import {
 } from '@/features/payroll-reports/types/report.types'
 import { formatPunchesCell, pairsFromStoredPunches } from '@/features/attendance-sync/lib/hours'
 import { paymentReference, toISODate } from '@/features/attendance-sync/lib/week'
+import { formatNetPay, isWholeRupees } from '@/features/payroll-generation/lib/format-net-pay'
 
 let fontsConfigured = false
 
@@ -70,6 +71,16 @@ export function formatCurrencyPdf(amount: number): string {
     maximumFractionDigits: 2,
   }).format(amount)
   return `₹${formatted}`
+}
+
+/** Net pay in a PDF: whole rupees without decimals, an older stored amount with paise keeps them. */
+export function formatNetPayPdf(amount: number): string {
+  return `₹${formatNetPay(amount)}`
+}
+
+/** The Excel number format for a net-pay cell: no decimals when the amount is whole. */
+export function netPayXlsxFormat(amount: number): string {
+  return isWholeRupees(amount) ? '"₹"#,##0' : '"₹"#,##0.00'
 }
 
 export function formatHours(hours: number): string {
@@ -294,7 +305,7 @@ export async function generatePayrollSummaryPdf(payrollRunId: string): Promise<{
     { text: formatCurrencyPdf(Number(re.overtimePay)), font: 'Courier', alignment: 'right' },
     { text: formatCurrencyPdf(Number(re.additions)), font: 'Courier', alignment: 'right' },
     { text: formatCurrencyPdf(Number(re.deductions)), font: 'Courier', alignment: 'right' },
-    { text: formatCurrencyPdf(Number(re.netPayable)), font: 'Courier', alignment: 'right' },
+    { text: formatNetPayPdf(Number(re.netPayable)), font: 'Courier', alignment: 'right' },
     { text: '' },
     { text: paymentReference(weekStartISO, re.employee.employeeId), font: 'Courier' },
   ])
@@ -306,7 +317,7 @@ export async function generatePayrollSummaryPdf(payrollRunId: string): Promise<{
     { text: formatCurrencyPdf(Number(run.totalOvertimePay)), font: 'Courier', alignment: 'right', bold: true },
     { text: formatCurrencyPdf(Number(run.totalAdditions)), font: 'Courier', alignment: 'right', bold: true },
     { text: formatCurrencyPdf(Number(run.totalDeductions)), font: 'Courier', alignment: 'right', bold: true },
-    { text: formatCurrencyPdf(Number(run.totalNetPayable)), font: 'Courier', alignment: 'right', bold: true },
+    { text: formatNetPayPdf(Number(run.totalNetPayable)), font: 'Courier', alignment: 'right', bold: true },
     { text: '', colSpan: 2 },
     {},
   ]
@@ -498,6 +509,14 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
   formatCol('L', true) // Additions
   formatCol('M', true) // Deductions
   formatCol('N', true) // Net Pay
+  // Net pay is whole rupees, so its cells drop the decimals unless an older stored amount has paise.
+  for (let r = startRow; r <= endRow; r++) {
+    const cell = ws[`N${r}`]
+    if (cell) cell.z = netPayXlsxFormat(Number(cell.v))
+  }
+  ws[`N${totalRowIdx}`].z = netPayXlsxFormat(
+    run.runEmployees.reduce((sum, re) => sum + Number(re.netPayable), 0),
+  )
 
   // Setup merges
   ws['!merges'] = [
@@ -683,7 +702,7 @@ export async function generatePayrollSlipPdf(slip: PayrollSlipData): Promise<Buf
     ],
     [
       { text: 'NET PAYABLE', font: 'Helvetica', bold: true, fontSize: 10 },
-      { text: formatCurrencyPdf(slip.netPayable), font: 'Courier', alignment: 'right', bold: true, fontSize: 10 },
+      { text: formatNetPayPdf(slip.netPayable), font: 'Courier', alignment: 'right', bold: true, fontSize: 10 },
     ],
   ]
 
