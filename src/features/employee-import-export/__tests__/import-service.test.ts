@@ -301,6 +301,32 @@ describe('executeImport', () => {
     expect(result.rejectedRowCount).toBe(0)
   })
 
+  it('starts a new employee wage row on the date of joining, else the 1st of the month (#37)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-13T10:30:00.000Z'))
+    try {
+      vi.mocked(prisma.employee.findMany).mockResolvedValue([])
+      vi.mocked(prisma.employeeImportBatch.create).mockResolvedValue({ id: 'batch-1' } as never)
+      vi.mocked(prisma.employee.create)
+        .mockResolvedValueOnce(makeEmployee({ id: 'uuid-1', employeeId: 'EMP-001' }))
+        .mockResolvedValueOnce(makeEmployee({ id: 'uuid-2', employeeId: 'EMP-002' }))
+
+      const buf = makeXlsxBuffer('Employee Master List', [
+        makeValidRow({ 'Employee ID': 'EMP-001', 'Date of Joining': '2026-09-15' }),
+        makeValidRow({ 'Employee ID': 'EMP-002' }),
+      ])
+      await executeImport(buf, 'employees.xlsx', '/tmp/employees.xlsx')
+
+      const rows = vi.mocked(prisma.employeeWageHistory.createMany).mock.calls[0][0]!.data as { effectiveFrom: Date }[]
+      expect(rows.map((r) => r.effectiveFrom.toISOString())).toEqual([
+        '2026-09-15T00:00:00.000Z',
+        '2026-11-01T00:00:00.000Z',
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('updates existing employees', async () => {
     vi.mocked(prisma.employee.findMany).mockResolvedValue([
       makeEmployee({ employeeId: 'EMP-001', phone: '111' }),
