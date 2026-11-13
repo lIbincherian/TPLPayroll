@@ -253,50 +253,53 @@ function ApproveBody({
           : 'Approving locks the week and makes it available to payroll.'}
       </p>
 
-      {error && (
-        <div
-          role="alert"
-          data-testid="approve-error"
-          className="mt-4 flex items-start gap-3 rounded-xl border border-rose-200/60 bg-rose-50 p-3"
-        >
-          <WarningCircle size={16} className="mt-0.5 shrink-0 text-rose-500" />
-          <div className="flex-1 text-sm text-rose-700">
-            <p>{error.blocked ? error.message : `Couldn't approve. ${error.message}`}</p>
-            {error.blocked && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="mt-2 rounded-xl"
-                onClick={onShowNeedsFixing}
-                data-testid="show-needs-fixing"
-              >
-                Show days
-              </Button>
-            )}
+      {/* The error sits in the sticky footer so it is always beside the buttons, however long the dialog is. */}
+      <div className="sticky -bottom-6 -mx-6 -mb-6 mt-4 border-t border-zinc-100 bg-white px-6 py-4">
+        {error && (
+          <div
+            role="alert"
+            data-testid="approve-error"
+            className="flex items-start gap-3 rounded-xl border border-rose-200/60 bg-rose-50 p-3"
+          >
+            <WarningCircle size={16} className="mt-0.5 shrink-0 text-rose-500" />
+            <div className="flex-1 text-sm text-rose-700">
+              <p>{error.blocked ? error.message : `Couldn't approve. ${error.message}`}</p>
+              {error.blocked && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-2 rounded-xl"
+                  onClick={onShowNeedsFixing}
+                  data-testid="show-needs-fixing"
+                >
+                  Show days
+                </Button>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      <DialogFooter className="sticky bottom-0 -mx-6 -mb-6 border-t border-zinc-100 bg-white px-6 py-4">
-        <Button variant="outline" className="rounded-xl" disabled={pending} onClick={onClose} data-testid="approve-cancel">
-          Cancel
-        </Button>
-        <Button
-          className="rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 active:scale-[0.98]"
-          disabled={pending || state.kind !== 'ready'}
-          onClick={() => void handleConfirm()}
-          data-testid="approve-confirm"
-        >
-          {pending ? (
-            <>
-              <SpinnerGap size={14} className="animate-spin motion-reduce:animate-none" />
-              {isCorrection ? 'Recalculating…' : 'Approving…'}
-            </>
-          ) : (
-            title
-          )}
-        </Button>
-      </DialogFooter>
+        <DialogFooter className={error ? 'mt-4' : 'mt-0'}>
+          <Button variant="outline" className="rounded-xl" disabled={pending} onClick={onClose} data-testid="approve-cancel">
+            Cancel
+          </Button>
+          <Button
+            className="rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 active:scale-[0.98]"
+            disabled={pending || state.kind !== 'ready'}
+            onClick={() => void handleConfirm()}
+            data-testid="approve-confirm"
+          >
+            {pending ? (
+              <>
+                <SpinnerGap size={14} className="animate-spin motion-reduce:animate-none" />
+                {isCorrection ? 'Recalculating…' : 'Approving…'}
+              </>
+            ) : (
+              title
+            )}
+          </Button>
+        </DialogFooter>
+      </div>
     </>
   )
 }
