@@ -158,10 +158,14 @@ describe.skipIf(!enabled)('F12 settlement redesign (real database)', { timeout: 
 
   let originalSettings: { payrollWeekStartDay: string; updatedAt: Date } | null = null
 
+  let activeBefore: string[] = []
+
   beforeAll(async () => {
     process.env.DIRECT_DATABASE_URL = URL
     process.env.DATABASE_URL = URL
     prisma = (await import('@/lib/prisma')).default
+    // Approving a week sets employee status (issue #35); afterAll puts back who was active.
+    activeBefore = (await prisma.employee.findMany({ where: { isActive: true }, select: { id: true } })).map((e) => e.id)
     ;({ approveWeek } = await import('@/features/attendance-sync/services/week-approval.service'))
     ;({ calculatePayroll, approvePayroll } = await import('@/features/payroll-generation/services/payroll.service'))
     adjustments = await import('@/features/payroll-adjustments/services/adjustment.service')
@@ -182,6 +186,7 @@ describe.skipIf(!enabled)('F12 settlement redesign (real database)', { timeout: 
   }, 120000)
 
   afterAll(async () => {
+    await prisma.employee.updateMany({ where: { id: { in: activeBefore } }, data: { isActive: true } })
     await cleanup()
     if (originalSettings) {
       await prisma.$executeRawUnsafe(`UPDATE "Settings" SET "payrollWeekStartDay" = '${originalSettings.payrollWeekStartDay}', "updatedAt" = $1 WHERE id = 'singleton'`, originalSettings.updatedAt)
@@ -243,6 +248,8 @@ describe.skipIf(!enabled)('F12 settlement redesign (real database)', { timeout: 
   async function attendanceWeek(week: string, punches: Array<{ id: string }> = [empA, empB]) {
     const upload = await seedWeek(week)
     await seedPunches(upload.id, week, punches)
+    // These employees work this week: an earlier approval may have marked them inactive for having no punches.
+    await prisma.employee.updateMany({ where: { id: { in: punches.map((e) => e.id) } }, data: { isActive: true } })
     await approveWeek(week)
     return upload.id
   }

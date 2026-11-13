@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { getApprovalSummaryAction } from '../actions/attendance-sync.actions'
+import { describeStatusChanges } from '../lib/employee-status'
 import { formatDayShort, formatHoursTotal, plural } from '../lib/format'
 import type { ApprovalSummary, ISODate, ReviewMode } from '../types/attendance-sync.types'
 
@@ -49,7 +50,34 @@ function SummaryStrip({ summary, correction }: { summary: ApprovalSummary | null
   )
 }
 
+// ─── Employee status changes ──────────────────────────────────────────────────
+
+function StatusChangesPreview({ summary }: { summary: ApprovalSummary }) {
+  const changes = summary.statusChanges
+  const sentence = changes ? describeStatusChanges(changes) : null
+  if (!changes || sentence === null) return null
+
+  // Employees marked inactive are already named in the left-out list below, so only reactivations are listed here.
+  return (
+    <section className="pt-4" data-testid="approval-status-changes">
+      <h3 className="text-sm font-medium text-zinc-900">Approving also changes employee status</h3>
+      <p className="mt-1 text-sm text-zinc-600">{sentence}.</p>
+      {changes.reactivated.length > 0 && (
+        <p className="mt-2 text-sm">
+          <span className="font-medium text-zinc-700">Reactivated (has punches): </span>
+          <span className="text-zinc-600">{changes.reactivated.map((e) => e.employeeName).join(', ')}</span>
+        </p>
+      )}
+    </section>
+  )
+}
+
 // ─── Left out and edited days ─────────────────────────────────────────────────
+
+function leftOutReason(item: ApprovalSummary['leftOut'][number], markedInactive: ReadonlySet<string>): string {
+  if (item.reason === 'REJECTED') return 'Rejected in employee check'
+  return markedInactive.has(item.employeeId) ? 'No punches, marked inactive' : 'Zero hours'
+}
 
 function LeftOutList({
   summary,
@@ -58,6 +86,7 @@ function LeftOutList({
   summary: ApprovalSummary
   onShowEmployee: (employeeCode: string) => void
 }) {
+  const markedInactive = new Set(summary.statusChanges?.markedInactive.map((e) => e.id))
   if (summary.leftOut.length === 0) {
     return (
       <section className="pt-4" data-testid="approval-left-out">
@@ -76,7 +105,7 @@ function LeftOutList({
               <span className="min-w-0 flex-1 truncate text-sm text-zinc-900">{item.employeeName}</span>
               <span className="font-mono text-xs text-zinc-500">{item.employeeCode}</span>
               <span className="w-40 text-right text-xs text-zinc-600">
-                {item.reason === 'ZERO_HOURS' ? 'Zero hours' : 'Rejected in employee check'}
+                {leftOutReason(item, markedInactive)}
               </span>
             </>
           )
@@ -213,6 +242,7 @@ function ApproveBody({
       {summary && (
         <>
           <LeftOutList summary={summary} onShowEmployee={onShowEmployee} />
+          <StatusChangesPreview summary={summary} />
           <EditedDays summary={summary} />
         </>
       )}
@@ -223,50 +253,53 @@ function ApproveBody({
           : 'Approving locks the week and makes it available to payroll.'}
       </p>
 
-      {error && (
-        <div
-          role="alert"
-          data-testid="approve-error"
-          className="mt-4 flex items-start gap-3 rounded-xl border border-rose-200/60 bg-rose-50 p-3"
-        >
-          <WarningCircle size={16} className="mt-0.5 shrink-0 text-rose-500" />
-          <div className="flex-1 text-sm text-rose-700">
-            <p>{error.blocked ? error.message : `Couldn't approve. ${error.message}`}</p>
-            {error.blocked && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="mt-2 rounded-xl"
-                onClick={onShowNeedsFixing}
-                data-testid="show-needs-fixing"
-              >
-                Show days
-              </Button>
-            )}
+      {/* The error sits in the sticky footer so it is always beside the buttons, however long the dialog is. */}
+      <div className="sticky -bottom-6 -mx-6 -mb-6 mt-4 border-t border-zinc-100 bg-white px-6 py-4">
+        {error && (
+          <div
+            role="alert"
+            data-testid="approve-error"
+            className="flex items-start gap-3 rounded-xl border border-rose-200/60 bg-rose-50 p-3"
+          >
+            <WarningCircle size={16} className="mt-0.5 shrink-0 text-rose-500" />
+            <div className="flex-1 text-sm text-rose-700">
+              <p>{error.blocked ? error.message : `Couldn't approve. ${error.message}`}</p>
+              {error.blocked && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-2 rounded-xl"
+                  onClick={onShowNeedsFixing}
+                  data-testid="show-needs-fixing"
+                >
+                  Show days
+                </Button>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      <DialogFooter className="max-md:sticky max-md:bottom-0 max-md:-mx-6 max-md:-mb-6 max-md:bg-white max-md:px-6 max-md:py-4">
-        <Button variant="outline" className="rounded-xl" disabled={pending} onClick={onClose} data-testid="approve-cancel">
-          Cancel
-        </Button>
-        <Button
-          className="rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 active:scale-[0.98]"
-          disabled={pending || state.kind !== 'ready'}
-          onClick={() => void handleConfirm()}
-          data-testid="approve-confirm"
-        >
-          {pending ? (
-            <>
-              <SpinnerGap size={14} className="animate-spin motion-reduce:animate-none" />
-              {isCorrection ? 'Recalculating…' : 'Approving…'}
-            </>
-          ) : (
-            title
-          )}
-        </Button>
-      </DialogFooter>
+        <DialogFooter className={error ? 'mt-4' : 'mt-0'}>
+          <Button variant="outline" className="rounded-xl" disabled={pending} onClick={onClose} data-testid="approve-cancel">
+            Cancel
+          </Button>
+          <Button
+            className="rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 active:scale-[0.98]"
+            disabled={pending || state.kind !== 'ready'}
+            onClick={() => void handleConfirm()}
+            data-testid="approve-confirm"
+          >
+            {pending ? (
+              <>
+                <SpinnerGap size={14} className="animate-spin motion-reduce:animate-none" />
+                {isCorrection ? 'Recalculating…' : 'Approving…'}
+              </>
+            ) : (
+              title
+            )}
+          </Button>
+        </DialogFooter>
+      </div>
     </>
   )
 }

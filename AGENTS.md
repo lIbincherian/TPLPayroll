@@ -58,6 +58,7 @@ The schema is managed with Prisma Migrate. `prisma/migrations/` is the source of
 
 - **eTimeOffice Attendance Sync (F12)**:
   - Attendance enters only via eTimeOffice sync (F12); the Excel upload is removed.
+  - Approving a completed week (when no later eTimeOffice week is approved) sets employee status in the approval transaction; a pull never does: active with no matched punches becomes inactive, inactive with punches becomes active (unless resigned before today). New joiners (joined on or after the week start), duplicate-code candidates and employees rejected in the employee check are skipped. Each change writes an `EMPLOYEE` audit row with `changeSource: 'AUTO_ATTENDANCE'` (`src/features/attendance-sync/lib/employee-status.ts`).
   - Set these five variables separately for Vercel **Production** and **Preview** before the F12 build deploys, so the first scheduled sync after the release finds them. All are server-only; never prefix them with `NEXT_PUBLIC_`, never log them, and never return them from an action or route.
     - `ETIMEOFFICE_CORPORATE_ID`, `ETIMEOFFICE_USERNAME`, `ETIMEOFFICE_PASSWORD`: the eTimeOffice API login. Only `src/features/attendance-sync/services/etimeoffice.client.ts` reads them.
     - `ETIMEOFFICE_BASE_URL`: optional, defaults to `https://api.etimeoffice.com/api/`.
