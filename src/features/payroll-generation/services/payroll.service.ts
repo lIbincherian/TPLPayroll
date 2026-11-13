@@ -44,7 +44,10 @@ export function calculateNetPayable(
   additions: number,
   deductions: number,
 ): number {
-  return grossPay + additions - deductions
+  // Round to paise first to drop floating-point noise, then to the whole rupee with halves up.
+  const paise = Math.round((grossPay + additions - deductions) * 100)
+  const rupees = Math.floor((paise + 50) / 100)
+  return rupees === 0 ? 0 : rupees
 }
 
 // ─── getAvailablePayrollWeeks ─────────────────────────────────────────────────

@@ -273,6 +273,26 @@ describe('calculateNetPayable', () => {
   it('returns grossPay when there are no adjustments', () => {
     expect(calculateNetPayable(3250, 0, 0)).toBe(3250)
   })
+
+  it('rounds .49 down and .50 up to the whole rupee', () => {
+    expect(calculateNetPayable(4512.49, 0, 0)).toBe(4512)
+    expect(calculateNetPayable(4512.5, 0, 0)).toBe(4513)
+  })
+
+  it('returns 0 for a zero amount', () => {
+    expect(calculateNetPayable(0, 0, 0)).toBe(0)
+  })
+
+  it('rounds negative halves toward +infinity and never returns -0', () => {
+    expect(calculateNetPayable(0, 0, 4512.5)).toBe(-4512)
+    expect(calculateNetPayable(0, 0, 4512.51)).toBe(-4513)
+    expect(Object.is(calculateNetPayable(0, 0, 0.5), 0)).toBe(true)
+    expect(Object.is(calculateNetPayable(0, 0, 0.49), 0)).toBe(true)
+  })
+
+  it('rounds to paise first so floating-point noise does not drop a half', () => {
+    expect(calculateNetPayable(4512.1, 0.4, 0)).toBe(4513)
+  })
 })
 
 // ─── US-06.2: checkAttendanceReadiness ───────────────────────────────────────
@@ -753,6 +773,29 @@ describe('calculatePayroll', () => {
     expect(summary.employees[0].netPayable).toBe(925)
     expect(summary.totals.totalRegularHours).toBe(8)
     expect(summary.totals.totalOvertimeHours).toBe(1.25)
+  })
+
+  it('rounds each row to the whole rupee and totals the rounded rows', async () => {
+    // Each row's gross is 10.50 → 11. The rows sum to 33; rounding the unrounded 31.50 would give 32.
+    vi.mocked(prisma.attendanceUpload.findFirst).mockResolvedValue(makeUpload())
+    vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue(
+      ['emp-1', 'emp-2', 'emp-3'].map((id, i) =>
+        makeRecordWithEmployee({
+          id: `r${i}`,
+          employeeDbId: id,
+          code: `E${i}`,
+          date: '2025-03-06',
+          regular: 1,
+          wageHistory: makeWageHistory(10.5),
+        }),
+      ) as never,
+    )
+
+    const summary = await calculatePayroll(WEEK_START, WEEK_END)
+
+    expect(summary.employees.map((e) => e.grossPay)).toEqual([10.5, 10.5, 10.5])
+    expect(summary.employees.map((e) => e.netPayable)).toEqual([11, 11, 11])
+    expect(summary.totals.totalNetPayable).toBe(33)
   })
 
   // US-12.25 AC1: a zero-hour employee gets no AttendanceRecord rows at approval, so no payroll row

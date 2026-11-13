@@ -341,7 +341,7 @@ describe('recalculateAndCreateRevision uses the copied punches only when Attenda
     expect(clones()).toHaveLength(4) // kept
     expect(audits()).toHaveLength(0)
     const row = db.rows('payrollRunEmployee').find((r) => r.payrollRevisionId === result.revisionId)!
-    expect(row).toMatchObject({ regularHours: 8, overtimeHours: 3, regularPay: 500, overtimePay: 187.5, netPayable: 687.5 })
+    expect(row).toMatchObject({ regularHours: 8, overtimeHours: 3, regularPay: 500, overtimePay: 187.5, netPayable: 688 })
   })
 
   it('a failing draft write after the copy was dropped rolls the drop back (the copy and its audit entry survive/are absent together)', async () => {

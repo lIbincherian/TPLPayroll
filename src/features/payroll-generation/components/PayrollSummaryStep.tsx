@@ -3,15 +3,9 @@
 import { useState } from 'react'
 import { ArrowLeft, WarningCircle } from '@phosphor-icons/react'
 import type { PayrollSummary, EmployeePayrollRow } from '@/features/payroll-generation/types/payroll.types'
+import { formatNetPay } from '@/features/payroll-generation/lib/format-net-pay'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function fmt(amount: number) {
-  return new Intl.NumberFormat('en-IN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount)
-}
 
 function fmtHours(h: number) {
   return h.toFixed(2)
@@ -44,7 +38,7 @@ function EmployeeRow({ row }: { row: EmployeePayrollRow }) {
       </td>
       <td className="px-4 py-3 text-right">
         <span className="font-mono tabular-nums text-sm font-semibold text-zinc-900">
-          ₹{fmt(row.netPayable)}
+          ₹{formatNetPay(row.netPayable)}
         </span>
       </td>
     </tr>
@@ -168,7 +162,7 @@ export function PayrollSummaryStep({ weekLabel, summary, onBack, onApprove }: Pr
                   Total
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums text-sm font-bold text-zinc-900">
-                  ₹{fmt(totals.totalNetPayable)}
+                  ₹{formatNetPay(totals.totalNetPayable)}
                 </td>
               </tr>
             </tfoot>

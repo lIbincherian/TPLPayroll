@@ -10,6 +10,7 @@ import {
   approveRevisionAction,
   abandonCorrectionAction,
 } from '@/features/payroll-correction/actions/correction.actions'
+import { formatNetPay } from '@/features/payroll-generation/lib/format-net-pay'
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -32,13 +33,6 @@ interface RevisedPreviewProps {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function formatCurrency(amount: number) {
-  return new Intl.NumberFormat('en-IN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount)
-}
-
 function DiffValue({
   current,
   previous,
@@ -49,18 +43,18 @@ function DiffValue({
   prefix?: string
 }) {
   if (previous === null || current === previous) {
-    return <span>{prefix}{formatCurrency(current)}</span>
+    return <span>{prefix}{formatNetPay(current)}</span>
   }
 
   const increased = current > previous
   return (
     <span className="group relative">
       <span className={increased ? 'text-emerald-600' : 'text-rose-600'}>
-        {prefix}{formatCurrency(current)}
+        {prefix}{formatNetPay(current)}
       </span>
       {/* Tooltip */}
       <span className="pointer-events-none absolute -top-8 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-lg bg-zinc-900 px-2 py-1 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100">
-        Previous: {prefix}{formatCurrency(previous)}
+        Previous: {prefix}{formatNetPay(previous)}
       </span>
     </span>
   )
@@ -178,7 +172,7 @@ export function RevisedPreview({
                       <span className="group relative">
                         <span className="font-sans text-rose-600">Left out</span>
                         <span className="pointer-events-none absolute -top-8 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-lg bg-zinc-900 px-2 py-1 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100">
-                          Previous: ₹{formatCurrency(emp.previousNetPayable ?? 0)}
+                          Previous: ₹{formatNetPay(emp.previousNetPayable ?? 0)}
                         </span>
                       </span>
                     ) : (
