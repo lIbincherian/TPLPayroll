@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import prisma from '@/lib/prisma'
 import type { Prisma } from '@prisma/client'
+import { resolveInitialWageEffectiveFrom } from '../lib/wage-effective-from'
 import {
   CreateEmployeeSchema,
   UpdateEmployeeSchema,
@@ -127,7 +128,11 @@ export async function createEmployee(input: CreateEmployeeInput): Promise<Employ
         employeeId: employeeDbId,
         weeklySalary: parsed.data.salary,
         hourlyRate,
-        effectiveFrom: today,
+        effectiveFrom: resolveInitialWageEffectiveFrom(
+          parsed.data.wageEffectiveFrom,
+          parsed.data.dateOfJoining,
+          today,
+        ),
         effectiveTo: null,
         changeSource: 'MANUAL',
       },
