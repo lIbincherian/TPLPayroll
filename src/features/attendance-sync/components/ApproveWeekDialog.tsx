@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { getApprovalSummaryAction } from '../actions/attendance-sync.actions'
 import { describeStatusChanges } from '../lib/employee-status'
 import { formatDayShort, formatHoursTotal, plural } from '../lib/format'
-import type { ApprovalSummary, ISODate, ReviewMode, StatusChangedEmployee } from '../types/attendance-sync.types'
+import type { ApprovalSummary, ISODate, ReviewMode } from '../types/attendance-sync.types'
 
 const LABEL = 'text-xs font-medium uppercase tracking-wider text-zinc-500'
 
@@ -57,25 +57,17 @@ function StatusChangesPreview({ summary }: { summary: ApprovalSummary }) {
   const sentence = changes ? describeStatusChanges(changes) : null
   if (!changes || sentence === null) return null
 
-  const names = (list: StatusChangedEmployee[]) => list.map((e) => e.employeeName).join(', ')
+  // Employees marked inactive are already named in the left-out list below, so only reactivations are listed here.
   return (
     <section className="pt-4" data-testid="approval-status-changes">
       <h3 className="text-sm font-medium text-zinc-900">Approving also changes employee status</h3>
       <p className="mt-1 text-sm text-zinc-600">{sentence}.</p>
-      <dl className="mt-2 max-h-32 space-y-1 overflow-y-auto text-sm">
-        {changes.markedInactive.length > 0 && (
-          <div>
-            <dt className="inline font-medium text-zinc-700">Marked inactive (no punches): </dt>
-            <dd className="inline text-zinc-600">{names(changes.markedInactive)}</dd>
-          </div>
-        )}
-        {changes.reactivated.length > 0 && (
-          <div>
-            <dt className="inline font-medium text-zinc-700">Reactivated (has punches): </dt>
-            <dd className="inline text-zinc-600">{names(changes.reactivated)}</dd>
-          </div>
-        )}
-      </dl>
+      {changes.reactivated.length > 0 && (
+        <p className="mt-2 text-sm">
+          <span className="font-medium text-zinc-700">Reactivated (has punches): </span>
+          <span className="text-zinc-600">{changes.reactivated.map((e) => e.employeeName).join(', ')}</span>
+        </p>
+      )}
     </section>
   )
 }
@@ -285,7 +277,7 @@ function ApproveBody({
         </div>
       )}
 
-      <DialogFooter className="max-md:sticky max-md:bottom-0 max-md:-mx-6 max-md:-mb-6 max-md:bg-white max-md:px-6 max-md:py-4">
+      <DialogFooter className="sticky bottom-0 -mx-6 -mb-6 border-t border-zinc-100 bg-white px-6 py-4">
         <Button variant="outline" className="rounded-xl" disabled={pending} onClick={onClose} data-testid="approve-cancel">
           Cancel
         </Button>
