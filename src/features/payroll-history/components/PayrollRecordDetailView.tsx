@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { ArrowLeft } from '@phosphor-icons/react/dist/ssr'
 import { PayrollRecordDetail } from '../types/payroll-history.types'
+import { formatNetPay } from '@/features/payroll-generation/lib/format-net-pay'
 
 interface PayrollRecordDetailViewProps {
   record: PayrollRecordDetail
@@ -166,7 +167,7 @@ export function PayrollRecordDetailView({ record }: PayrollRecordDetailViewProps
           <div className="border-t-2 border-zinc-300 pt-6 mt-8">
             <h2 className="text-xs font-medium uppercase tracking-wider text-zinc-400 mb-2">Net Payable</h2>
             <p className="text-3xl font-mono tabular-nums font-semibold text-zinc-900">
-              {formatCurrency(record.netPayable)}
+              ₹{formatNetPay(record.netPayable)}
             </p>
           </div>
         </div>

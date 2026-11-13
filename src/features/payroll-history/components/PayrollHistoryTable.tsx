@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { PayrollHistoryRow } from '../types/payroll-history.types'
+import { formatNetPay } from '@/features/payroll-generation/lib/format-net-pay'
 
 interface PayrollHistoryTableProps {
   rows: PayrollHistoryRow[]
@@ -88,7 +89,7 @@ export function PayrollHistoryTable({ rows }: PayrollHistoryTableProps) {
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-right">
                 <Link href={`/history/${row.recordId}`} className="block w-full">
-                  <span className="font-mono tabular-nums text-sm font-medium text-emerald-600">{formatCurrency(row.netPayable)}</span>
+                  <span className="font-mono tabular-nums text-sm font-medium text-emerald-600">₹{formatNetPay(row.netPayable)}</span>
                 </Link>
               </td>
             </tr>

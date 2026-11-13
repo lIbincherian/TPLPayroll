@@ -108,7 +108,7 @@ describe('createEmployee — audit log detailsJson', () => {
             employeeName: 'Ravi Kumar',
             designation: 'Guard',
             salary: 12000,
-            hourlyRate: 62.5,
+            hourlyRate: 1500,
           }),
         }),
       })
@@ -238,7 +238,7 @@ describe('updateEmployee — WAGE_HISTORY audit log', () => {
     })
   })
 
-  it('WAGE_HISTORY audit log includes effectiveFrom and employeeId when hourlyRate changes', async () => {
+  it('WAGE_HISTORY audit log includes effectiveFrom, employeeId and the computed hourly rates when the daily wage changes', async () => {
     // GIVEN employee with hourlyRate=62.50
     const existing = makeEmployee()
     const existingWage = makeWageHistory({ hourlyRate: 62.5 as unknown as EmployeeWageHistory['hourlyRate'] })
@@ -250,8 +250,8 @@ describe('updateEmployee — WAGE_HISTORY audit log', () => {
     vi.mocked(prisma.employeeWageHistory.create).mockResolvedValue(makeWageHistory())
     vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
 
-    // WHEN updateEmployee is called with { hourlyRate: 75.00 }
-    await updateEmployee('uuid-1', { hourlyRate: 75.0 })
+    // WHEN updateEmployee is called with { salary: 800 }
+    await updateEmployee('uuid-1', { salary: 800 })
 
     // THEN WAGE_HISTORY auditLog detailsJson includes employeeId, effectiveFrom, oldHourlyRate, newHourlyRate
     const auditCalls = vi.mocked(prisma.auditLog.create).mock.calls
@@ -265,7 +265,7 @@ describe('updateEmployee — WAGE_HISTORY audit log', () => {
           employeeId: 'uuid-1',
           effectiveFrom: expect.any(Date),
           oldHourlyRate: 62.5,
-          newHourlyRate: 75.0,
+          newHourlyRate: 100,
         }),
       }),
     })
@@ -289,5 +289,42 @@ describe('updateEmployee — WAGE_HISTORY audit log', () => {
 
     const [[singleArgs]] = auditCalls
     expect((singleArgs as { data: { entityType: string } }).data.entityType).toBe('EMPLOYEE')
+  })
+})
+
+// Issue #36: clearing an optional field records old -> null
+describe('updateEmployee — clearing an optional field', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([makeWageHistory()])
+    vi.mocked(prisma.$transaction).mockImplementation(async (promises) => Promise.all(promises as unknown as Promise<unknown>[]))
+    vi.mocked(prisma.employee.update).mockResolvedValue(makeEmployee())
+    vi.mocked(prisma.auditLog.create).mockResolvedValue({} as AuditLog)
+  })
+
+  function employeeChangedFields() {
+    const call = vi.mocked(prisma.auditLog.create).mock.calls.find(
+      ([args]) => (args as { data: { entityType: string } }).data.entityType === 'EMPLOYEE'
+    )
+    return (call?.[0] as { data: { detailsJson: { changedFields: Record<string, unknown> } } } | undefined)
+      ?.data.detailsJson.changedFields
+  }
+
+  it('records { old: <value>, new: null } for a cleared field and nothing for a field already null', async () => {
+    vi.mocked(prisma.employee.findUnique).mockResolvedValue(makeEmployee({ gPay: '9876543210', phone: null }))
+
+    await updateEmployee('uuid-1', { gPay: null, phone: null })
+
+    const changedFields = employeeChangedFields()
+    expect(changedFields).toEqual({ gPay: { old: '9876543210', new: null } })
+    expect(changedFields).not.toHaveProperty('phone')
+  })
+
+  it('records no change when only already-null fields are sent as null', async () => {
+    vi.mocked(prisma.employee.findUnique).mockResolvedValue(makeEmployee({ gPay: null, dateOfBirth: null }))
+
+    await updateEmployee('uuid-1', { gPay: null, dateOfBirth: null })
+
+    expect(employeeChangedFields()).toEqual({})
   })
 })

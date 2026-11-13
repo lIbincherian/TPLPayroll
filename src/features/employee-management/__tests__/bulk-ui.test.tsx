@@ -41,7 +41,7 @@ describe('BulkActionToolbar', () => {
     expect(screen.getByText('3 selected')).toBeInTheDocument()
     expect(screen.getByText('Mark Resigned')).toBeInTheDocument()
     expect(screen.getByText('Mark Inactive')).toBeInTheDocument()
-    expect(screen.getByText('Change Hourly Rate')).toBeInTheDocument()
+    expect(screen.getByText('Change Daily Wage')).toBeInTheDocument()
   })
 
   it('does not render when selectedCount is 0', () => {
@@ -75,10 +75,10 @@ describe('BulkActionToolbar', () => {
     expect(defaultProps.onMarkInactive).toHaveBeenCalledOnce()
   })
 
-  it('Change Hourly Rate button calls onChangeHourlyRate', () => {
+  it('Change Daily Wage button calls onChangeHourlyRate', () => {
     render(<BulkActionToolbar {...defaultProps} selectedCount={2} />)
 
-    fireEvent.click(screen.getByText('Change Hourly Rate'))
+    fireEvent.click(screen.getByText('Change Daily Wage'))
 
     expect(defaultProps.onChangeHourlyRate).toHaveBeenCalledOnce()
   })
@@ -302,7 +302,7 @@ describe('BulkInactiveDialog', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { BulkRateDialog } from '@/features/employee-management/components/BulkRateDialog'
-import { getEmployeeWageHistoryAction } from '@/features/employee-management/actions/employee.actions'
+import { getEmployeeWageHistoryAction, bulkUpdateHourlyRateAction } from '@/features/employee-management/actions/employee.actions'
 
 describe('BulkRateDialog — validation', () => {
   const onClose = vi.fn()
@@ -336,13 +336,13 @@ describe('BulkRateDialog — validation', () => {
 
     // Wait for loading to finish
     await waitFor(() => {
-      expect(screen.queryByText('Loading current rates...')).not.toBeInTheDocument()
+      expect(screen.queryByText('Loading current wages...')).not.toBeInTheDocument()
     })
 
     // Click confirm without entering a rate
-    fireEvent.click(screen.getByText('Update Rates'))
+    fireEvent.click(screen.getByText('Update Daily Wages'))
 
-    expect(screen.getByText('Please enter a valid hourly rate greater than 0')).toBeInTheDocument()
+    expect(screen.getByText('Enter a daily wage greater than 0')).toBeInTheDocument()
   })
 
   it('shows validation error when rate is zero', async () => {
@@ -355,17 +355,17 @@ describe('BulkRateDialog — validation', () => {
     )
 
     await waitFor(() => {
-      expect(screen.queryByText('Loading current rates...')).not.toBeInTheDocument()
+      expect(screen.queryByText('Loading current wages...')).not.toBeInTheDocument()
     })
 
     const rateInput = screen.getByPlaceholderText('0.00')
     fireEvent.change(rateInput, { target: { value: '0' } })
-    fireEvent.click(screen.getByText('Update Rates'))
+    fireEvent.click(screen.getByText('Update Daily Wages'))
 
-    expect(screen.getByText('Please enter a valid hourly rate greater than 0')).toBeInTheDocument()
+    expect(screen.getByText('Enter a daily wage greater than 0')).toBeInTheDocument()
   })
 
-  it('displays current hourly rates for each employee', async () => {
+  it('displays the current daily wage for each employee', async () => {
     render(
       <BulkRateDialog
         employees={[makeListItem()]}
@@ -375,7 +375,37 @@ describe('BulkRateDialog — validation', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByText('₹62.50')).toBeInTheDocument()
+      expect(screen.getByText('₹14000.00')).toBeInTheDocument()
     })
+  })
+
+  it('asks for a new daily wage, shows the computed hourly rate and submits the daily wage', async () => {
+    vi.mocked(bulkUpdateHourlyRateAction).mockResolvedValue({
+      ok: true,
+      data: { succeeded: 1, skipped: 0, failed: 0, errors: [] },
+    })
+    render(
+      <BulkRateDialog
+        employees={[makeListItem()]}
+        onClose={onClose}
+        onComplete={onComplete}
+      />
+    )
+
+    await waitFor(() => {
+      expect(screen.queryByText('Loading current wages...')).not.toBeInTheDocument()
+    })
+
+    expect(screen.getByText(/change daily wage for 1 employee/i)).toBeInTheDocument()
+    expect(screen.getByText('New Daily Wage (₹) *')).toBeInTheDocument()
+    expect(screen.getByTestId('bulk-computed-hourly-rate')).toHaveTextContent('—')
+
+    fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { value: '800' } })
+    expect(screen.getByTestId('bulk-computed-hourly-rate')).toHaveTextContent('₹100.00')
+
+    fireEvent.click(screen.getByText('Update Daily Wages'))
+
+    await waitFor(() => expect(bulkUpdateHourlyRateAction).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(bulkUpdateHourlyRateAction).mock.calls[0][0]).toMatchObject({ newDailyWage: 800 })
   })
 })

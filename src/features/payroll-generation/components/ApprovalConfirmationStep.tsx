@@ -4,13 +4,7 @@ import Link from 'next/link'
 import { CheckCircle } from '@phosphor-icons/react'
 import type { ApprovePayrollResult } from '@/features/payroll-generation/types/payroll.types'
 import { ReportSection } from '@/features/payroll-reports/components/ReportSection'
-
-function fmt(amount: number) {
-  return new Intl.NumberFormat('en-IN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount)
-}
+import { formatNetPay } from '@/features/payroll-generation/lib/format-net-pay'
 
 interface Props {
   weekLabel: string
@@ -38,7 +32,7 @@ export function ApprovalConfirmationStep({ weekLabel, result }: Props) {
           {result.employeeCount} employees
         </p>
         <p className="mt-1 font-mono text-lg font-semibold tabular-nums text-zinc-900">
-          ₹{fmt(result.totalNetPayable)}
+          ₹{formatNetPay(result.totalNetPayable)}
         </p>
       </div>
 
