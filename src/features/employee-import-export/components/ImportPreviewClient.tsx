@@ -149,11 +149,9 @@ function InvalidRowsTable({
     MISSING_EMPLOYEE_ID: 'Missing Employee ID',
     MISSING_EMPLOYEE_NAME: 'Missing Employee Name',
     MISSING_DESIGNATION: 'Missing Designation',
-    MISSING_SALARY: 'Missing Salary',
-    MISSING_HOURLY_RATE: 'Missing Hourly Rate',
+    MISSING_SALARY: 'Missing Daily Wage',
     MISSING_ACTIVE: 'Missing Active value',
-    INVALID_SALARY: 'Invalid Salary value',
-    INVALID_HOURLY_RATE: 'Invalid Hourly Rate value',
+    INVALID_SALARY: 'Invalid Daily Wage',
     INVALID_ACTIVE_VALUE: 'Invalid Active value',
   }
 

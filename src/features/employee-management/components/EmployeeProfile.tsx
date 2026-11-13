@@ -156,7 +156,7 @@ export function EmployeeProfile({ employee, wageHistory }: EmployeeProfileProps)
             <SectionTitle>Compensation</SectionTitle>
             <dl className="grid grid-cols-2 gap-y-4 gap-x-6">
               <Detail
-                label="Monthly Salary"
+                label="Daily Wage"
                 value={
                   currentWage ? (
                     <span className="font-mono tabular-nums">
