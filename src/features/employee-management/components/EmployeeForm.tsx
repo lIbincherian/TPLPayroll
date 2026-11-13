@@ -116,13 +116,15 @@ function FieldWrapper({
         {required && <span className="ml-0.5 text-rose-500">*</span>}
       </label>
       {children}
-      {error ? (
+      {error && (
         <p className="text-xs text-rose-600 mt-0.5">{error}</p>
-      ) : warning ? (
+      )}
+      {!error && warning && (
         <p className="text-xs text-amber-700 mt-0.5">{warning}</p>
-      ) : hint ? (
+      )}
+      {!error && !warning && hint && (
         <p className="text-xs text-zinc-500 mt-0.5">{hint}</p>
-      ) : null}
+      )}
     </div>
   )
 }
