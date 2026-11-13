@@ -26,6 +26,7 @@ import {
   reopenWeekAction,
 } from '../actions/attendance-sync.actions'
 import { formatHoursTotal, formatIstDateTime, formatIstTime, plural } from '../lib/format'
+import { describeStatusChanges } from '../lib/employee-status'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 import {
   applySaveResult,
@@ -423,10 +424,14 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
 
     const res = await approveWeekAction(weekId)
     if (!res.ok) return { ok: false, error: res.error, code: res.code }
+    const statusLine = describeStatusChanges(res.data.statusChanges)
     toast.success('Week approved', {
+      description: statusLine ? `${statusLine}.` : undefined,
       action: { label: 'Go to payroll', onClick: () => router.push(`/payroll/generate/${weekId}`) },
     })
     await reload()
+    // The status notice above the grid is rendered by the page, so fetch it again.
+    if (statusLine) router.refresh()
     setApproveOpen(false)
     return { ok: true }
   }

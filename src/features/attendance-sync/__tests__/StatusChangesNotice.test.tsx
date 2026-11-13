@@ -6,11 +6,11 @@ const anita = { id: 'emp-1', employeeId: 'E2E-HLP-9001', employeeName: 'Anita Ra
 const bala = { id: 'emp-2', employeeId: 'E2E-HLP-9002', employeeName: 'Bala Singh' }
 
 describe('StatusChangesNotice', () => {
-  it('reads as one sentence, with a space before "from this week\'s attendance"', () => {
+  it('reads as one sentence, with a space before "when this week was approved"', () => {
     render(<StatusChangesNotice changes={{ markedInactive: [anita], reactivated: [bala] }} />)
 
-    expect(screen.getByText(/from this week's attendance/).closest('summary')?.textContent).toContain(
-      "1 employee marked inactive, 1 reactivated from this week's attendance.",
+    expect(screen.getByText(/when this week was approved/).closest('summary')?.textContent).toContain(
+      '1 employee marked inactive, 1 reactivated when this week was approved.',
     )
   })
 

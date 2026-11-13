@@ -62,8 +62,6 @@ test.beforeEach(async ({ request }) => {
   ])
   const loaded = await runCron(request)
   expect(loaded.body).toMatchObject({ outcome: 'LOADED' })
-  // The load marks Jaya inactive for having no punches (issue #35); these tests need her on the grid as active.
-  await prisma.employee.update({ where: { employeeId: JAYA }, data: { isActive: true } })
 })
 
 test.afterAll(() => {

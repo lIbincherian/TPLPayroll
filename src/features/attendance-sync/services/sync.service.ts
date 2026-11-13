@@ -1,15 +1,12 @@
 import { Prisma, type AttendanceUpload } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { SYNC_LOCK_TTL_MS, TRANSACTION_TIMEOUT_MS } from '../lib/constants'
-import { computeStatusChanges, summarizeStatusChanges, type StatusEmployee } from '../lib/employee-status'
-import { plural } from '../lib/format'
 import { ignoreScopeOf } from '../lib/matching'
 import { buildPunchRowsFromParsed } from '../lib/pairing'
 import { shouldScheduledSyncReplace } from '../lib/review'
 import { SYNC_FAILURE_COPY } from '../lib/etimeoffice/parser'
 import {
   addDaysISO,
-  formatWeekLabel,
   getCompletedPayrollWeek,
   isFutureWeek,
   isThursdayISO,
@@ -23,10 +20,10 @@ import {
   type CodeExceptionLite,
   type DiscardedEdit,
   type DiscardSummary,
+  type EmployeeLite,
   type ISODate,
   type SyncFailureCode,
   type SyncOutcome,
-  type StatusChangeSummary,
   type SyncTrigger,
   type WeekRange,
 } from '../types/attendance-sync.types'
@@ -287,15 +284,8 @@ export async function syncWeek(input: {
 
     const [employees, exceptions] = await Promise.all([
       prisma.employee.findMany({
-        select: {
-          id: true,
-          employeeId: true,
-          employeeName: true,
-          isActive: true,
-          dateOfJoining: true,
-          dateOfResignation: true,
-        },
-      }) as Promise<StatusEmployee[]>,
+        select: { id: true, employeeId: true, employeeName: true, isActive: true, dateOfResignation: true },
+      }) as Promise<EmployeeLite[]>,
       prisma.attendanceCodeException.findMany({
         select: { empCode: true, kind: true, employeeId: true },
       }) as Promise<CodeExceptionLite[]>,
@@ -308,7 +298,6 @@ export async function syncWeek(input: {
     const codeStatus = new Map(rows.map((r) => [r.empCode, r.matchStatus]))
     const codesWith = (status: string) => [...codeStatus.entries()].filter(([, s]) => s === status).map(([code]) => code)
     let discarded: DiscardSummary | null = null
-    let statusChanges: StatusChangeSummary = { markedInactive: [], reactivated: [] }
 
     try {
       await prisma.$transaction(
@@ -368,44 +357,6 @@ export async function syncWeek(input: {
             },
           })
 
-          // Employee status follows the latest completed week: no matched punches marks an active
-          // employee inactive, punches reactivate an inactive one. Older weeks never change status.
-          const laterWeeks = await tx.attendanceUpload.count({
-            where: {
-              source: 'ETIMEOFFICE',
-              payrollWeekStartDate: { gt: toUtcDate(week.start) },
-              lastSyncedAt: { not: null },
-            },
-          })
-          const changes = computeStatusChanges({ week, today, employees, rows, laterWeekSynced: laterWeeks > 0 })
-          const weekLabel = formatWeekLabel(week)
-          for (const to of [false, true]) {
-            const ids = changes.filter((c) => c.to === to).map((c) => c.employeeDbId)
-            if (ids.length > 0) await tx.employee.updateMany({ where: { id: { in: ids } }, data: { isActive: to } })
-          }
-          if (changes.length > 0) {
-            await tx.auditLog.createMany({
-              data: changes.map((change) => {
-                const who = `${change.employeeName} (${change.employeeId})`
-                const details = {
-                  summary: change.to
-                    ? `Reactivated from attendance: ${who} has ${plural(change.punchCount, 'punch', 'punches')} in ${weekLabel}`
-                    : `Marked inactive from attendance: ${who} had no punches in ${weekLabel}`,
-                  changeSource: 'AUTO_ATTENDANCE',
-                  employeeId: change.employeeId,
-                  employeeName: change.employeeName,
-                  isActive: { from: change.from, to: change.to },
-                  weekStart: week.start,
-                  weekEnd: week.end,
-                  punchCount: change.punchCount,
-                  hours: change.hours,
-                }
-                return { actionType: 'UPDATE', entityType: 'EMPLOYEE', entityId: change.employeeDbId, detailsJson: details }
-              }),
-            })
-          }
-          statusChanges = summarizeStatusChanges(changes)
-
           await auditEntry(
             {
               actionType: auditActionFor(trigger),
@@ -429,7 +380,6 @@ export async function syncWeek(input: {
                   ignoredCodes: discard.ignoredCodes,
                   edits: discarded?.edits ?? [],
                 },
-                statusChanges,
               },
             },
             tx,
@@ -456,7 +406,7 @@ export async function syncWeek(input: {
       return await recordFailure('SYNC_FAILED', SYNC_FAILURE_COPY.SYNC_FAILED)
     }
 
-    return { outcome: 'LOADED', punchCount: rows.length, discarded, statusChanges }
+    return { outcome: 'LOADED', punchCount: rows.length, discarded }
   } finally {
     if (!lockReleased) {
       await prisma.attendanceUpload

@@ -70,12 +70,8 @@ const row: AttendanceWeekListItem = {
 const warning = (editedDays: number, decisions: number, ignoredCodes: number) =>
   warn.mockResolvedValue({ ok: true, data: { hasData: true, editedDays, decisions, ignoredCodes } })
 
-type Loaded = Extract<SyncOutcome, { outcome: 'LOADED' }>
-
-const loaded = (
-  discarded: Loaded['discarded'],
-  statusChanges: Loaded['statusChanges'] = { markedInactive: [], reactivated: [] },
-) => pull.mockResolvedValue({ ok: true, data: { outcome: 'LOADED', punchCount: 8, discarded, statusChanges } as SyncOutcome })
+const loaded = (discarded: Extract<SyncOutcome, { outcome: 'LOADED' }>['discarded']) =>
+  pull.mockResolvedValue({ ok: true, data: { outcome: 'LOADED', punchCount: 8, discarded } as SyncOutcome })
 
 async function clickPull() {
   render(<AttendanceWeekList weeks={[row]} todayISO="2026-11-12" />)
@@ -240,33 +236,5 @@ describe('the toast after a pull that discarded things', () => {
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(`Couldn't load ${LABEL}`, { description: 'eTimeOffice returned HTTP 500.' }))
     expect(toast.success).not.toHaveBeenCalled()
-  })
-})
-
-describe('the pull toast reports employee status changes', () => {
-  const person = (id: string) => ({ id, employeeId: `TPL${id}`, employeeName: `Name ${id}` })
-
-  it('adds the counts when a pull marked employees inactive or reactivated them', async () => {
-    warning(0, 0, 0)
-    loaded(null, { markedInactive: [person('a'), person('b')], reactivated: [person('c')] })
-
-    await clickPull()
-
-    await waitFor(() =>
-      expect(toast.success).toHaveBeenCalledWith('Loaded 5 Nov – 11 Nov 2026', {
-        description: '2 employees marked inactive, 1 reactivated.',
-      }),
-    )
-  })
-
-  it('adds nothing when nobody changed', async () => {
-    warning(0, 0, 0)
-    loaded(null)
-
-    await clickPull()
-
-    await waitFor(() =>
-      expect(toast.success).toHaveBeenCalledWith('Loaded 5 Nov – 11 Nov 2026', { description: undefined }),
-    )
   })
 })

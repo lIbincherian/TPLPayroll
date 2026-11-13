@@ -14,7 +14,7 @@ beforeEach(() => {
 })
 
 describe('getLatestStatusChanges', () => {
-  it("reads the week's latest LOADED sync or pull entry", async () => {
+  it("reads the week's latest approval entry", async () => {
     findFirst.mockResolvedValue({ detailsJson: { statusChanges: { markedInactive: [person], reactivated: [] } } } as never)
 
     await expect(getLatestStatusChanges('upload-1')).resolves.toEqual({ markedInactive: [person], reactivated: [] })
@@ -22,22 +22,21 @@ describe('getLatestStatusChanges', () => {
       where: {
         entityType: 'ATTENDANCE_WEEK',
         entityId: 'upload-1',
-        actionType: { in: ['SYNC', 'PULL'] },
-        detailsJson: { path: ['outcome'], equals: 'LOADED' },
+        actionType: 'APPROVE',
       },
       orderBy: { createdAt: 'desc' },
       select: { detailsJson: true },
     })
   })
 
-  it('returns empty lists when the week has no loaded entry', async () => {
+  it('returns empty lists when the week was never approved', async () => {
     findFirst.mockResolvedValue(null)
 
     await expect(getLatestStatusChanges('upload-1')).resolves.toEqual({ markedInactive: [], reactivated: [] })
   })
 
   it('returns empty lists for an older entry written before statusChanges existed', async () => {
-    findFirst.mockResolvedValue({ detailsJson: { outcome: 'LOADED', punchCount: 4 } } as never)
+    findFirst.mockResolvedValue({ detailsJson: { employeeCount: 4 } } as never)
 
     await expect(getLatestStatusChanges('upload-1')).resolves.toEqual({ markedInactive: [], reactivated: [] })
   })

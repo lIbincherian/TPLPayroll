@@ -234,7 +234,7 @@ describe('what is discarded is read after the lock', () => {
     db.tx.attendancePunch.findMany.mockResolvedValue([makePunch({ id: 'plain-1' })])
     db.tx.attendanceEmployeeDecision.count.mockResolvedValue(0)
 
-    await expect(pullNow('2026-11-05')).resolves.toEqual({ outcome: 'LOADED', punchCount: 4, discarded: null, statusChanges: { markedInactive: [], reactivated: [] } })
+    await expect(pullNow('2026-11-05')).resolves.toEqual({ outcome: 'LOADED', punchCount: 4, discarded: null })
   })
 
   it('a scheduled sync still decides to skip an edited week from its pre-fetch read (no API call, no lock)', async () => {

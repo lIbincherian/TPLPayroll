@@ -5,14 +5,13 @@ function asEmployees(value: unknown): StatusChangedEmployee[] {
   return Array.isArray(value) ? (value as StatusChangedEmployee[]) : []
 }
 
-/** The employee status changes the week's latest loaded sync or pull made. Empty lists when none. */
+/** The employee status changes the week's latest approval made. Empty lists when none. */
 export async function getLatestStatusChanges(uploadId: string): Promise<StatusChangeSummary> {
   const entry = await prisma.auditLog.findFirst({
     where: {
       entityType: 'ATTENDANCE_WEEK',
       entityId: uploadId,
-      actionType: { in: ['SYNC', 'PULL'] },
-      detailsJson: { path: ['outcome'], equals: 'LOADED' },
+      actionType: 'APPROVE',
     },
     orderBy: { createdAt: 'desc' },
     select: { detailsJson: true },

@@ -70,7 +70,7 @@ export interface StatusChangeSummary {
 }
 
 export type SyncOutcome =
-  | { outcome: 'LOADED'; punchCount: number; discarded: DiscardSummary | null; statusChanges: StatusChangeSummary }
+  | { outcome: 'LOADED'; punchCount: number; discarded: DiscardSummary | null }
   | { outcome: 'FAILED'; code: SyncFailureCode; message: string }
   | { outcome: 'SKIPPED_HAS_EDITS' }
   | { outcome: 'SKIPPED_APPROVED' }

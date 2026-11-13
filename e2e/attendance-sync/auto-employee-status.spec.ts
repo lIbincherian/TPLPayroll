@@ -8,7 +8,7 @@ import {
   setMockPunches,
   weekDates,
 } from '../utils/etimeoffice-mock'
-import { openAttendance, openReview, pullWeekFromList, settled } from '../utils/attendance-ui'
+import { approveWeekInUi, openAttendance, openReview, pullWeekFromList, settled } from '../utils/attendance-ui'
 
 const completed = expectedCompletedWeek()
 const dates = weekDates(completed.start)
@@ -28,24 +28,44 @@ function toast(page: Page, text: RegExp | string) {
   return page.locator('[data-sonner-toast]').filter({ hasText: text }).first()
 }
 
-test.describe('Employee status follows the pulled week (issue #35)', () => {
-  test('a pull marks an absent employee inactive and reactivates an inactive one with punches', async ({ page }) => {
+async function statusOf(ids: string[]) {
+  return prisma.employee.findMany({ where: { id: { in: ids } }, select: { id: true, isActive: true } })
+}
+
+test.describe('Employee status follows the approved week (issue #35)', () => {
+  test('a pull changes no status; approving the week marks an absent employee inactive and reactivates an approved inactive one', async ({
+    page,
+  }) => {
     const absent = await createEmployee({ employeeId: 'E2E-HLP-9001', employeeName: 'Anita Rao' })
     const back = await createEmployee({ employeeId: 'E2E-HLP-9002', employeeName: 'Bala Singh', isActive: false })
     setMockPunches(mockDays('9002', dates.slice(0, 2), FULL_DAY, 'Empname9002'))
 
+    // The pull loads the punches but leaves every employee as they were.
     await openAttendance(page)
     await pullWeekFromList(page, completed.start)
+    await expect(toast(page, /Loaded/)).toBeVisible({ timeout: 20000 })
+    await settled(page)
+    expect(await statusOf([absent.id, back.id])).toEqual(
+      expect.arrayContaining([
+        { id: absent.id, isActive: true },
+        { id: back.id, isActive: false },
+      ]),
+    )
+
+    // The inactive employee with punches needs a decision before the week can be approved.
+    await page.goto(`/attendance/${completed.start}/employee-check`)
+    await expect(page.getByTestId('employee-check')).toBeVisible({ timeout: 15000 })
+    await page.getByTestId('decision-approve-E2E-HLP-9002').click()
+    await expect(page.getByTestId('decision-row-E2E-HLP-9002')).toHaveAttribute('data-decision', 'APPROVED')
+
+    await openReview(page, completed.start)
+    await expect(page.getByTestId('status-changes-notice')).toHaveCount(0)
+    await approveWeekInUi(page)
 
     // The base may hold other active employees with no punches, so only the reactivated count is exact.
     await expect(toast(page, /employees? marked inactive, 1 reactivated\./)).toBeVisible({ timeout: 20000 })
-
     await settled(page)
-    const statuses = await prisma.employee.findMany({
-      where: { id: { in: [absent.id, back.id] } },
-      select: { id: true, isActive: true },
-    })
-    expect(statuses).toEqual(
+    expect(await statusOf([absent.id, back.id])).toEqual(
       expect.arrayContaining([
         { id: absent.id, isActive: false },
         { id: back.id, isActive: true },
@@ -58,14 +78,9 @@ test.describe('Employee status follows the pulled week (issue #35)', () => {
     expect(audits).toHaveLength(2)
     for (const audit of audits) expect(audit.detailsJson).toMatchObject({ changeSource: 'AUTO_ATTENDANCE' })
 
-    // The reactivated employee needs no decision on the employee check.
-    await page.goto(`/attendance/${completed.start}/employee-check`)
-    await expect(page.getByTestId('employee-check')).toBeVisible({ timeout: 15000 })
-    await expect(page.getByTestId('decision-row-E2E-HLP-9002')).toHaveCount(0)
-
     await openReview(page, completed.start)
     const notice = page.getByTestId('status-changes-notice')
-    await expect(notice).toContainText(/employees? marked inactive, 1 reactivated from this week's attendance./)
+    await expect(notice).toContainText(/employees? marked inactive, 1 reactivated when this week was approved\./)
     await expect(notice).toContainText('Anita Rao')
     await expect(notice).toContainText('Bala Singh')
 

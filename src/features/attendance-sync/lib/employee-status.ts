@@ -54,19 +54,23 @@ function hoursFrom(rows: PunchRow[]): number {
 }
 
 /**
- * Employee status changes a pull of a completed, latest-synced week makes: an active employee with
- * no matched punches becomes inactive, an inactive one with punches becomes active again (unless they
- * resigned before today). New joiners and the candidates of a duplicate code are left alone.
+ * Employee status changes the approval of a completed week makes, when no later week is approved: an
+ * active employee with no matched punches becomes inactive, an inactive one with punches becomes active
+ * again (unless they resigned before today). New joiners, the candidates of a duplicate code and anyone
+ * rejected in the employee check are left alone. Punches deleted in review (no current time) don't count.
  */
 export function computeStatusChanges(input: {
   week: WeekRange
   today: ISODate
   employees: StatusEmployee[]
   rows: PunchRow[]
-  laterWeekSynced: boolean
+  laterWeekApproved: boolean
+  /** Employees rejected in the week's employee check: left out of the week, so their status stays. */
+  rejectedIds?: ReadonlySet<string>
 }): EmployeeStatusChange[] {
-  const { week, today, employees, rows, laterWeekSynced } = input
-  if (week.end >= today || laterWeekSynced) return []
+  const { week, today, employees, laterWeekApproved, rejectedIds } = input
+  if (week.end >= today || laterWeekApproved) return []
+  const rows = input.rows.filter((r) => r.currentTime !== null)
 
   const duplicateCandidates = new Set<string>()
   for (const code of new Set(rows.filter((r) => r.matchStatus === 'DUPLICATE').map((r) => r.empCode))) {
@@ -85,7 +89,7 @@ export function computeStatusChanges(input: {
   const changes: EmployeeStatusChange[] = []
   for (const employee of employees) {
     if (employee.dateOfJoining !== null && toISODate(employee.dateOfJoining) >= week.start) continue
-    if (duplicateCandidates.has(employee.id)) continue
+    if (duplicateCandidates.has(employee.id) || rejectedIds?.has(employee.id)) continue
 
     const own = rowsByEmployee.get(employee.id) ?? []
     let to: boolean

@@ -15,7 +15,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { getPullWarningAction, pullWeekAction } from '../actions/attendance-sync.actions'
 import { formatHoursTotal, formatIstDateTime, formatDayShort, plural } from '../lib/format'
-import { describeStatusChanges } from '../lib/employee-status'
 import { addDaysISO, formatWeekLabel } from '../lib/week'
 import type { AttendanceWeekListItem, ISODate, SyncOutcome } from '../types/attendance-sync.types'
 import { AttendancePageHeader } from './AttendancePageHeader'
@@ -215,14 +214,12 @@ export function AttendanceWeekList({ weeks, todayISO }: AttendanceWeekListProps)
   function reportOutcome(outcome: SyncOutcome, label: string) {
     if (outcome.outcome === 'LOADED') {
       const discarded = outcome.discarded
-      const statusLine = describeStatusChanges(outcome.statusChanges)
-      const lines = [
-        discarded && (discarded.editedDays > 0 || discarded.decisions > 0 || discarded.ignoredCodes > 0)
-          ? `Discarded ${describeDiscard(discarded.editedDays, discarded.decisions, discarded.ignoredCodes)}.`
-          : null,
-        statusLine ? `${statusLine}.` : null,
-      ].filter((line) => line !== null)
-      toast.success(`Loaded ${label}`, { description: lines.length > 0 ? lines.join(' ') : undefined })
+      toast.success(`Loaded ${label}`, {
+        description:
+          discarded && (discarded.editedDays > 0 || discarded.decisions > 0 || discarded.ignoredCodes > 0)
+            ? `Discarded ${describeDiscard(discarded.editedDays, discarded.decisions, discarded.ignoredCodes)}.`
+            : undefined,
+      })
     } else if (outcome.outcome === 'FAILED') {
       toast.error(`Couldn't load ${label}`, { description: outcome.message })
     } else {

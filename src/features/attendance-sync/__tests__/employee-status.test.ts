@@ -35,21 +35,21 @@ function day(
     punchDate: utc(date),
     pairIndex: Math.floor(i / 2),
     position: (i % 2 === 0 ? 'IN' : 'OUT') as 'IN' | 'OUT',
-    currentTime: time,
+    currentTime: time as string | null,
   }))
 }
 
 function run(
   employees: StatusEmployee[],
   rows: ReturnType<typeof day>,
-  options: { today?: string; laterWeekSynced?: boolean } = {},
+  options: { today?: string; laterWeekApproved?: boolean } = {},
 ) {
   return computeStatusChanges({
     week: WEEK,
     today: options.today ?? TODAY,
     employees,
     rows,
-    laterWeekSynced: options.laterWeekSynced ?? false,
+    laterWeekApproved: options.laterWeekApproved ?? false,
   })
 }
 
@@ -91,8 +91,8 @@ describe('computeStatusChanges', () => {
     expect(run([leaving], day('emp-36', '2026-11-05', ['08:00', '17:00'])).map((c) => c.to)).toEqual([true])
   })
 
-  it('older week (later week synced) makes no change', () => {
-    expect(run([employee()], [], { laterWeekSynced: true })).toEqual([])
+  it('older week (later week approved) makes no change', () => {
+    expect(run([employee()], [], { laterWeekApproved: true })).toEqual([])
   })
 
   it('incomplete week (ends today or later) makes no change', () => {
@@ -105,6 +105,24 @@ describe('computeStatusChanges', () => {
 
   it('null joining date not skipped', () => {
     expect(run([employee({ dateOfJoining: null })], []).map((c) => c.to)).toEqual([false])
+  })
+
+  it('an employee rejected in the employee check keeps their status', () => {
+    const rejected = employee({ isActive: false })
+    const changes = computeStatusChanges({
+      week: WEEK,
+      today: TODAY,
+      employees: [rejected],
+      rows: day('emp-36', '2026-11-05', ['08:00', '17:00']),
+      laterWeekApproved: false,
+      rejectedIds: new Set(['emp-36']),
+    })
+    expect(changes).toEqual([])
+  })
+
+  it('punches deleted in review do not count: only deleted punches deactivates', () => {
+    const rows = day('emp-36', '2026-11-05', ['08:00', '17:00']).map((r) => ({ ...r, currentTime: null }))
+    expect(run([employee()], rows).map((c) => c.to)).toEqual([false])
   })
 
   it('duplicate-code candidate skipped', () => {

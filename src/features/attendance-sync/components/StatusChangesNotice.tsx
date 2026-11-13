@@ -20,7 +20,7 @@ function renderGroup(label: string, employees: StatusChangedEmployee[]) {
 }
 
 /**
- * Who the week's latest pull marked inactive or reactivated, as one line above the grid. The names
+ * Who the week's latest approval marked inactive or reactivated, as one line above the grid. The names
  * stay folded away so a long list never pushes the grid down. Renders nothing when nobody changed.
  */
 export function StatusChangesNotice({ changes }: { changes: StatusChangeSummary }) {
@@ -36,7 +36,7 @@ export function StatusChangesNotice({ changes }: { changes: StatusChangeSummary 
       <summary className="-mx-2 flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-zinc-900 outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 md:min-h-8 [&::-webkit-details-marker]:hidden">
         <UserSwitch size={16} className="shrink-0 text-zinc-500" aria-hidden />
         <span className="min-w-0 flex-1">
-          <span className="font-medium">{sentence}</span>{' '}from this week&apos;s attendance.
+          <span className="font-medium">{sentence}</span>{' '}when this week was approved.
         </span>
         <span className="flex shrink-0 items-center gap-1 text-xs text-zinc-500">
           <span className="group-open:hidden">Show names</span>
