@@ -29,9 +29,20 @@ export const CreateEmployeeSchema = z.object({
 
 export type CreateEmployeeInput = z.infer<typeof CreateEmployeeSchema>
 
-export const UpdateEmployeeSchema = CreateEmployeeSchema.partial().omit({
-  employeeId: true,
-})
+// Optional fields accept null on update so a cleared field is written as null.
+export const UpdateEmployeeSchema = CreateEmployeeSchema.partial()
+  .omit({ employeeId: true })
+  .extend({
+    designationShort: z.string().optional().nullable(),
+    nationalId: z.string().optional().nullable(),
+    aadhaarId: z.string().optional().nullable(),
+    policeVerificationId: z.string().optional().nullable(),
+    phone: z.string().optional().nullable(),
+    site: z.string().optional().nullable(),
+    healthCardId: z.string().optional().nullable(),
+    gPay: z.string().optional().nullable(),
+    bankAccount: z.string().optional().nullable(),
+  })
 
 export type UpdateEmployeeInput = z.infer<typeof UpdateEmployeeSchema>
 

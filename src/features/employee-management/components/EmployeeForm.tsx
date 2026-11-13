@@ -78,6 +78,15 @@ function toDateOrUndefined(val: string): Date | undefined {
   return isNaN(d.getTime()) ? undefined : d
 }
 
+function toDateOrNull(val: string): Date | null {
+  return toDateOrUndefined(val) ?? null
+}
+
+function toTrimmedOrNull(val: string): string | null {
+  const trimmed = val.trim()
+  return trimmed === '' ? null : trimmed
+}
+
 // ─── Field wrapper ────────────────────────────────────────────────────────────
 
 function FieldWrapper({
@@ -205,18 +214,18 @@ export function EmployeeForm({
         const payload: UpdateEmployeeInput = {
           employeeName: data.employeeName || undefined,
           designation: data.designation || undefined,
-          designationShort: data.designationShort || undefined,
-          nationalId: data.nationalId || undefined,
-          aadhaarId: data.aadhaarId || undefined,
-          policeVerificationId: data.policeVerificationId || undefined,
-          phone: data.phone || undefined,
-          dateOfBirth: toDateOrUndefined(data.dateOfBirth),
-          dateOfJoining: toDateOrUndefined(data.dateOfJoining),
-          site: data.site || undefined,
-          healthCardId: data.healthCardId || undefined,
-          gPay: data.gPay || undefined,
-          bankAccount: data.bankAccount || undefined,
-          dateOfResignation: toDateOrUndefined(data.dateOfResignation),
+          designationShort: toTrimmedOrNull(data.designationShort),
+          nationalId: toTrimmedOrNull(data.nationalId),
+          aadhaarId: toTrimmedOrNull(data.aadhaarId),
+          policeVerificationId: toTrimmedOrNull(data.policeVerificationId),
+          phone: toTrimmedOrNull(data.phone),
+          dateOfBirth: toDateOrNull(data.dateOfBirth),
+          dateOfJoining: toDateOrNull(data.dateOfJoining),
+          site: toTrimmedOrNull(data.site),
+          healthCardId: toTrimmedOrNull(data.healthCardId),
+          gPay: toTrimmedOrNull(data.gPay),
+          bankAccount: toTrimmedOrNull(data.bankAccount),
+          dateOfResignation: toDateOrNull(data.dateOfResignation),
           isActive: data.isActive,
           salary: isNaN(salaryNum) ? undefined : salaryNum,
           hourlyRate: isNaN(hourlyNum) ? undefined : hourlyNum,
