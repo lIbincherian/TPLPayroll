@@ -95,6 +95,17 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
     })
   }
 
+  // ── Step 2 → 1: back to the adjustments ──────────────────────────────────
+  // Loads the pending adjustments again: one cancelled in the review has no pending application any more,
+  // and its stale row could never be actioned.
+  const handleSummaryBack = () => {
+    startTransition(async () => {
+      const result = await getPendingAdjustmentsForWeekAction(weekStart, weekEnd)
+      if (result.ok) setAdjustments(result.data)
+      setStep(1)
+    })
+  }
+
   // ── Step 1 → 2: calculate payroll ────────────────────────────────────────
   const handleAdjustmentsContinue = () => {
     startTransition(async () => {
@@ -236,7 +247,7 @@ export function PayrollGenerateFlow({ weekStart, weekEnd }: Props) {
               <PayrollSummaryStep
                 weekLabel={weekLabel}
                 summary={summary}
-                onBack={() => setStep(1)}
+                onBack={handleSummaryBack}
                 onApprove={handleApprove}
               />
             </>
