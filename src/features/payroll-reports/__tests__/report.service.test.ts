@@ -447,6 +447,35 @@ describe('generatePayrollSummaryPdf', () => {
     expect(result.fileName).toMatch(/\.pdf$/)
   })
 
+  it('lays out the same 16 columns as the summary Excel', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makePayrollRun() as never)
+    const pdfmake = nodeRequire('pdfmake')
+    const original = pdfmake.createPdf
+    let captured: { content: Array<{ table?: PdfTable }> } | null = null
+    const spy = vi.spyOn(pdfmake, 'createPdf').mockImplementation(function (this: unknown, docDef: unknown, ...rest: unknown[]) {
+      captured = structuredClone(docDef) as typeof captured
+      return original.call(this, docDef, ...rest)
+    })
+    try {
+      await generatePayrollSummaryPdf('run-uuid-1')
+    } finally {
+      spy.mockRestore()
+    }
+    const docDef = captured as unknown as { content: Array<{ table?: PdfTable }> }
+    const body = docDef.content.find((c) => c.table)!.table!.body
+    expect(body[0].map((c) => plainText(c))).toEqual([
+      'Sl No.', 'Emp ID', 'Emp Name', 'GPay No.', 'WhatsApp No.', 'Bank Acct.', 'Paid Name (if diff.)',
+      'Salary from', 'Salary to', 'Reg. Hrs Pay', 'Overtime Hrs Pay', 'Additions', 'Deductions', 'Net Pay',
+      'Payment Date', 'Payment Reference',
+    ])
+    const row = body[1].map((c) => plainText(c))
+    expect(row[0]).toBe('1')
+    expect(row[4]).toBe('')
+    expect(row[5]).toBe('ACC123456')
+    expect(row[7]).toBe('06 Mar 2025')
+    expect(row[15]).toBe('2025-10-EMP-001')
+  })
+
   it('throws PAYROLL_RUN_NOT_FOUND when run does not exist', async () => {
     vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(null)
 
@@ -500,7 +529,7 @@ describe('generatePayrollSummaryXlsx', () => {
     expect(result.fileName).toMatch(/\.xlsx$/)
   })
 
-  it('writes the 13 payment columns, one row per employee and totals for the pay columns', async () => {
+  it('writes the 16 payment columns, one row per employee and totals for the pay columns', async () => {
     vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makePayrollRun() as never)
 
     const { buffer } = await generatePayrollSummaryXlsx('run-uuid-1')
@@ -508,44 +537,58 @@ describe('generatePayrollSummaryXlsx', () => {
     const ws = XLSX.read(buffer, { type: 'buffer', sheetStubs: true }).Sheets.Summary
     const cell = (ref: string) => ws[ref]?.v
 
-    const headers = 'ABCDEFGHIJKLM'.split('').map((col) => cell(`${col}5`))
+    const headers = 'ABCDEFGHIJKLMNOP'.split('').map((col) => cell(`${col}5`))
     expect(headers).toEqual([
       'Sl No.',
       'Emp ID',
       'Emp Name',
       'GPay No.',
       'WhatsApp No.',
+      'Bank Acct.',
       'Paid Name (if diff.)',
       'Salary from',
       'Salary to',
       'Reg. Hrs Pay',
       'Overtime Hrs Pay',
+      'Additions',
+      'Deductions',
       'Net Pay',
       'Payment Date',
       'Payment Reference',
     ])
-    expect(headers).not.toContain('Additions')
-    expect(headers).not.toContain('Deductions')
-    expect(headers).not.toContain('Bank Acct')
-    expect(cell('N5')).toBeUndefined()
+    expect(cell('Q5')).toBeUndefined()
 
     expect(cell('A6')).toBe(1)
     expect(cell('B6')).toBe('EMP-001')
     expect(cell('D6')).toBe('9876543210')
-    expect(cell('E6')).toBe('9123456780')
-    expect(ws.F6).toBeUndefined()
-    expect(cell('G6')).toBe('06 Mar 2025')
-    expect(cell('H6')).toBe('12 Mar 2025')
-    expect(cell('I6')).toBe(2875)
-    expect(cell('J6')).toBe(375)
-    expect(cell('K6')).toBe(2950)
-    expect(ws.L6).toBeUndefined()
-    expect(cell('M6')).toBe('2025-10-EMP-001')
+    // WhatsApp numbers aren't stored yet, so the phone number never fills this column
+    expect(ws.E6).toBeUndefined()
+    expect(cell('F6')).toBe('ACC123456')
+    expect(ws.G6).toBeUndefined()
+    expect(cell('H6')).toBe('06 Mar 2025')
+    expect(cell('I6')).toBe('12 Mar 2025')
+    expect(cell('J6')).toBe(2875)
+    expect(cell('K6')).toBe(375)
+    expect(cell('L6')).toBe(200)
+    expect(cell('M6')).toBe(500)
+    expect(cell('N6')).toBe(2950)
+    expect(ws.O6).toBeUndefined()
+    expect(cell('P6')).toBe('2025-10-EMP-001')
 
     expect(cell('A7')).toBe('TOTALS')
-    expect(ws.I7.f).toBe('SUM(I6:I6)')
-    expect(ws.J7.f).toBe('SUM(J6:J6)')
-    expect(ws.K7.f).toBe('SUM(K6:K6)')
+    for (const col of 'JKLMN') {
+      expect(ws[`${col}7`].f).toBe(`SUM(${col}6:${col}6)`)
+    }
+  })
+
+  it('freezes the title, header rows and the columns through Emp Name', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makePayrollRun() as never)
+
+    const { buffer } = await generatePayrollSummaryXlsx('run-uuid-1')
+    const sheetXml = XLSX.CFB.find(XLSX.CFB.read(buffer, { type: 'buffer' }), '/xl/worksheets/sheet1.xml')!
+    expect(Buffer.from(sheetXml.content as Uint8Array).toString('utf8')).toContain(
+      '<pane xSplit="3" ySplit="5" topLeftCell="D6" activePane="bottomRight" state="frozen"/>',
+    )
   })
 
   it('throws PAYROLL_RUN_NOT_FOUND when run does not exist', async () => {

@@ -249,42 +249,71 @@ export async function generatePayrollSummaryPdf(payrollRunId: string): Promise<{
     year: 'numeric',
   })
 
+  const salaryDateFormat: Intl.DateTimeFormatOptions = {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }
+  const salaryFromStr = run.payrollWeekStartDate.toLocaleDateString('en-GB', salaryDateFormat)
+  const salaryToStr = run.payrollWeekEndDate.toLocaleDateString('en-GB', salaryDateFormat)
+  const weekStartISO = toISODate(run.payrollWeekStartDate)
+
+  // Same 16 columns as the summary Excel
   const headerRow = [
-    { text: 'ID', style: 'tableHeader' },
-    { text: 'Employee', style: 'tableHeader' },
-    { text: 'GPay', style: 'tableHeader' },
-    { text: 'Bank Acct', style: 'tableHeader' },
-    { text: 'Reg Pay', style: 'tableHeader', alignment: 'right' },
-    { text: 'OT Pay', style: 'tableHeader', alignment: 'right' },
+    { text: 'Sl No.', style: 'tableHeader', alignment: 'right' },
+    { text: 'Emp ID', style: 'tableHeader' },
+    { text: 'Emp Name', style: 'tableHeader' },
+    { text: 'GPay No.', style: 'tableHeader' },
+    { text: 'WhatsApp No.', style: 'tableHeader' },
+    { text: 'Bank Acct.', style: 'tableHeader' },
+    { text: 'Paid Name (if diff.)', style: 'tableHeader' },
+    { text: 'Salary from', style: 'tableHeader' },
+    { text: 'Salary to', style: 'tableHeader' },
+    { text: 'Reg. Hrs Pay', style: 'tableHeader', alignment: 'right' },
+    { text: 'Overtime Hrs Pay', style: 'tableHeader', alignment: 'right' },
     { text: 'Additions', style: 'tableHeader', alignment: 'right' },
     { text: 'Deductions', style: 'tableHeader', alignment: 'right' },
     { text: 'Net Pay', style: 'tableHeader', alignment: 'right' },
+    { text: 'Payment Date', style: 'tableHeader' },
+    { text: 'Payment Reference', style: 'tableHeader' },
   ]
 
-  const dataRows = run.runEmployees.map((re) => [
+  // WhatsApp numbers aren't stored yet; WhatsApp No., Paid Name and Payment Date stay blank
+  const dataRows = run.runEmployees.map((re, i) => [
+    { text: String(i + 1), font: 'Courier', alignment: 'right' },
     { text: re.employee.employeeId, font: 'Courier' },
     { text: re.employee.employeeName, font: 'Helvetica' },
     { text: re.employee.gPay ?? '-', font: 'Courier' },
+    { text: '' },
     { text: re.employee.bankAccount ?? '-', font: 'Courier' },
+    { text: '' },
+    { text: salaryFromStr, font: 'Helvetica' },
+    { text: salaryToStr, font: 'Helvetica' },
     { text: formatCurrencyPdf(Number(re.regularPay)), font: 'Courier', alignment: 'right' },
     { text: formatCurrencyPdf(Number(re.overtimePay)), font: 'Courier', alignment: 'right' },
     { text: formatCurrencyPdf(Number(re.additions)), font: 'Courier', alignment: 'right' },
     { text: formatCurrencyPdf(Number(re.deductions)), font: 'Courier', alignment: 'right' },
     { text: formatCurrencyPdf(Number(re.netPayable)), font: 'Courier', alignment: 'right' },
+    { text: '' },
+    { text: paymentReference(weekStartISO, re.employee.employeeId), font: 'Courier' },
   ])
 
   const totalsRow = [
-    { text: 'TOTALS', colSpan: 4, style: 'totalsLabel', font: 'Helvetica' },
-    {}, {}, {},
+    { text: 'TOTALS', colSpan: 9, style: 'totalsLabel', font: 'Helvetica' },
+    {}, {}, {}, {}, {}, {}, {}, {},
     { text: formatCurrencyPdf(Number(run.totalRegularPay)), font: 'Courier', alignment: 'right', bold: true },
     { text: formatCurrencyPdf(Number(run.totalOvertimePay)), font: 'Courier', alignment: 'right', bold: true },
     { text: formatCurrencyPdf(Number(run.totalAdditions)), font: 'Courier', alignment: 'right', bold: true },
     { text: formatCurrencyPdf(Number(run.totalDeductions)), font: 'Courier', alignment: 'right', bold: true },
     { text: formatCurrencyPdf(Number(run.totalNetPayable)), font: 'Courier', alignment: 'right', bold: true },
+    { text: '', colSpan: 2 },
+    {},
   ]
 
   const docDef: TDocumentDefinitions = {
     pageOrientation: 'landscape',
+    pageSize: 'A3',
     defaultStyle: { font: 'Helvetica', fontSize: 8 },
     styles: {
       title: { fontSize: 14, bold: true, alignment: 'center', font: 'Helvetica' },
@@ -299,7 +328,7 @@ export async function generatePayrollSummaryPdf(payrollRunId: string): Promise<{
       {
         table: {
           headerRows: 1,
-          widths: ['auto', '*', 'auto', 'auto', 'auto', 'auto', 'auto', 'auto', 'auto'],
+          widths: ['auto', 'auto', '*', ...Array(13).fill('auto')],
           body: [headerRow, ...dataRows, totalsRow],
         },
         layout: 'lightHorizontalLines',
@@ -329,7 +358,7 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
               designation: true,
               site: true,
               gPay: true,
-              phone: true,
+              bankAccount: true,
             },
           },
         },
@@ -377,11 +406,14 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
     'Emp Name',
     'GPay No.',
     'WhatsApp No.',
+    'Bank Acct.',
     'Paid Name (if diff.)',
     'Salary from',
     'Salary to',
     'Reg. Hrs Pay',
     'Overtime Hrs Pay',
+    'Additions',
+    'Deductions',
     'Net Pay',
     'Payment Date',
     'Payment Reference',
@@ -395,19 +427,22 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
     headers,
   ]
 
-  // null leaves Paid Name and Payment Date as empty cells (no value)
+  // WhatsApp numbers aren't stored yet; null leaves WhatsApp No., Paid Name and Payment Date as empty cells (no value)
   run.runEmployees.forEach((re, i) => {
     aoa.push([
       i + 1,
       re.employee.employeeId,
       re.employee.employeeName,
       re.employee.gPay || '-',
-      re.employee.phone || '-',
+      null, // WhatsApp No.
+      re.employee.bankAccount || '-',
       null, // Paid Name (if diff.)
       salaryFromStr,
       salaryToStr,
       Number(re.regularPay),
       Number(re.overtimePay),
+      Number(re.additions),
+      Number(re.deductions),
       Number(re.netPayable),
       null, // Payment Date
       paymentReference(weekStartISO, re.employee.employeeId),
@@ -424,8 +459,11 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
     '',
     '',
     '',
+    '',
     0, // Reg. Hrs Pay
     0, // Overtime Hrs Pay
+    0, // Additions
+    0, // Deductions
     0, // Net Pay
   ])
 
@@ -455,19 +493,21 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
   }
 
   // Format the columns:
-  formatCol('I', true) // Reg. Hrs Pay
-  formatCol('J', true) // Overtime Hrs Pay
-  formatCol('K', true) // Net Pay
+  formatCol('J', true) // Reg. Hrs Pay
+  formatCol('K', true) // Overtime Hrs Pay
+  formatCol('L', true) // Additions
+  formatCol('M', true) // Deductions
+  formatCol('N', true) // Net Pay
 
   // Setup merges
   ws['!merges'] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 12 } }, // Merge Title
-    { s: { r: 1, c: 0 }, e: { r: 1, c: 12 } }, // Merge Week range
-    { s: { r: 2, c: 0 }, e: { r: 2, c: 12 } }, // Merge Generated date
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 15 } }, // Merge Title
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 15 } }, // Merge Week range
+    { s: { r: 2, c: 0 }, e: { r: 2, c: 15 } }, // Merge Generated date
   ]
 
   // Auto-fit column widths
-  const maxCols = 13
+  const maxCols = 16
   const wcols = Array(maxCols).fill(0).map(() => ({ wch: 10 }))
   // Start at the header row: the merged title, week and generated lines would widen column A.
   for (let r = 4; r < aoa.length; r++) {
@@ -476,7 +516,7 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
       if (val !== undefined && val !== null) {
         let strLen = String(val).length
         if (typeof val === 'number') {
-          if (c >= 8 && c <= 10) {
+          if (c >= 9 && c <= 13) {
             strLen += 5 // for "₹" and decimals/commas formatting
           }
         }
@@ -490,17 +530,37 @@ export async function generatePayrollSummaryXlsx(payrollRunId: string): Promise<
   wcols[2].wch = Math.max(wcols[2].wch, 22) // Emp Name
   wcols[3].wch = Math.max(wcols[3].wch, 12) // GPay No.
   wcols[4].wch = Math.max(wcols[4].wch, 12) // WhatsApp No.
-  wcols[5].wch = Math.max(wcols[5].wch, 20) // Paid Name (if diff.)
-  wcols[11].wch = Math.max(wcols[11].wch, 14) // Payment Date
+  wcols[5].wch = Math.max(wcols[5].wch, 16) // Bank Acct.
+  wcols[6].wch = Math.max(wcols[6].wch, 20) // Paid Name (if diff.)
+  wcols[14].wch = Math.max(wcols[14].wch, 14) // Payment Date
   ws['!cols'] = wcols
 
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, 'Summary')
 
-  const buffer = Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as ArrayBuffer)
+  const buffer = freezeSummaryPanes(Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as ArrayBuffer))
   const fileName = `payroll_summary_${formatSlipDate(run.payrollWeekStartDate)}-${formatSlipDate(run.payrollWeekEndDate)}.xlsx`
 
   return { buffer, fileName }
+}
+
+/**
+ * Freezes rows 1-5 (title lines and headers) and columns A-C (through Emp Name) on the summary
+ * sheet. SheetJS community edition can't write frozen panes, so this edits the sheet XML in the zip.
+ */
+function freezeSummaryPanes(xlsx: Buffer): Buffer {
+  const zip = XLSX.CFB.read(xlsx, { type: 'buffer' })
+  const sheet = XLSX.CFB.find(zip, '/xl/worksheets/sheet1.xml')
+  if (!sheet) throw new Error('Summary sheet missing from workbook')
+  const xml = Buffer.from(sheet.content as Uint8Array).toString('utf8')
+  const frozen = xml.replace(
+    '<sheetView workbookViewId="0"/>',
+    '<sheetView workbookViewId="0"><pane xSplit="3" ySplit="5" topLeftCell="D6" activePane="bottomRight" state="frozen"/></sheetView>',
+  )
+  if (frozen === xml) throw new Error('Summary sheet view not found')
+  sheet.content = Buffer.from(frozen, 'utf8')
+  sheet.size = sheet.content.length
+  return Buffer.from(XLSX.CFB.write(zip, { type: 'buffer', fileType: 'zip' }) as Buffer)
 }
 
 /**
