@@ -65,7 +65,7 @@ test.describe('Employee status follows the pulled week (issue #35)', () => {
 
     await openReview(page, completed.start)
     const notice = page.getByTestId('status-changes-notice')
-    await expect(notice).toContainText(/employees? marked inactive, 1 reactivated/)
+    await expect(notice).toContainText(/employees? marked inactive, 1 reactivated from this week's attendance./)
     await expect(notice).toContainText('Anita Rao')
     await expect(notice).toContainText('Bala Singh')
 
