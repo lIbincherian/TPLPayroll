@@ -30,7 +30,6 @@ function row(overrides: Partial<RevisedEmployeeRow> = {}): RevisedEmployeeRow {
     designationShort: 'Guard',
     site: 'North Gate',
     gPay: '9876543210',
-    phone: null,
     bankAccount: '012345678901',
     weeklySalaryUsed: 2500,
     hourlyRateUsed: 62.5,

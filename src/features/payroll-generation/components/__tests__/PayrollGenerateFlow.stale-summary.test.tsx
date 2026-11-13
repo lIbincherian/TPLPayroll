@@ -38,7 +38,6 @@ function summary(netPayable: number): PayrollSummary {
         designationShort: null,
         site: null,
         gPay: null,
-        phone: null,
         bankAccount: null,
         weeklySalaryUsed: 2500,
         hourlyRateUsed: 62.5,

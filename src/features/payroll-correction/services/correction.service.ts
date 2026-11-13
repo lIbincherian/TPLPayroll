@@ -63,7 +63,6 @@ function employeePaySelect(weekStart: Date, weekEnd: Date) {
     designationShort: true,
     site: true,
     gPay: true,
-    phone: true,
     bankAccount: true,
     wageHistory: {
       where: {
@@ -838,7 +837,6 @@ export async function recalculateAndCreateRevision(
           designationShort: employee.designationShort,
           site: employee.site,
           gPay: employee.gPay,
-          phone: employee.phone,
           bankAccount: employee.bankAccount,
           weeklySalaryUsed: weeklySalary,
           hourlyRateUsed: hourlyRate,
@@ -1449,7 +1447,6 @@ const REVISION_EMPLOYEE_SELECT = {
   designationShort: true,
   site: true,
   gPay: true,
-  phone: true,
   bankAccount: true,
 } as const
 
@@ -1487,7 +1484,6 @@ export async function getRevisionEmployees(
       designationShort: re.employee.designationShort,
       site: re.employee.site,
       gPay: re.employee.gPay,
-      phone: re.employee.phone,
       bankAccount: re.employee.bankAccount,
       weeklySalaryUsed: Number(re.weeklySalaryUsed),
       hourlyRateUsed: Number(re.hourlyRateUsed),
@@ -1520,7 +1516,6 @@ export async function getRevisionEmployees(
       designationShort: pe.employee.designationShort,
       site: pe.employee.site,
       gPay: pe.employee.gPay,
-      phone: pe.employee.phone,
       bankAccount: pe.employee.bankAccount,
       weeklySalaryUsed: Number(pe.weeklySalaryUsed),
       hourlyRateUsed: Number(pe.hourlyRateUsed),

@@ -187,7 +187,6 @@ export async function calculatePayroll(
           designationShort: true,
           site: true,
           gPay: true,
-          phone: true,
           bankAccount: true,
           wageHistory: {
             where: {
@@ -276,7 +275,6 @@ export async function calculatePayroll(
       designationShort: employee.designationShort,
       site: employee.site,
       gPay: employee.gPay,
-      phone: employee.phone,
       bankAccount: employee.bankAccount,
       weeklySalaryUsed: weeklySalary,
       hourlyRateUsed: hourlyRate,
