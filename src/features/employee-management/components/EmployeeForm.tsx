@@ -16,6 +16,10 @@ import {
   createEmployeeAction,
   updateEmployeeAction,
 } from '@/features/employee-management/actions/employee.actions'
+import {
+  isWageEffectiveTooFarAhead,
+  WAGE_EFFECTIVE_TOO_FAR_AHEAD,
+} from '@/features/employee-management/lib/wage-effective-from'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -68,6 +72,7 @@ type FormValues = {
   isActive: boolean
   salary: string
   hourlyRate: string
+  wageEffectiveFrom: string
 }
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
@@ -93,11 +98,15 @@ function FieldWrapper({
   label,
   required,
   error,
+  warning,
+  hint,
   children,
 }: {
   label: string
   required?: boolean
   error?: string
+  warning?: string
+  hint?: string
   children: React.ReactNode
 }) {
   return (
@@ -107,9 +116,13 @@ function FieldWrapper({
         {required && <span className="ml-0.5 text-rose-500">*</span>}
       </label>
       {children}
-      {error && (
+      {error ? (
         <p className="text-xs text-rose-600 mt-0.5">{error}</p>
-      )}
+      ) : warning ? (
+        <p className="text-xs text-amber-700 mt-0.5">{warning}</p>
+      ) : hint ? (
+        <p className="text-xs text-zinc-500 mt-0.5">{hint}</p>
+      ) : null}
     </div>
   )
 }
@@ -191,6 +204,7 @@ export function EmployeeForm({
     isActive: employee?.isActive ?? true,
     salary: currentSalary !== undefined ? String(currentSalary) : '',
     hourlyRate: currentHourlyRate !== undefined ? String(currentHourlyRate) : '',
+    wageEffectiveFrom: '',
   }
 
   const {
@@ -202,6 +216,10 @@ export function EmployeeForm({
   } = useForm<FormValues>({ defaultValues })
 
   const isActive = watch('isActive')
+  const wageEffectiveFrom = watch('wageEffectiveFrom')
+  const dateOfJoining = watch('dateOfJoining')
+  // Non-blocking: both are yyyy-mm-dd strings, so they compare as dates.
+  const wageStartsBeforeJoining = !!wageEffectiveFrom && !!dateOfJoining && wageEffectiveFrom < dateOfJoining
 
   async function onSubmit(data: FormValues) {
     setServerError(null)
@@ -244,6 +262,7 @@ export function EmployeeForm({
         router.push(returnContext?.returnTo ?? `/employees/${employee.id}`)
       } else {
         const payload: CreateEmployeeInput = {
+          wageEffectiveFrom: toDateOrUndefined(data.wageEffectiveFrom),
           employeeId: data.employeeId,
           employeeName: data.employeeName,
           designation: data.designation,
@@ -462,6 +481,27 @@ export function EmployeeForm({
                 className={`${errors.hourlyRate ? errorInputCls : inputCls} font-mono tabular-nums`}
               />
             </FieldWrapper>
+
+            {!isEdit && (
+              <FieldWrapper
+                label="Wage effective from"
+                error={errors.wageEffectiveFrom?.message}
+                warning={wageStartsBeforeJoining ? 'Earlier than the date of joining' : undefined}
+                hint="Leave blank to use the date of joining, or the 1st of this month."
+              >
+                <input
+                  {...register('wageEffectiveFrom', {
+                    validate: (val) => {
+                      const date = toDateOrUndefined(val)
+                      return date && isWageEffectiveTooFarAhead(date) ? WAGE_EFFECTIVE_TOO_FAR_AHEAD : true
+                    },
+                  })}
+                  type="date"
+                  aria-label="Wage effective from"
+                  className={errors.wageEffectiveFrom ? errorInputCls : inputCls}
+                />
+              </FieldWrapper>
+            )}
 
           </div>
         </div>
