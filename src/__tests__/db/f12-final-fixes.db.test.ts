@@ -633,12 +633,13 @@ describe.skipIf(!enabled)('F12 final fixes (real database)', { timeout: 120000 }
       expect(await stored()).toBeNull()
       expect(await checkAttendanceReadiness(utc(week), utc(addDays(week, 6)))).toEqual({ ready: false, reason: 'NOT_APPROVED' })
 
+      // A, B and C are the active employees with punches now; every other active one has zero hours, plus rejected D.
+      const expected = (await prisma.employee.count({ where: { isActive: true } })) - 3 + 1
       const { summary } = await approveWeek(week)
       expect(await stored()).toBe(summary.leftOut.length)
-      // C now has hours and D is still rejected. Zero-hour actives the first approval marked inactive (when no later
-      // week was approved) are no longer counted, so the new number is at most one fewer.
       expect(summary.leftOut.map((l) => l.employeeId)).not.toContain(empC.id)
       expect(summary.leftOut.filter((l) => l.reason === 'REJECTED')).toHaveLength(1)
+      expect(await stored()).toBe(expected)
       expect(await stored()).toBeLessThanOrEqual(firstCount - 1)
     })
   })

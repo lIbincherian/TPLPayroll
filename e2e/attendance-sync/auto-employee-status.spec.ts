@@ -60,7 +60,15 @@ test.describe('Employee status follows the approved week (issue #35)', () => {
 
     await openReview(page, completed.start)
     await expect(page.getByTestId('status-changes-notice')).toHaveCount(0)
-    await approveWeekInUi(page)
+
+    // The approve dialog previews the changes before anything is written.
+    await page.getByTestId('approve-week-button').click()
+    const preview = page.getByTestId('approval-status-changes')
+    await expect(preview).toContainText(/employees? marked inactive, 1 reactivated\./, { timeout: 10000 })
+    await expect(preview).toContainText('Bala Singh')
+    await expect(page.getByTestId('left-out-E2E-HLP-9001')).toContainText('No punches, marked inactive')
+    await page.getByTestId('approve-confirm').click()
+    await expect(page.getByTestId('approve-week-dialog')).toBeHidden({ timeout: 15000 })
 
     // The base may hold other active employees with no punches, so only the reactivated count is exact.
     await expect(toast(page, /employees? marked inactive, 1 reactivated\./)).toBeVisible({ timeout: 20000 })
@@ -83,6 +91,15 @@ test.describe('Employee status follows the approved week (issue #35)', () => {
     await expect(notice).toContainText(/employees? marked inactive, 1 reactivated when this week was approved\./)
     await expect(notice).toContainText('Anita Rao')
     await expect(notice).toContainText('Bala Singh')
+    await expect(page.getByTestId('approved-summary')).toContainText(/marked inactive \(no punches\)/)
+
+    // Reopening hides the notice without a reload; approving again changes nobody but brings it back.
+    await page.getByTestId('reopen-week-button').click()
+    await page.getByTestId('reopen-confirm').click()
+    await expect(notice).toHaveCount(0, { timeout: 15000 })
+    await approveWeekInUi(page)
+    await expect(notice).toContainText('Anita Rao', { timeout: 15000 })
+    await expect(page.getByTestId('approved-summary')).toContainText(/marked inactive \(no punches\)/)
 
     await page.goto('/employees')
     await page.locator('#employee-search').fill('E2E-HLP-900')
