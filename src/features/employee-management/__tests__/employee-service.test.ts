@@ -872,8 +872,12 @@ describe('UpdateEmployeeSchema — nullable optional fields', () => {
     expect(UpdateEmployeeSchema.safeParse({ [field]: null }).success).toBe(true)
   })
 
-  it.each(['employeeName', 'designation', 'salary', 'hourlyRate'])('rejects null for %s', (field) => {
+  it.each(['employeeName', 'designation', 'salary'])('rejects null for %s', (field) => {
     expect(UpdateEmployeeSchema.safeParse({ [field]: null }).success).toBe(false)
+  })
+
+  it('strips a sent hourlyRate', () => {
+    expect(UpdateEmployeeSchema.parse({ hourlyRate: null })).not.toHaveProperty('hourlyRate')
   })
 
   it.each(['employeeName', 'designation'])('rejects "" for %s', (field) => {
