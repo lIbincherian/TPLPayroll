@@ -2,12 +2,14 @@ import { Prisma, type AttendanceUpload } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { SYNC_LOCK_TTL_MS, TRANSACTION_TIMEOUT_MS } from '../lib/constants'
 import { computeStatusChanges, summarizeStatusChanges, type StatusEmployee } from '../lib/employee-status'
+import { plural } from '../lib/format'
 import { ignoreScopeOf } from '../lib/matching'
 import { buildPunchRowsFromParsed } from '../lib/pairing'
 import { shouldScheduledSyncReplace } from '../lib/review'
 import { SYNC_FAILURE_COPY } from '../lib/etimeoffice/parser'
 import {
   addDaysISO,
+  formatWeekLabel,
   getCompletedPayrollWeek,
   isFutureWeek,
   isThursdayISO,
@@ -376,27 +378,31 @@ export async function syncWeek(input: {
             },
           })
           const changes = computeStatusChanges({ week, today, employees, rows, laterWeekSynced: laterWeeks > 0 })
-          for (const change of changes) {
-            await tx.employee.update({ where: { id: change.employeeDbId }, data: { isActive: change.to } })
-            await auditEntry(
-              {
-                actionType: 'UPDATE',
-                entityType: 'EMPLOYEE',
-                entityId: change.employeeDbId,
-                details: {
+          const weekLabel = formatWeekLabel(week)
+          for (const to of [false, true]) {
+            const ids = changes.filter((c) => c.to === to).map((c) => c.employeeDbId)
+            if (ids.length > 0) await tx.employee.updateMany({ where: { id: { in: ids } }, data: { isActive: to } })
+          }
+          if (changes.length > 0) {
+            await tx.auditLog.createMany({
+              data: changes.map((change) => {
+                const who = `${change.employeeName} (${change.employeeId})`
+                const details = {
                   summary: change.to
-                    ? `Reactivated: ${change.punchCount} punches in the week of ${week.start}`
-                    : `Marked inactive: no punches in the week of ${week.start}`,
+                    ? `Reactivated from attendance: ${who} has ${plural(change.punchCount, 'punch', 'punches')} in ${weekLabel}`
+                    : `Marked inactive from attendance: ${who} had no punches in ${weekLabel}`,
                   changeSource: 'AUTO_ATTENDANCE',
+                  employeeId: change.employeeId,
+                  employeeName: change.employeeName,
                   isActive: { from: change.from, to: change.to },
                   weekStart: week.start,
                   weekEnd: week.end,
                   punchCount: change.punchCount,
                   hours: change.hours,
-                },
-              },
-              tx,
-            )
+                }
+                return { actionType: 'UPDATE', entityType: 'EMPLOYEE', entityId: change.employeeDbId, detailsJson: details }
+              }),
+            })
           }
           statusChanges = summarizeStatusChanges(changes)
 

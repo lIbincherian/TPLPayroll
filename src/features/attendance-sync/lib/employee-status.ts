@@ -1,3 +1,4 @@
+import { plural } from './format'
 import { calculateDailyHours } from './hours'
 import { matchEmployeeCode } from './matching'
 import { round2 } from './time'
@@ -121,8 +122,7 @@ export function describeStatusChanges(summary: StatusChangeSummary): string | nu
   const inactive = summary.markedInactive.length
   const reactivated = summary.reactivated.length
   if (inactive === 0 && reactivated === 0) return null
-  const noun = (n: number) => (n === 1 ? 'employee' : 'employees')
-  if (reactivated === 0) return `${inactive} ${noun(inactive)} marked inactive`
-  if (inactive === 0) return `${reactivated} ${noun(reactivated)} reactivated`
-  return `${inactive} ${noun(inactive)} marked inactive, ${reactivated} reactivated`
+  if (reactivated === 0) return `${plural(inactive, 'employee')} marked inactive`
+  if (inactive === 0) return `${plural(reactivated, 'employee')} reactivated`
+  return `${plural(inactive, 'employee')} marked inactive, ${reactivated} reactivated`
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
@@ -202,6 +202,8 @@ interface GridBaseProps {
   backHref: string
   backLabel: string
   title: string
+  /** Shown below the header, inside the grid's column (for example the pull's status changes). */
+  notice?: ReactNode
 }
 
 /** A correction review must come with its actions; a live one must not. */
@@ -215,7 +217,7 @@ export type PunchReviewGridProps =
  * (editable, or locked once approved) and a payroll correction.
  */
 export function PunchReviewGrid(props: PunchReviewGridProps) {
-  const { initialReview, backHref, backLabel, title } = props
+  const { initialReview, backHref, backLabel, title, notice } = props
   const correction = props.correction ?? null
   const router = useRouter()
   const isDesktop = useMediaQuery('(min-width: 768px)')
@@ -593,6 +595,8 @@ export function PunchReviewGrid(props: PunchReviewGridProps) {
           )}
         </div>
       </header>
+
+      {notice}
 
       {mode.kind === 'CORRECTION' && correction && (
         <CorrectionBanner

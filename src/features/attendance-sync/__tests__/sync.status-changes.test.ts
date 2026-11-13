@@ -47,27 +47,33 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-const updates = () => db.tx.employee.update.mock.calls.map((call) => call[0])
+const updates = () => db.tx.employee.updateMany.mock.calls.map((call) => call[0])
+const employeeAudits = () =>
+  db.tx.auditLog.createMany.mock.calls.flatMap((call) => (call[0] as { data: Array<Record<string, any>> }).data) // eslint-disable-line @typescript-eslint/no-explicit-any
 
 describe('syncWeek sets employee status from a completed, latest-synced week', () => {
   it('marks the active employee with no punches inactive and reactivates the inactive one, in the transaction', async () => {
     const outcome = await runScheduledSync(NOW)
 
-    expect(db.employee.update).not.toHaveBeenCalled()
+    expect(db.employee.updateMany).not.toHaveBeenCalled()
     expect(updates()).toEqual([
-      { where: { id: 'emp-7' }, data: { isActive: false } },
-      { where: { id: 'emp-36' }, data: { isActive: true } },
+      { where: { id: { in: ['emp-7'] } }, data: { isActive: false } },
+      { where: { id: { in: ['emp-36'] } }, data: { isActive: true } },
     ])
     // The employee who resigned before today stays inactive despite punches.
-    expect(updates().some((u) => u.where.id === 'emp-41')).toBe(false)
+    expect(JSON.stringify(updates())).not.toContain('emp-41')
 
-    const employeeAudits = auditRows(db.tx).filter((r) => r.entityType === 'EMPLOYEE')
-    expect(employeeAudits).toHaveLength(2)
-    expect(employeeAudits[0]).toMatchObject({
+    const audits = employeeAudits()
+    expect(audits).toHaveLength(2)
+    expect(audits[0]).toMatchObject({
       actionType: 'UPDATE',
+      entityType: 'EMPLOYEE',
       entityId: 'emp-7',
       detailsJson: {
+        summary: 'Marked inactive from attendance: Ravi Kumar (TPLGOAHLP007) had no punches in 5 Nov – 11 Nov 2026',
         changeSource: 'AUTO_ATTENDANCE',
+        employeeId: 'TPLGOAHLP007',
+        employeeName: 'Ravi Kumar',
         isActive: { from: true, to: false },
         weekStart: WEEK.start,
         weekEnd: WEEK.end,
@@ -75,9 +81,15 @@ describe('syncWeek sets employee status from a completed, latest-synced week', (
         hours: 0,
       },
     })
-    expect(employeeAudits[1]).toMatchObject({
+    expect(audits[1]).toMatchObject({
       entityId: 'emp-36',
-      detailsJson: { changeSource: 'AUTO_ATTENDANCE', isActive: { from: false, to: true }, punchCount: 2, hours: 9 },
+      detailsJson: {
+        summary: 'Reactivated from attendance: Asha Rao (TPLGOAHLP036) has 2 punches in 5 Nov – 11 Nov 2026',
+        changeSource: 'AUTO_ATTENDANCE',
+        isActive: { from: false, to: true },
+        punchCount: 2,
+        hours: 9,
+      },
     })
 
     const statusChanges = {
@@ -103,14 +115,14 @@ describe('syncWeek sets employee status from a completed, latest-synced week', (
     const outcome = await runScheduledSync(NOW)
 
     expect(outcome.outcome).toBe('LOADED')
-    expect(db.tx.employee.update).not.toHaveBeenCalled()
+    expect(db.tx.employee.updateMany).not.toHaveBeenCalled()
   })
 
   it('changes nobody when the week ends today or later', async () => {
     const outcome = await syncWeek({ week: WEEK, trigger: 'MANUAL', now: new Date('2026-11-11T06:00:00Z') })
 
     expect(outcome.outcome).toBe('LOADED')
-    expect(db.tx.employee.update).not.toHaveBeenCalled()
+    expect(db.tx.employee.updateMany).not.toHaveBeenCalled()
   })
 
   it('changes nobody on a FAILED outcome', async () => {
@@ -119,8 +131,8 @@ describe('syncWeek sets employee status from a completed, latest-synced week', (
     const outcome = await runScheduledSync(NOW)
 
     expect(outcome.outcome).toBe('FAILED')
-    expect(db.tx.employee.update).not.toHaveBeenCalled()
-    expect(db.employee.update).not.toHaveBeenCalled()
+    expect(db.tx.employee.updateMany).not.toHaveBeenCalled()
+    expect(db.employee.updateMany).not.toHaveBeenCalled()
   })
 
   it('changes nobody on an EMPTY outcome', async () => {
@@ -129,6 +141,6 @@ describe('syncWeek sets employee status from a completed, latest-synced week', (
     const outcome = await runScheduledSync(NOW)
 
     expect(outcome).toMatchObject({ outcome: 'FAILED', code: 'EMPTY' })
-    expect(db.tx.employee.update).not.toHaveBeenCalled()
+    expect(db.tx.employee.updateMany).not.toHaveBeenCalled()
   })
 })

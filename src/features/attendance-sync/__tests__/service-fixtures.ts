@@ -21,10 +21,10 @@ const MODEL_METHODS = {
   attendanceEmployeeDecision: ['findMany', 'findUnique', 'create', 'update', 'count', 'deleteMany'],
   attendanceCodeException: ['findMany', 'findUnique', 'upsert', 'delete'],
   attendanceRecord: ['findMany', 'groupBy', 'count', 'deleteMany', 'createMany'],
-  employee: ['findMany', 'findUnique', 'update'],
+  employee: ['findMany', 'findUnique', 'updateMany'],
   payrollRun: ['findFirst', 'findMany'],
   payrollCorrectionSession: ['findFirst', 'findUnique', 'update'],
-  auditLog: ['create'],
+  auditLog: ['create', 'createMany'],
 } as const
 
 type ModelName = keyof typeof MODEL_METHODS
@@ -118,11 +118,12 @@ export function resetDb(db: Db): void {
     models.attendanceRecord.groupBy.mockResolvedValue([])
     models.attendanceRecord.count.mockResolvedValue(0)
     models.employee.findMany.mockResolvedValue([])
-    models.employee.update.mockResolvedValue({})
+    models.employee.updateMany.mockResolvedValue({ count: 0 })
     models.payrollRun.findFirst.mockResolvedValue(null)
     models.payrollRun.findMany.mockResolvedValue([])
     models.payrollCorrectionSession.findFirst.mockResolvedValue(null)
     models.auditLog.create.mockResolvedValue({ id: 'audit-1' })
+    models.auditLog.createMany.mockResolvedValue({ count: 0 })
     models.$queryRaw.mockReset()
     models.$queryRaw.mockResolvedValue([lockedRow()])
   }

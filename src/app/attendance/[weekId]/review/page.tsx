@@ -53,7 +53,6 @@ async function ReviewContent({ weekId }: { weekId: string }) {
   if (status === 'NO_DATA' || status === 'SYNC_FAILED') redirect('/attendance')
 
   let review: LiveReview
-  const statusChanges = await getLatestStatusChanges(row.id)
   try {
     review = await getPunchReview(weekId, { kind: 'LIVE' })
   } catch (e) {
@@ -66,11 +65,15 @@ async function ReviewContent({ weekId }: { weekId: string }) {
     redirect(`/attendance/${weekId}/employee-check`)
   }
 
+  const statusChanges = await getLatestStatusChanges(row.id)
   return (
-    <>
-      <StatusChangesNotice changes={statusChanges} />
-      <PunchReviewGrid initialReview={review} backHref="/attendance" backLabel="Attendance" title="Punch review" />
-    </>
+    <PunchReviewGrid
+      initialReview={review}
+      backHref="/attendance"
+      backLabel="Attendance"
+      title="Punch review"
+      notice={<StatusChangesNotice changes={statusChanges} />}
+    />
   )
 }
 
