@@ -19,6 +19,7 @@ import {
   type WageHistoryEntry,
   type EmployeeStatus,
 } from '@/features/employee-management/types/employee.types'
+import { computeHourlyRate } from '@/features/employee-management/utils/wage'
 
 // ─── Helper: compute status ───────────────────────────────────────────────────
 
@@ -94,6 +95,7 @@ export async function createEmployee(input: CreateEmployeeInput): Promise<Employ
 
   const today = new Date()
   const employeeDbId = randomUUID()
+  const hourlyRate = computeHourlyRate(parsed.data.salary)
 
   await prisma.$transaction([
     // 1. Create the employee record
@@ -124,7 +126,7 @@ export async function createEmployee(input: CreateEmployeeInput): Promise<Employ
       data: {
         employeeId: employeeDbId,
         weeklySalary: parsed.data.salary,
-        hourlyRate: parsed.data.hourlyRate,
+        hourlyRate,
         effectiveFrom: today,
         effectiveTo: null,
         changeSource: 'MANUAL',
@@ -155,7 +157,7 @@ export async function createEmployee(input: CreateEmployeeInput): Promise<Employ
           dateOfResignation: parsed.data.dateOfResignation ?? null,
           isActive: parsed.data.isActive,
           salary: parsed.data.salary,
-          hourlyRate: parsed.data.hourlyRate,
+          hourlyRate,
           changeSource: 'MANUAL',
         },
       },
@@ -296,13 +298,10 @@ export async function updateEmployee(
   })
   const currentWage = currentWageHistory[0]
 
+  // A wage change is keyed only on the daily wage; the hourly rate is derived from it.
   const newSalary = parsed.data.salary
-  const newHourlyRate = parsed.data.hourlyRate
-  const salaryChanged =
-    newSalary !== undefined && currentWage && Number(currentWage.weeklySalary) !== newSalary
-  const hourlyChanged =
-    newHourlyRate !== undefined && currentWage && Number(currentWage.hourlyRate) !== newHourlyRate
-  const wageChanged = salaryChanged || hourlyChanged
+  const wageChanged =
+    newSalary !== undefined && currentWage !== undefined && Number(currentWage.weeklySalary) !== newSalary
 
   const today = new Date()
 
@@ -325,11 +324,9 @@ export async function updateEmployee(
     }
   }
 
-  if (salaryChanged && currentWage) {
+  if (wageChanged) {
     changedFields.salary = { old: Number(currentWage.weeklySalary), new: newSalary }
-  }
-  if (hourlyChanged && currentWage) {
-    changedFields.hourlyRate = { old: Number(currentWage.hourlyRate), new: newHourlyRate }
+    changedFields.hourlyRate = { old: Number(currentWage.hourlyRate), new: computeHourlyRate(newSalary) }
   }
 
   // Pre-generate a UUID for the new wage history entry (used only if wageChanged)
@@ -362,6 +359,8 @@ export async function updateEmployee(
   ]
 
   if (wageChanged) {
+    const newHourlyRate = computeHourlyRate(newSalary)
+
     // 2a. Close previous open wage history entry
     promises.push(
       prisma.employeeWageHistory.updateMany({
@@ -376,8 +375,8 @@ export async function updateEmployee(
         data: {
           id: newWageHistoryId,
           employeeId: id,
-          weeklySalary: newSalary ?? Number(currentWage.weeklySalary),
-          hourlyRate: newHourlyRate ?? Number(currentWage.hourlyRate),
+          weeklySalary: newSalary,
+          hourlyRate: newHourlyRate,
           effectiveFrom: today,
           effectiveTo: null,
           changeSource: 'MANUAL',
@@ -395,9 +394,9 @@ export async function updateEmployee(
           detailsJson: {
             employeeId: id,
             oldSalary: Number(currentWage.weeklySalary),
-            newSalary: newSalary ?? Number(currentWage.weeklySalary),
+            newSalary,
             oldHourlyRate: Number(currentWage.hourlyRate),
-            newHourlyRate: newHourlyRate ?? Number(currentWage.hourlyRate),
+            newHourlyRate,
             effectiveFrom: today,
             changeSource: 'MANUAL',
           },
@@ -526,11 +525,13 @@ export async function bulkUpdateHourlyRate(input: BulkHourlyRateUpdateInput): Pr
     const firstIssue = parsed.error.issues?.[0]
     throw new EmployeeServiceError(
       'VALIDATION_ERROR',
-      firstIssue?.message ?? 'Invalid bulk hourly rate update data'
+      firstIssue?.message ?? 'Invalid bulk daily wage update data'
     )
   }
 
   const effectiveDate = parsed.data.effectiveFrom ?? new Date()
+  const newDailyWage = parsed.data.newDailyWage
+  const newHourlyRate = computeHourlyRate(newDailyWage)
   const result: BulkOperationResult = { succeeded: 0, skipped: 0, failed: 0, errors: [] }
 
   for (const id of parsed.data.ids) {
@@ -551,8 +552,8 @@ export async function bulkUpdateHourlyRate(input: BulkHourlyRateUpdateInput): Pr
       })
       const currentWage = currentWageEntries[0]
 
-      // Skip if rate already matches
-      if (currentWage && Number(currentWage.hourlyRate) === parsed.data.newHourlyRate) {
+      // Skip if the daily wage already matches
+      if (currentWage && Number(currentWage.weeklySalary) === newDailyWage) {
         result.skipped++
         continue
       }
@@ -571,8 +572,8 @@ export async function bulkUpdateHourlyRate(input: BulkHourlyRateUpdateInput): Pr
           data: {
             id: newWageEntryId,
             employeeId: id,
-            weeklySalary: currentWage ? Number(currentWage.weeklySalary) : 0,
-            hourlyRate: parsed.data.newHourlyRate,
+            weeklySalary: newDailyWage,
+            hourlyRate: newHourlyRate,
             effectiveFrom: effectiveDate,
             effectiveTo: null,
             changeSource: 'BULK',
@@ -589,8 +590,10 @@ export async function bulkUpdateHourlyRate(input: BulkHourlyRateUpdateInput): Pr
               bulkAction: 'CHANGE_HOURLY_RATE',
               employeeId: employee.employeeId,
               employeeName: employee.employeeName,
+              oldDailyWage: currentWage ? Number(currentWage.weeklySalary) : null,
+              newDailyWage,
               oldHourlyRate: currentWage ? Number(currentWage.hourlyRate) : null,
-              newHourlyRate: parsed.data.newHourlyRate,
+              newHourlyRate,
               effectiveFrom: effectiveDate,
               changeSource: 'BULK',
             },

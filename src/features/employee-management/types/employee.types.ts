@@ -23,8 +23,7 @@ export const CreateEmployeeSchema = z.object({
   bankAccount: z.string().optional(),
   dateOfResignation: z.date().optional().nullable(),
   isActive: z.boolean().default(true),
-  salary: z.number({ error: 'Salary is required' }).min(0),
-  hourlyRate: z.number({ error: 'Hourly Rate is required' }).min(0),
+  salary: z.number({ error: 'Daily wage is required' }).min(0),
 })
 
 export type CreateEmployeeInput = z.infer<typeof CreateEmployeeSchema>
@@ -61,7 +60,7 @@ export type BulkStatusUpdateInput = z.infer<typeof BulkStatusUpdateSchema>
 
 export const BulkHourlyRateUpdateSchema = z.object({
   ids: z.array(z.string().min(1)).min(1, 'At least one employee must be selected'),
-  newHourlyRate: z.number().gt(0, 'Hourly rate must be greater than 0'),
+  newDailyWage: z.number().gt(0, 'Daily wage must be greater than 0'),
   effectiveFrom: z.date().optional(),
 })
 
