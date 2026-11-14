@@ -222,67 +222,70 @@ export function PayrollSummaryStep({ weekLabel, summary, onBack, onApprove }: Pr
         </div>
 
         {/* ── Summary table ───────────────────────────────────────────── */}
-        <div
-          role="region"
-          aria-label="Payroll summary, scrolls sideways"
-          tabIndex={0}
-          className="max-h-[calc(100vh-16rem)] overflow-auto rounded-lg border border-zinc-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600"
-        >
-          <table className="w-full border-separate border-spacing-0 text-sm">
-            <thead>
-              <tr>
-                {HEADERS.map((h) => (
-                  <th
-                    key={h}
-                    scope="col"
-                    className={`${HEADER_CELL} ${h === 'Emp Name' ? 'left-0 z-20' : ''} ${
-                      RIGHT_ALIGNED.includes(h) ? 'text-right' : 'text-left'
-                    }`}
+        <div className="space-y-2">
+          <div
+            role="region"
+            aria-label="Payroll summary, scrolls sideways"
+            tabIndex={0}
+            className="max-h-[calc(100vh-16rem)] overflow-auto rounded-lg border border-zinc-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600"
+          >
+            <table className="w-full border-separate border-spacing-0 text-sm">
+              <thead>
+                <tr>
+                  {HEADERS.map((h) => (
+                    <th
+                      key={h}
+                      scope="col"
+                      className={`${HEADER_CELL} ${h === 'Emp Name' ? 'left-0 z-20' : ''} ${
+                        RIGHT_ALIGNED.includes(h) ? 'text-right' : 'text-left'
+                      }`}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, i) => (
+                  <EmployeeRow
+                    key={row.employeeId}
+                    row={row}
+                    slNo={i + 1}
+                    salaryFrom={salaryFrom}
+                    salaryTo={salaryTo}
+                    weekStartISO={weekStartISO}
+                  />
+                ))}
+              </tbody>
+              {/* ── Totals row ─────────────────────────────────────────── */}
+              <tfoot>
+                <tr>
+                  <td className={FOOTER_CELL} colSpan={2} />
+                  <td
+                    className={`${FOOTER_CELL} left-0 z-20 text-xs font-semibold uppercase tracking-wider text-zinc-500`}
                   >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, i) => (
-                <EmployeeRow
-                  key={row.employeeId}
-                  row={row}
-                  slNo={i + 1}
-                  salaryFrom={salaryFrom}
-                  salaryTo={salaryTo}
-                  weekStartISO={weekStartISO}
-                />
-              ))}
-            </tbody>
-            {/* ── Totals row ─────────────────────────────────────────── */}
-            <tfoot>
-              <tr>
-                <td className={FOOTER_CELL} colSpan={2} />
-                <td
-                  className={`${FOOTER_CELL} left-0 z-20 text-xs font-semibold uppercase tracking-wider text-zinc-500`}
-                >
-                  Total
-                </td>
-                <td className={FOOTER_CELL} colSpan={6} />
-                {[
-                  totals.totalRegularPay,
-                  totals.totalOvertimePay,
-                  totals.totalAdditions,
-                  totals.totalDeductions,
-                ].map((amount, i) => (
-                  <td key={i} className={`${FOOTER_CELL} text-right font-mono tabular-nums text-sm font-semibold text-zinc-900`}>
-                    ₹{fmt(amount)}
+                    Total
                   </td>
-                ))}
-                <td className={`${FOOTER_CELL} text-right font-mono tabular-nums text-sm font-bold text-zinc-900`}>
-                  ₹{formatNetPay(totals.totalNetPayable)}
-                </td>
-                <td className={FOOTER_CELL} colSpan={2} />
-              </tr>
-            </tfoot>
-          </table>
+                  <td className={FOOTER_CELL} colSpan={6} />
+                  {[
+                    totals.totalRegularPay,
+                    totals.totalOvertimePay,
+                    totals.totalAdditions,
+                    totals.totalDeductions,
+                  ].map((amount, i) => (
+                    <td key={i} className={`${FOOTER_CELL} text-right font-mono tabular-nums text-sm font-semibold text-zinc-900`}>
+                      ₹{fmt(amount)}
+                    </td>
+                  ))}
+                  <td className={`${FOOTER_CELL} text-right font-mono tabular-nums text-sm font-bold text-zinc-900`}>
+                    ₹{formatNetPay(totals.totalNetPayable)}
+                  </td>
+                  <td className={FOOTER_CELL} colSpan={2} />
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <p className="text-sm text-zinc-500">Net Pay is rounded to the whole rupee for each employee.</p>
         </div>
 
         {/* ── Actions ─────────────────────────────────────────────────── */}
