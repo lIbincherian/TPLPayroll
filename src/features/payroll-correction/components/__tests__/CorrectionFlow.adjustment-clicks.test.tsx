@@ -198,16 +198,16 @@ describe('CorrectionFlow: skipping an adjustment applied before the correction a
       />,
     )
 
-    const carry = within(row('Anita Sharma')).getByRole('radio', { name: 'Carry forward' })
-    const cancel = within(row('Anita Sharma')).getByRole('radio', { name: 'Cancel adjustment' })
-    expect(carry).toHaveAttribute('aria-checked', 'true')
-    expect(cancel).toHaveAttribute('aria-checked', 'false')
-    expect(within(row('Rajesh Iyer')).queryByRole('radio')).toBeNull()
+    const carry = within(row('Anita Sharma')).getByRole('button', { name: 'Carry forward' })
+    const cancel = within(row('Anita Sharma')).getByRole('button', { name: 'Cancel adjustment' })
+    expect(carry).toHaveAttribute('aria-pressed', 'true')
+    expect(cancel).toHaveAttribute('aria-pressed', 'false')
+    expect(within(row('Rajesh Iyer')).queryByRole('group')).toBeNull()
 
     fireEvent.click(cancel)
 
     await waitFor(() => expect(skipAdjustmentInCorrectionAction).toHaveBeenCalledWith('app-a', 'CANCEL'), { timeout: 15000 })
-    await waitFor(() => expect(within(row('Anita Sharma')).getByRole('radio', { name: 'Cancel adjustment' })).toHaveAttribute('aria-checked', 'true'), { timeout: 15000 })
+    await waitFor(() => expect(within(row('Anita Sharma')).getByRole('button', { name: 'Cancel adjustment' })).toHaveAttribute('aria-pressed', 'true'), { timeout: 15000 })
     expect(screen.getByText(/It won't be offered again/)).toBeInTheDocument()
   })
 
@@ -220,12 +220,12 @@ describe('CorrectionFlow: skipping an adjustment applied before the correction a
         activeSession={session}
       />,
     )
-    expect(within(row('Anita Sharma')).getByRole('radio', { name: 'Cancel adjustment' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(row('Anita Sharma')).getByRole('button', { name: 'Cancel adjustment' })).toHaveAttribute('aria-pressed', 'true')
 
-    fireEvent.click(within(row('Anita Sharma')).getByRole('radio', { name: 'Carry forward' }))
+    fireEvent.click(within(row('Anita Sharma')).getByRole('button', { name: 'Carry forward' }))
 
     expect(await screen.findByText(COMPLETED, undefined, { timeout: 15000 })).toBeInTheDocument()
     expect(skipAdjustmentInCorrectionAction).toHaveBeenCalledWith('app-a', 'CARRY_FORWARD')
-    expect(within(row('Anita Sharma')).getByRole('radio', { name: 'Cancel adjustment' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(row('Anita Sharma')).getByRole('button', { name: 'Cancel adjustment' })).toHaveAttribute('aria-pressed', 'true')
   })
 })

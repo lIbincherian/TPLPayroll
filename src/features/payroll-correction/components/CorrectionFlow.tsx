@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, ArrowRight, CircleNotch } from '@phosphor-icons/react'
+import { ArrowLeft, ArrowRight, Check, CircleNotch } from '@phosphor-icons/react'
 import type {
   InitiateCorrectionResult,
   CorrectionType,
@@ -328,8 +328,8 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
                           {isSkip && adj.wasApplied && (
                             <div className="mt-2 font-sans">
                               <div
-                                role="radiogroup"
-                                aria-label={`When this revision is approved, for ${adj.employeeName}'s ${adj.reason}`}
+                                role="group"
+                                aria-label={`Skipped: ${adj.employeeName}, ${adj.reason}. What happens on approval`}
                                 className="inline-flex rounded-lg border border-zinc-200 p-0.5"
                               >
                                 {([
@@ -342,25 +342,26 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
                                     <button
                                       key={option.choice}
                                       type="button"
-                                      role="radio"
-                                      aria-checked={option.selected}
+                                      aria-pressed={option.selected}
                                       onClick={() => {
                                         if (!option.selected) handleSkipAdjustment(adj.applicationId, option.choice)
                                       }}
                                       disabled={isPending}
-                                      className={`rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                                      className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
                                         option.selected ? selectedClass : 'text-zinc-500 hover:text-zinc-900'
                                       }`}
                                     >
+                                      {option.selected && <Check size={12} weight="bold" aria-hidden="true" />}
                                       {option.label}
                                     </button>
                                   )
                                 })}
                               </div>
                               <p className="mt-1 max-w-[16rem] text-xs text-zinc-500">
+                                {adj.adjustmentType === 'DEDUCTION' ? 'Not deducted' : 'Not added'} in this revision.{' '}
                                 {adj.effectiveCancel
-                                  ? "On approval, the amount goes back and the adjustment stops. It won't be offered again."
-                                  : 'On approval, the amount goes back and the instalment moves to next week.'}
+                                  ? "The adjustment is cancelled and its pending weeks are removed. It won't be offered again. If this employee isn't paid in this revision, it carries forward instead."
+                                  : 'It carries forward to next week, unless it was already carried.'}
                               </p>
                             </div>
                           )}

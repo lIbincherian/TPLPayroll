@@ -385,10 +385,17 @@ export function AdjustmentDetail({ adjustment: adj }: Props) {
                     </td>
                     <td className="px-4 py-3">
                       {app.reversedInRevisionNumber !== null ? (
-                        <span className="inline-flex items-center gap-1.5 text-sm text-zinc-600">
-                          <ArrowCounterClockwise size={15} weight="bold" className="text-zinc-400" />
-                          Reversed in revision {app.reversedInRevisionNumber}
-                        </span>
+                        <div>
+                          <span className="inline-flex items-center gap-1.5 text-sm text-zinc-600">
+                            <ArrowCounterClockwise size={15} weight="bold" className="text-zinc-400" />
+                            Reversed in revision {app.reversedInRevisionNumber}
+                          </span>
+                          {app.carriedForwardToPayrollWeekStartDate && (
+                            <p className="mt-0.5 pl-[21px] text-xs text-zinc-500">
+                              Carried to week of {formatDate(app.carriedForwardToPayrollWeekStartDate)}
+                            </p>
+                          )}
+                        </div>
                       ) : (
                         <AppStatusBadge
                           status={app.approvalStatus}

@@ -99,7 +99,7 @@ describe('AdjustmentDetail: Application History labels', () => {
     render(
       <AdjustmentDetail
         adjustment={adjustment('CANCELLED', [
-          app('a1', '2025-10-09', 'SKIPPED', null, 2),
+          app('a1', '2025-10-09', 'SKIPPED', '2025-10-16', 2),
           app('a2', '2025-10-16', 'APPROVED'),
         ])}
       />,
@@ -107,6 +107,7 @@ describe('AdjustmentDetail: Application History labels', () => {
     const history = within(historyTable())
     expect(history.getByText('Reversed in revision 2')).toBeTruthy()
     expect(history.queryByText('Skipped')).toBeNull()
+    expect(history.getByText('Carried to week of 16 Oct 2025')).toBeTruthy()
     expect(history.getByText('Approved')).toBeTruthy()
   })
 
