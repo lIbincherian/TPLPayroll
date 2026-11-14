@@ -20,8 +20,7 @@ let fontsConfigured = false
 export const AMOUNT_FONT = 'DejaVuSansMono'
 
 /** Shipped to the server output through outputFileTracingIncludes in next.config.ts. */
-export const AMOUNT_FONT_DIR = path.join(process.cwd(), 'src/features/payroll-reports/assets/fonts')
-
+const AMOUNT_FONT_DIR = path.join(process.cwd(), 'src/features/payroll-reports/assets/fonts')
 
 function configureFonts() {
   if (fontsConfigured) return
