@@ -26,6 +26,7 @@ vi.mock('@/features/payroll-generation/actions/payroll.actions', () => ({
 vi.mock('@/features/payroll-adjustments/actions/adjustment.actions', () => ({
   approveAdjustmentApplicationAction: vi.fn(),
   skipAdjustmentApplicationAction: vi.fn(),
+  cancelAdjustmentAction: vi.fn(async () => ({ ok: true, data: undefined })),
 }))
 
 const WEEK_START = new Date('2026-11-05T00:00:00.000Z')
@@ -241,6 +242,28 @@ describe('PayrollGenerateFlow reloads what it showed when the attendance changed
     await waitFor(() => expect(approvePayrollAction).toHaveBeenCalledTimes(1))
     expect(checkAttendanceReadinessAction).toHaveBeenCalledTimes(1)
     expect(getPendingAdjustmentsForWeekAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('Back from the summary loads the pending adjustments again, so one cancelled in the review is gone', async () => {
+    vi.mocked(getPendingAdjustmentsForWeekAction)
+      .mockResolvedValueOnce({ ok: true, data: [adjustment('Cancelled uniform recovery')] })
+      .mockResolvedValue({ ok: true, data: [] })
+    render(<PayrollGenerateFlow weekStart={WEEK_START} weekEnd={WEEK_END} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Cancelled uniform recovery')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel adjustment' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, cancel it' }))
+    const next = screen.getByRole('button', { name: /Continue to Payroll Summary/ })
+    await waitFor(() => expect(next).toBeEnabled())
+    fireEvent.click(next)
+    await screen.findByRole('heading', { name: 'Payroll Summary' })
+
+    fireEvent.click(screen.getByRole('button', { name: /Back/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Review Adjustments' })).toBeInTheDocument()
+    expect(screen.queryByText('Cancelled uniform recovery')).not.toBeInTheDocument()
+    expect(getPendingAdjustmentsForWeekAction).toHaveBeenCalledTimes(2)
+    expect(getPendingAdjustmentsForWeekAction).toHaveBeenLastCalledWith(WEEK_START, WEEK_END)
   })
 
   it('a reload that throws (the server cannot be reached) takes the user off the dead summary to the first step, which loads the attendance again: the fresh numbers, never the old ones', async () => {

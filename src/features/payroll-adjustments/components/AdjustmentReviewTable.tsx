@@ -1,9 +1,10 @@
 'use client'
 
-import { useState, useTransition } from 'react'
-import { Check, X, Info } from '@phosphor-icons/react'
+import { Fragment, useEffect, useRef, useState, useTransition } from 'react'
+import { Check, X, Info, Prohibit, Warning } from '@phosphor-icons/react'
 import {
   approveAdjustmentApplicationAction,
+  cancelAdjustmentAction,
   skipAdjustmentApplicationAction,
 } from '@/features/payroll-adjustments/actions/adjustment.actions'
 import type { WeeklyReviewItem } from '@/features/payroll-adjustments/types/adjustment.types'
@@ -24,7 +25,13 @@ function formatWeek(start: Date) {
 
 // ─── Row action state ─────────────────────────────────────────────────────────
 
-type RowAction = 'APPROVED' | 'SKIPPED' | null
+type RowAction = 'APPROVED' | 'SKIPPED' | 'CANCELLED' | null
+
+const DECISION_LABEL: Record<NonNullable<RowAction>, { label: string; className: string }> = {
+  APPROVED: { label: 'Approved', className: 'text-emerald-700' },
+  SKIPPED: { label: 'Skipped', className: 'text-zinc-600' },
+  CANCELLED: { label: 'Cancelled', className: 'text-rose-600' },
+}
 
 // ─── AdjustmentReviewTable ────────────────────────────────────────────────────
 
@@ -39,6 +46,25 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
   const [, startTransition] = useTransition()
   const [decisions, setDecisions] = useState<Record<string, RowAction>>({})
   const [pending, setPending] = useState<Record<string, boolean>>({})
+  const [confirmingCancel, setConfirmingCancel] = useState<string | null>(null)
+  const [errors, setErrors] = useState<Record<string, string>>({})
+  const cancelButtons = useRef<Record<string, HTMLButtonElement | null>>({})
+  const keepButton = useRef<HTMLButtonElement | null>(null)
+  const lastConfirming = useRef<string | null>(null)
+
+  // Focus moves to the safe choice when the confirmation opens, and back to the row's Cancel adjustment
+  // button when it closes without cancelling (Keep, Escape or a refused cancel).
+  useEffect(() => {
+    const closed = lastConfirming.current
+    lastConfirming.current = confirmingCancel
+    if (confirmingCancel != null) keepButton.current?.focus()
+    else if (closed != null) cancelButtons.current[closed]?.focus()
+  }, [confirmingCancel])
+
+  const openCancelConfirm = (applicationId: string) => {
+    setErrors((e) => ({ ...e, [applicationId]: '' }))
+    setConfirmingCancel(applicationId)
+  }
 
   const allActioned = items.length > 0 && items.every((item) => decisions[item.applicationId] != null)
 
@@ -64,15 +90,32 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
     })
   }
 
+  const handleCancel = (applicationId: string, adjustmentId: string) => {
+    setPending((p) => ({ ...p, [applicationId]: true }))
+    setErrors((e) => ({ ...e, [applicationId]: '' }))
+    startTransition(async () => {
+      const result = await cancelAdjustmentAction(adjustmentId)
+      setPending((p) => ({ ...p, [applicationId]: false }))
+      setConfirmingCancel(null)
+      if (result.ok) {
+        setDecisions((d) => ({ ...d, [applicationId]: 'CANCELLED' }))
+      } else {
+        setErrors((e) => ({ ...e, [applicationId]: result.error }))
+      }
+    })
+  }
+
+  const isOpen = (applicationId: string) => decisions[applicationId] == null && !pending[applicationId]
+
   const handleApproveAll = () => {
     items
-      .filter((item) => decisions[item.applicationId] == null)
+      .filter((item) => isOpen(item.applicationId))
       .forEach((item) => handleApprove(item.applicationId))
   }
 
   const handleSkipAll = () => {
     items
-      .filter((item) => decisions[item.applicationId] == null)
+      .filter((item) => isOpen(item.applicationId))
       .forEach((item) => handleSkip(item.applicationId))
   }
 
@@ -137,14 +180,18 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
                   const isLoading = pending[item.applicationId]
                   const isApproved = decision === 'APPROVED'
                   const isSkipped = decision === 'SKIPPED'
+                  const isCancelled = decision === 'CANCELLED'
+                  const isMuted = isSkipped || isCancelled
+                  const isConfirming = confirmingCancel === item.applicationId && decision == null
+                  const error = errors[item.applicationId]
 
                   return (
+                    <Fragment key={item.applicationId}>
                     <tr
-                      key={item.applicationId}
                       className={[
                         'transition-colors',
                         isApproved ? 'bg-emerald-50/50' : '',
-                        isSkipped ? 'bg-zinc-50' : '',
+                        isMuted ? 'bg-zinc-50' : '',
                       ]
                         .filter(Boolean)
                         .join(' ')}
@@ -153,7 +200,7 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-0.5">
                           <span
-                            className={`text-sm font-medium ${isSkipped ? 'text-zinc-400' : 'text-zinc-900'}`}
+                            className={`text-sm font-medium ${isMuted ? 'text-zinc-500' : 'text-zinc-900'}`}
                           >
                             {item.employeeName}
                           </span>
@@ -178,7 +225,7 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
                       <td className="px-4 py-3">
                         <span
                           className={`font-mono tabular-nums text-sm ${
-                            isSkipped ? 'text-zinc-400 line-through' : 'text-zinc-900'
+                            isMuted ? 'text-zinc-500 line-through' : 'text-zinc-900'
                           }`}
                         >
                           ₹{formatAmount(item.appliedAmount)}
@@ -187,7 +234,7 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
 
                       {/* Reason */}
                       <td className="px-4 py-3">
-                        <span className={`text-sm ${isSkipped ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                        <span className={`text-sm ${isMuted ? 'text-zinc-500' : 'text-zinc-600'}`}>
                           {item.reason}
                         </span>
                       </td>
@@ -215,19 +262,90 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
                               >
                                 <X size={16} weight="bold" />
                               </button>
+                              <button
+                                type="button"
+                                disabled={isLoading}
+                                ref={(el) => {
+                                  cancelButtons.current[item.applicationId] = el
+                                }}
+                                onClick={() => openCancelConfirm(item.applicationId)}
+                                aria-label="Cancel adjustment"
+                                title="Cancel adjustment"
+                                className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-[0.98] disabled:opacity-40"
+                              >
+                                <Prohibit size={16} weight="bold" />
+                              </button>
                             </>
                           ) : (
-                            <span
-                              className={`text-xs font-medium ${
-                                isApproved ? 'text-emerald-600' : 'text-zinc-400'
-                              }`}
-                            >
-                              {isApproved ? 'Approved' : 'Skipped'}
+                            <span className={`text-xs font-medium ${DECISION_LABEL[decision].className}`}>
+                              {DECISION_LABEL[decision].label}
                             </span>
                           )}
                         </div>
                       </td>
                     </tr>
+                    {isConfirming && (
+                      <tr>
+                        <td colSpan={5} className="px-4 pb-3">
+                          <div
+                            role="alertdialog"
+                            aria-labelledby={`cancel-title-${item.applicationId}`}
+                            aria-describedby={`cancel-desc-${item.applicationId}`}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape' && !isLoading) setConfirmingCancel(null)
+                            }}
+                            className="space-y-3 rounded-2xl border border-rose-200 bg-rose-50 p-4"
+                          >
+                            <div className="flex items-start gap-3">
+                              <Warning size={18} weight="fill" className="mt-0.5 shrink-0 text-rose-500" />
+                              <div>
+                                <p id={`cancel-title-${item.applicationId}`} className="text-sm font-semibold text-rose-800">
+                                  Cancel this adjustment for good?
+                                </p>
+                                <p id={`cancel-desc-${item.applicationId}`} className="mt-1 text-sm text-rose-700">
+                                  This will cancel the adjustment and remove any pending applications, so it
+                                  won&apos;t be offered again. Any already-approved applications will remain in
+                                  the record for audit purposes.
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                ref={keepButton}
+                                type="button"
+                                onClick={() => setConfirmingCancel(null)}
+                                disabled={isLoading}
+                                className="rounded-xl border border-zinc-200 bg-white px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:opacity-50"
+                              >
+                                Keep adjustment
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleCancel(item.applicationId, item.adjustmentId)}
+                                disabled={isLoading}
+                                className="rounded-xl bg-rose-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-rose-700 active:scale-[0.98] disabled:opacity-60"
+                              >
+                                {isLoading ? 'Cancelling…' : 'Yes, cancel it'}
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    {error && decision == null && (
+                      <tr>
+                        <td colSpan={5} className="px-4 pb-3">
+                          <div
+                            role="alert"
+                            className="flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2"
+                          >
+                            <Warning size={15} className="shrink-0 text-rose-500" />
+                            <p className="text-sm text-rose-700">{error}</p>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   )
                 })}
               </tbody>
@@ -238,7 +356,7 @@ export function AdjustmentReviewTable({ items, weekStartDate, weekEndDate, onCom
           <div className="flex items-start gap-2.5 rounded-xl border border-zinc-200/60 bg-zinc-50 p-3">
             <Info size={16} className="mt-0.5 shrink-0 text-zinc-400" />
             <p className="text-sm text-zinc-500">
-              Skipped adjustments will carry forward to the next week.
+              Skipped adjustments will carry forward to the next week. Cancelled adjustments stop and won&apos;t be offered again.
             </p>
           </div>
 
