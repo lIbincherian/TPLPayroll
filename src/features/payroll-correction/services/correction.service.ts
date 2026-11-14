@@ -1166,7 +1166,7 @@ export async function approveRevision(
           data: { reversedInRevisionNumber: revision.revisionNumber },
         })
       }
-      const toUnlabel = appliedIds.filter((id) => byId.get(id)!.reversedInRevisionNumber != null)
+      const toUnlabel = appliedIds.filter((id) => (byId.get(id)!.reversedInRevisionNumber ?? null) !== null)
       if (toUnlabel.length > 0) {
         await tx.payrollAdjustmentApplication.updateMany({
           where: { id: { in: toUnlabel } },

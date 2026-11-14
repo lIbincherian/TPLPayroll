@@ -335,27 +335,27 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
                                 {([
                                   { choice: 'CARRY_FORWARD', label: 'Carry forward', selected: !adj.effectiveCancel },
                                   { choice: 'CANCEL', label: 'Cancel adjustment', selected: adj.effectiveCancel },
-                                ] as const).map((option) => (
-                                  <button
-                                    key={option.choice}
-                                    type="button"
-                                    role="radio"
-                                    aria-checked={option.selected}
-                                    onClick={() => {
-                                      if (!option.selected) handleSkipAdjustment(adj.applicationId, option.choice)
-                                    }}
-                                    disabled={isPending}
-                                    className={`rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
-                                      option.selected
-                                        ? option.choice === 'CANCEL'
-                                          ? 'bg-rose-50 text-rose-700'
-                                          : 'bg-zinc-100 text-zinc-900'
-                                        : 'text-zinc-500 hover:text-zinc-900'
-                                    }`}
-                                  >
-                                    {option.label}
-                                  </button>
-                                ))}
+                                ] as const).map((option) => {
+                                  const selectedClass =
+                                    option.choice === 'CANCEL' ? 'bg-rose-50 text-rose-700' : 'bg-zinc-100 text-zinc-900'
+                                  return (
+                                    <button
+                                      key={option.choice}
+                                      type="button"
+                                      role="radio"
+                                      aria-checked={option.selected}
+                                      onClick={() => {
+                                        if (!option.selected) handleSkipAdjustment(adj.applicationId, option.choice)
+                                      }}
+                                      disabled={isPending}
+                                      className={`rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                                        option.selected ? selectedClass : 'text-zinc-500 hover:text-zinc-900'
+                                      }`}
+                                    >
+                                      {option.label}
+                                    </button>
+                                  )
+                                })}
                               </div>
                               <p className="mt-1 max-w-[16rem] text-xs text-zinc-500">
                                 {adj.effectiveCancel

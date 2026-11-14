@@ -384,7 +384,7 @@ export function AdjustmentDetail({ adjustment: adj }: Props) {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      {app.reversedInRevisionNumber != null ? (
+                      {app.reversedInRevisionNumber !== null ? (
                         <span className="inline-flex items-center gap-1.5 text-sm text-zinc-600">
                           <ArrowCounterClockwise size={15} weight="bold" className="text-zinc-400" />
                           Reversed in revision {app.reversedInRevisionNumber}
