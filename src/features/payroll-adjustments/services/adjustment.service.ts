@@ -195,6 +195,7 @@ export async function getAdjustmentDetail(id: string): Promise<AdjustmentDetailR
     skippedAt: a.skippedAt,
     carriedForwardToPayrollWeekStartDate: a.carriedForwardToPayrollWeekStartDate,
     isReversed: a.isReversed,
+    reversedInRevisionNumber: a.reversedInRevisionNumber,
   }))
 
   return {
@@ -648,6 +649,7 @@ export async function getAdjustmentsForWeekReview(
     where: {
       payrollWeekStartDate: weekStartDate,
       approvalStatus: 'PENDING',
+      payrollAdjustment: { status: { not: 'CANCELLED' } },
     },
     include: {
       payrollAdjustment: true,

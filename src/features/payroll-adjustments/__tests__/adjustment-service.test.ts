@@ -147,6 +147,8 @@ const makeApplication = (
   skippedAt: null,
   carriedForwardToPayrollWeekStartDate: null,
   isReversed: false,
+  cancelOnCorrectionApproval: false,
+  reversedInRevisionNumber: null,
   ...overrides,
 })
 

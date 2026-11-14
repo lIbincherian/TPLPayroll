@@ -240,6 +240,8 @@ model PayrollAdjustmentApplication {
   skippedAt                            DateTime?
   carriedForwardToPayrollWeekStartDate DateTime?
   isReversed                           Boolean   @default(false)
+  cancelOnCorrectionApproval           Boolean   @default(false)
+  reversedInRevisionNumber             Int?
 
   payrollAdjustment PayrollAdjustment @relation(fields: [payrollAdjustmentId], references: [id])
   employee          Employee          @relation(fields: [employeeId], references: [id])

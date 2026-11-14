@@ -7,6 +7,7 @@ import {
   type ApproveRevisionResult,
   type BeginCorrectionResult,
   type CorrectionSessionInfo,
+  type CorrectionSkipChoice,
   type CorrectionType,
   type CreateRevisionInput,
   type CreateRevisionResult,
@@ -431,7 +432,9 @@ export async function initiateCorrection(
     orderBy: { createdAt: 'desc' },
     select: { adjustmentSnapshotJson: true },
   })
-  const snapshotIds = openSession ? parseAdjustmentSnapshot(openSession.adjustmentSnapshotJson).map((entry) => entry.applicationId) : []
+  const snapshotEntries = openSession ? parseAdjustmentSnapshot(openSession.adjustmentSnapshotJson) : []
+  const snapshotIds = snapshotEntries.map((entry) => entry.applicationId)
+  const appliedBefore = new Set(snapshotEntries.filter((entry) => entry.approvalStatus === 'APPROVED').map((entry) => entry.applicationId))
   const adjustmentApps = await prisma.payrollAdjustmentApplication.findMany({
     where: openSession
       ? {
@@ -492,6 +495,8 @@ export async function initiateCorrection(
       reason: app.payrollAdjustment.reason,
       approvalStatus: app.approvalStatus as 'PENDING' | 'APPROVED' | 'SKIPPED',
       isReversed: app.isReversed,
+      wasApplied: appliedBefore.has(app.id),
+      cancelOnApproval: app.cancelOnCorrectionApproval,
     })),
   }
 }
@@ -513,8 +518,16 @@ export async function initiateCorrection(
  *
  * It takes the week's row lock, like approveRevision and abandonCorrection, so a click cannot land
  * between their reads and writes.
+ *
+ * A skip of an application that was APPROVED before the correction records the user's choice for it:
+ * `CARRY_FORWARD` (the default) or `CANCEL`, which the approval turns into UNAPPLY_CANCEL (see
+ * adjustment-settlement.ts). Skipping an already skipped application again changes that choice.
  */
-async function setApplicationStatusInCorrection(applicationId: string, next: 'APPROVED' | 'SKIPPED'): Promise<void> {
+async function setApplicationStatusInCorrection(
+  applicationId: string,
+  next: 'APPROVED' | 'SKIPPED',
+  choice: CorrectionSkipChoice = 'CARRY_FORWARD',
+): Promise<void> {
   const found = await prisma.payrollAdjustmentApplication.findUnique({
     where: { id: applicationId },
     select: { payrollWeekStartDate: true },
@@ -545,7 +558,7 @@ async function setApplicationStatusInCorrection(applicationId: string, next: 'AP
       if (!app) {
         throw new CorrectionServiceError('APPLICATION_NOT_FOUND', `Application "${applicationId}" not found`)
       }
-      const allowed = next === 'APPROVED' ? ['PENDING', 'SKIPPED'] : ['PENDING', 'APPROVED']
+      const allowed = next === 'APPROVED' ? ['PENDING', 'SKIPPED'] : ['PENDING', 'APPROVED', 'SKIPPED']
       if (!allowed.includes(app.approvalStatus)) {
         throw new AdjustmentServiceError(
           'INVALID_APPROVAL_STATUS',
@@ -559,11 +572,18 @@ async function setApplicationStatusInCorrection(applicationId: string, next: 'AP
       const entry = snapshot?.find((e) => e.applicationId === applicationId)
 
       if (next === 'SKIPPED') {
+        if (choice === 'CANCEL' && entry?.approvalStatus !== 'APPROVED') {
+          throw new CorrectionServiceError(
+            'CANCEL_NOT_ALLOWED',
+            'Only an adjustment that was applied before this correction can be cancelled here.',
+          )
+        }
         await tx.payrollAdjustmentApplication.update({
           where: { id: applicationId },
           data: {
             approvalStatus: 'SKIPPED',
             skippedAt: new Date(),
+            cancelOnCorrectionApproval: choice === 'CANCEL',
             // An amount an earlier recalculation froze must not stay on a row that is not applied.
             ...(entry?.approvalStatus === 'APPROVED' ? {} : { appliedAmount: entry?.appliedAmount ?? Number(app.payrollAdjustment.amount) }),
           },
@@ -583,7 +603,7 @@ async function setApplicationStatusInCorrection(applicationId: string, next: 'AP
 
         await tx.payrollAdjustmentApplication.update({
           where: { id: applicationId },
-          data: { approvalStatus: 'APPROVED', appliedAt: new Date() },
+          data: { approvalStatus: 'APPROVED', appliedAt: new Date(), cancelOnCorrectionApproval: false },
         })
       }
 
@@ -604,8 +624,9 @@ export async function approveAdjustmentInCorrection(
 
 export async function skipAdjustmentInCorrection(
   applicationId: string,
+  choice: CorrectionSkipChoice = 'CARRY_FORWARD',
 ): Promise<{ applicationId: string; approvalStatus: 'SKIPPED' }> {
-  await setApplicationStatusInCorrection(applicationId, 'SKIPPED')
+  await setApplicationStatusInCorrection(applicationId, 'SKIPPED', choice)
   return { applicationId, approvalStatus: 'SKIPPED' }
 }
 
@@ -1129,6 +1150,37 @@ export async function approveRevision(
       // next week. This runs before the link step below, which would otherwise point them at the new revision.
       await applySettlement(tx, plans, applications, snapshot)
 
+      // Which revision un-applied each application (the adjustment page labels it), and no skip choice outlives
+      // the correction. Only rows that change are written.
+      const reversedIds: string[] = []
+      const appliedIds: string[] = []
+      for (const plan of plans) {
+        if (plan.cell.startsWith('UNAPPLY_')) reversedIds.push(plan.applicationId)
+        else if (plan.cell === 'KEEP' || plan.cell === 'APPLY') appliedIds.push(plan.applicationId)
+      }
+      const byId = new Map(applications.map((app) => [app.id, app]))
+      const toLabel = reversedIds.filter((id) => byId.get(id)!.reversedInRevisionNumber !== revision.revisionNumber)
+      if (toLabel.length > 0) {
+        await tx.payrollAdjustmentApplication.updateMany({
+          where: { id: { in: toLabel } },
+          data: { reversedInRevisionNumber: revision.revisionNumber },
+        })
+      }
+      const toUnlabel = appliedIds.filter((id) => byId.get(id)!.reversedInRevisionNumber != null)
+      if (toUnlabel.length > 0) {
+        await tx.payrollAdjustmentApplication.updateMany({
+          where: { id: { in: toUnlabel } },
+          data: { reversedInRevisionNumber: null },
+        })
+      }
+      const flagged = applications.filter((app) => app.cancelOnCorrectionApproval).map((app) => app.id)
+      if (flagged.length > 0) {
+        await tx.payrollAdjustmentApplication.updateMany({
+          where: { id: { in: flagged } },
+          data: { cancelOnCorrectionApproval: false },
+        })
+      }
+
       // Update adjustment applications to point to the new revision ID.
       // Also link any newly approved applications that weren't previously attached.
       await tx.payrollAdjustmentApplication.updateMany({
@@ -1354,6 +1406,7 @@ export async function abandonCorrection(payrollRunId: string): Promise<AbandonCo
           data: {
             approvalStatus: entry.approvalStatus,
             isReversed: entry.isReversed,
+            cancelOnCorrectionApproval: false,
             approvedAt: entry.approvedAt ? new Date(entry.approvedAt) : null,
             skippedAt: entry.skippedAt ? new Date(entry.skippedAt) : null,
             appliedAt: entry.appliedAt ? new Date(entry.appliedAt) : null,
