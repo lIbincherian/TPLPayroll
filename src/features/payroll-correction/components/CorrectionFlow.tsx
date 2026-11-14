@@ -7,6 +7,7 @@ import type {
   InitiateCorrectionResult,
   CorrectionType,
   CorrectionSessionInfo,
+  CorrectionSkipChoice,
 } from '@/features/payroll-correction/types/correction.types'
 import {
   recalculateAndCreateRevisionAction,
@@ -55,6 +56,8 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
 
   // Local override of application statuses based on live user actions
   const [appStatusOverrides, setAppStatusOverrides] = useState<Partial<Record<string, 'APPROVED' | 'SKIPPED'>>>({})
+  // Local override of the skip choice (cancel the adjustment or carry it forward) for rows applied before the correction
+  const [cancelOverrides, setCancelOverrides] = useState<Partial<Record<string, boolean>>>({})
 
   const correctionOptions: { type: CorrectionType; label: string; description: string }[] = [
     { type: 'ADJUSTMENTS', label: 'Adjustments', description: 'Modify deductions or additions' },
@@ -84,6 +87,7 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
         const res = await approveAdjustmentInCorrectionAction(applicationId)
         if (res.ok) {
           setAppStatusOverrides((prev) => ({ ...prev, [applicationId]: 'APPROVED' }))
+          setCancelOverrides((prev) => ({ ...prev, [applicationId]: false }))
         } else {
           setError(res.error)
         }
@@ -93,13 +97,14 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
     })
   }
 
-  function handleSkipAdjustment(applicationId: string) {
+  function handleSkipAdjustment(applicationId: string, choice: CorrectionSkipChoice = 'CARRY_FORWARD') {
     setError(null)
     startTransition(async () => {
       try {
-        const res = await skipAdjustmentInCorrectionAction(applicationId)
+        const res = await skipAdjustmentInCorrectionAction(applicationId, choice)
         if (res.ok) {
           setAppStatusOverrides((prev) => ({ ...prev, [applicationId]: 'SKIPPED' }))
+          setCancelOverrides((prev) => ({ ...prev, [applicationId]: choice === 'CANCEL' }))
         } else {
           setError(res.error)
         }
@@ -164,6 +169,7 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
   const displayedAdjustments = data.adjustmentApplications.map((a) => ({
     ...a,
     effectiveStatus: appStatusOverrides[a.applicationId] ?? a.approvalStatus,
+    effectiveCancel: cancelOverrides[a.applicationId] ?? a.cancelOnApproval,
   }))
 
   return (
@@ -319,6 +325,45 @@ export function CorrectionFlow({ data, weekLabel, activeSession = null }: Correc
                               </button>
                             )}
                           </div>
+                          {isSkip && adj.wasApplied && (
+                            <div className="mt-2 font-sans">
+                              <div
+                                role="radiogroup"
+                                aria-label={`When this revision is approved, for ${adj.employeeName}'s ${adj.reason}`}
+                                className="inline-flex rounded-lg border border-zinc-200 p-0.5"
+                              >
+                                {([
+                                  { choice: 'CARRY_FORWARD', label: 'Carry forward', selected: !adj.effectiveCancel },
+                                  { choice: 'CANCEL', label: 'Cancel adjustment', selected: adj.effectiveCancel },
+                                ] as const).map((option) => (
+                                  <button
+                                    key={option.choice}
+                                    type="button"
+                                    role="radio"
+                                    aria-checked={option.selected}
+                                    onClick={() => {
+                                      if (!option.selected) handleSkipAdjustment(adj.applicationId, option.choice)
+                                    }}
+                                    disabled={isPending}
+                                    className={`rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                                      option.selected
+                                        ? option.choice === 'CANCEL'
+                                          ? 'bg-rose-50 text-rose-700'
+                                          : 'bg-zinc-100 text-zinc-900'
+                                        : 'text-zinc-500 hover:text-zinc-900'
+                                    }`}
+                                  >
+                                    {option.label}
+                                  </button>
+                                ))}
+                              </div>
+                              <p className="mt-1 max-w-[16rem] text-xs text-zinc-500">
+                                {adj.effectiveCancel
+                                  ? "On approval, the amount goes back and the adjustment stops. It won't be offered again."
+                                  : 'On approval, the amount goes back and the instalment moves to next week.'}
+                              </p>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     )

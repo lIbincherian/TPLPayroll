@@ -17,6 +17,7 @@ import {
   Warning,
   SpinnerGap,
   Prohibit,
+  ArrowCounterClockwise,
 } from '@phosphor-icons/react'
 import { cancelAdjustmentAction } from '@/features/payroll-adjustments/actions/adjustment.actions'
 import type {
@@ -383,10 +384,17 @@ export function AdjustmentDetail({ adjustment: adj }: Props) {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <AppStatusBadge
-                        status={app.approvalStatus}
-                        carriedTo={app.carriedForwardToPayrollWeekStartDate}
-                      />
+                      {app.reversedInRevisionNumber != null ? (
+                        <span className="inline-flex items-center gap-1.5 text-sm text-zinc-600">
+                          <ArrowCounterClockwise size={15} weight="bold" className="text-zinc-400" />
+                          Reversed in revision {app.reversedInRevisionNumber}
+                        </span>
+                      ) : (
+                        <AppStatusBadge
+                          status={app.approvalStatus}
+                          carriedTo={app.carriedForwardToPayrollWeekStartDate}
+                        />
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <span className="text-sm text-zinc-500">

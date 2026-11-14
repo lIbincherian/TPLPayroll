@@ -35,8 +35,8 @@ const data: InitiateCorrectionResult = {
   totals: { totalRegularHours: 40, totalOvertimeHours: 0, totalRegularPay: 2500, totalOvertimePay: 0, totalAdditions: 0, totalDeductions: 0, totalNetPayable: 2500 },
   employees: [],
   adjustmentApplications: [
-    { applicationId: 'app-a', adjustmentId: 'adj-a', employeeId: 'emp-1', employeeName: 'Anita Sharma', employeeCode: 'E-1', adjustmentType: 'DEDUCTION', amount: 500, appliedAmount: 500, reason: 'Advance', approvalStatus: 'PENDING', isReversed: false },
-    { applicationId: 'app-b', adjustmentId: 'adj-b', employeeId: 'emp-2', employeeName: 'Rajesh Iyer', employeeCode: 'E-2', adjustmentType: 'DEDUCTION', amount: 500, appliedAmount: 500, reason: 'Uniform', approvalStatus: 'PENDING', isReversed: false },
+    { applicationId: 'app-a', adjustmentId: 'adj-a', employeeId: 'emp-1', employeeName: 'Anita Sharma', employeeCode: 'E-1', adjustmentType: 'DEDUCTION', amount: 500, appliedAmount: 500, reason: 'Advance', approvalStatus: 'PENDING', isReversed: false, wasApplied: false, cancelOnApproval: false },
+    { applicationId: 'app-b', adjustmentId: 'adj-b', employeeId: 'emp-2', employeeName: 'Rajesh Iyer', employeeCode: 'E-2', adjustmentType: 'DEDUCTION', amount: 500, appliedAmount: 500, reason: 'Uniform', approvalStatus: 'PENDING', isReversed: false, wasApplied: false, cancelOnApproval: false },
   ],
 }
 
@@ -180,5 +180,52 @@ describe('CorrectionFlow: a refused approve or skip is shown, and the row keeps 
 
     expect(await screen.findByText(NOTHING_LEFT, undefined, { timeout: 15000 })).toBeInTheDocument()
     expect(push).not.toHaveBeenCalled()
+  })
+})
+
+describe('CorrectionFlow: skipping an adjustment applied before the correction asks what the approval does', { timeout: 20000 }, () => {
+  const withRows = (rows: Partial<InitiateCorrectionResult['adjustmentApplications'][number]>[]): InitiateCorrectionResult => ({
+    ...data,
+    adjustmentApplications: data.adjustmentApplications.map((item, i) => ({ ...item, ...rows[i] })),
+  })
+
+  it('a skipped, previously applied row offers Carry forward (selected) and Cancel adjustment; Cancel calls the skip with CANCEL', async () => {
+    render(
+      <CorrectionFlow
+        data={withRows([{ approvalStatus: 'SKIPPED', wasApplied: true }, { approvalStatus: 'SKIPPED', wasApplied: false }])}
+        weekLabel="Week 06 Mar - 12 Mar"
+        activeSession={session}
+      />,
+    )
+
+    const carry = within(row('Anita Sharma')).getByRole('radio', { name: 'Carry forward' })
+    const cancel = within(row('Anita Sharma')).getByRole('radio', { name: 'Cancel adjustment' })
+    expect(carry).toHaveAttribute('aria-checked', 'true')
+    expect(cancel).toHaveAttribute('aria-checked', 'false')
+    expect(within(row('Rajesh Iyer')).queryByRole('radio')).toBeNull()
+
+    fireEvent.click(cancel)
+
+    await waitFor(() => expect(skipAdjustmentInCorrectionAction).toHaveBeenCalledWith('app-a', 'CANCEL'), { timeout: 15000 })
+    await waitFor(() => expect(within(row('Anita Sharma')).getByRole('radio', { name: 'Cancel adjustment' })).toHaveAttribute('aria-checked', 'true'), { timeout: 15000 })
+    expect(screen.getByText(/It won't be offered again/)).toBeInTheDocument()
+  })
+
+  it('shows the stored Cancel choice after a reload, and a refused change keeps it with the message', async () => {
+    vi.mocked(skipAdjustmentInCorrectionAction).mockResolvedValue({ ok: false, error: COMPLETED, code: 'ADJUSTMENT_NOT_APPLICABLE' })
+    render(
+      <CorrectionFlow
+        data={withRows([{ approvalStatus: 'SKIPPED', wasApplied: true, cancelOnApproval: true }])}
+        weekLabel="Week 06 Mar - 12 Mar"
+        activeSession={session}
+      />,
+    )
+    expect(within(row('Anita Sharma')).getByRole('radio', { name: 'Cancel adjustment' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(within(row('Anita Sharma')).getByRole('radio', { name: 'Carry forward' }))
+
+    expect(await screen.findByText(COMPLETED, undefined, { timeout: 15000 })).toBeInTheDocument()
+    expect(skipAdjustmentInCorrectionAction).toHaveBeenCalledWith('app-a', 'CARRY_FORWARD')
+    expect(within(row('Anita Sharma')).getByRole('radio', { name: 'Cancel adjustment' })).toHaveAttribute('aria-checked', 'true')
   })
 })

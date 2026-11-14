@@ -93,6 +93,8 @@ export interface AdjustmentApplicationRecord {
   skippedAt: Date | null
   carriedForwardToPayrollWeekStartDate: Date | null
   isReversed: boolean
+  /** The payroll revision whose correction un-applied this application; null when none did. */
+  reversedInRevisionNumber: number | null
 }
 
 // ─── Detail record ────────────────────────────────────────────────────────────
