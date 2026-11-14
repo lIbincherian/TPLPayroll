@@ -230,11 +230,13 @@ export function planSettlement(input: {
         } else if (step === 2) {
           if (running.remaining !== null) running.remaining = round2(Math.min(total, running.remaining + context.original))
           if (running.status === 'COMPLETED') running.status = 'ACTIVE'
-          if (context.final === 'SKIPPED' && paidEmployeeIds.has(app.employeeId) && app.cancelOnCorrectionApproval) {
+          if (context.final !== 'SKIPPED') {
+            plan.cell = 'UNAPPLY_PENDING'
+          } else if (paidEmployeeIds.has(app.employeeId) && app.cancelOnCorrectionApproval) {
             plan.cell = 'UNAPPLY_CANCEL'
             running.status = 'CANCELLED'
           } else {
-            plan.cell = context.final === 'SKIPPED' ? (context.carried ? 'UNAPPLY_SKIP' : 'UNAPPLY_CARRY') : 'UNAPPLY_PENDING'
+            plan.cell = context.carried ? 'UNAPPLY_SKIP' : 'UNAPPLY_CARRY'
           }
         } else if (step === 3) {
           plan.cell = 'KEEP'

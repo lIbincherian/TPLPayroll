@@ -897,7 +897,7 @@ describe('approveAdjustmentInCorrection / skipAdjustmentInCorrection change a st
     expect(appsOf()).toHaveLength(1)
   })
 
-  it('approving an APPROVED application is refused (INVALID_APPROVAL_STATUS) and writes nothing; skipping a SKIPPED one again only records the choice', async () => {
+  it('approving an APPROVED application and skipping a SKIPPED one are refused (INVALID_APPROVAL_STATUS) and write nothing', async () => {
     seedAdjustment(totalBalance(2000), [pending()])
     await beginCorrection(RUN)
     await approveAdjustmentInCorrection('app-1')
@@ -908,9 +908,10 @@ describe('approveAdjustmentInCorrection / skipAdjustmentInCorrection change a st
     expect(again).toMatchObject({ code: 'INVALID_APPROVAL_STATUS', message: 'Application is already approved' })
 
     await skipAdjustmentInCorrection('app-1')
-    await skipAdjustmentInCorrection('app-1')
-    expect(appRow()).toMatchObject({ approvalStatus: 'SKIPPED', cancelOnCorrectionApproval: false })
-    expect(db.log.filter((op) => op === 'payrollAdjustmentApplication.update')).toHaveLength(2) // the two skips above
+    const twice = await skipAdjustmentInCorrection('app-1').catch((e) => e)
+    expect(twice).toMatchObject({ code: 'INVALID_APPROVAL_STATUS', message: 'Application is already skipped' })
+    expect(appRow().approvalStatus).toBe('SKIPPED')
+    expect(db.log.filter((op) => op === 'payrollAdjustmentApplication.update')).toHaveLength(1) // only the one skip above
   })
 
   it('an application that does not exist is APPLICATION_NOT_FOUND', async () => {
@@ -1934,6 +1935,19 @@ describe('a skip the user chose to cancel, and which revision un-applied an appl
     await draft()
     await approveAdjustmentInCorrection('app-1')
     expect(appRow()).toMatchObject({ approvalStatus: 'APPROVED', cancelOnCorrectionApproval: false })
+    expect(sessionDraft()).toBeNull()
+  })
+
+  it('re-skipping a previously applied SKIPPED application changes its choice and clears the draft', async () => {
+    seedAdjustment(totalBalance(1500), [applied()])
+    await beginCorrection(RUN)
+    await skipAdjustmentInCorrection('app-1')
+    await draft()
+    expect(sessionDraft()).toBe(DRAFT)
+
+    await skipAdjustmentInCorrection('app-1', 'CANCEL')
+
+    expect(appRow()).toMatchObject({ approvalStatus: 'SKIPPED', cancelOnCorrectionApproval: true })
     expect(sessionDraft()).toBeNull()
   })
 

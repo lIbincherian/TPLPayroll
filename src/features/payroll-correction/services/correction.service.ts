@@ -558,7 +558,15 @@ async function setApplicationStatusInCorrection(
       if (!app) {
         throw new CorrectionServiceError('APPLICATION_NOT_FOUND', `Application "${applicationId}" not found`)
       }
-      const allowed = next === 'APPROVED' ? ['PENDING', 'SKIPPED'] : ['PENDING', 'APPROVED', 'SKIPPED']
+      const snapshot = Array.isArray(current.adjustmentSnapshotJson)
+        ? parseAdjustmentSnapshot(current.adjustmentSnapshotJson)
+        : null
+      const entry = snapshot?.find((e) => e.applicationId === applicationId)
+      const wasApplied = entry?.approvalStatus === 'APPROVED'
+
+      // A skipped application that was applied before can be skipped again: that changes its choice.
+      const allowed = next === 'APPROVED' ? ['PENDING', 'SKIPPED'] : ['PENDING', 'APPROVED']
+      if (next === 'SKIPPED' && wasApplied) allowed.push('SKIPPED')
       if (!allowed.includes(app.approvalStatus)) {
         throw new AdjustmentServiceError(
           'INVALID_APPROVAL_STATUS',
@@ -566,13 +574,8 @@ async function setApplicationStatusInCorrection(
         )
       }
 
-      const snapshot = Array.isArray(current.adjustmentSnapshotJson)
-        ? parseAdjustmentSnapshot(current.adjustmentSnapshotJson)
-        : null
-      const entry = snapshot?.find((e) => e.applicationId === applicationId)
-
       if (next === 'SKIPPED') {
-        if (choice === 'CANCEL' && entry?.approvalStatus !== 'APPROVED') {
+        if (choice === 'CANCEL' && !wasApplied) {
           throw new CorrectionServiceError(
             'CANCEL_NOT_ALLOWED',
             'Only an adjustment that was applied before this correction can be cancelled here.',
@@ -585,7 +588,7 @@ async function setApplicationStatusInCorrection(
             skippedAt: new Date(),
             cancelOnCorrectionApproval: choice === 'CANCEL',
             // An amount an earlier recalculation froze must not stay on a row that is not applied.
-            ...(entry?.approvalStatus === 'APPROVED' ? {} : { appliedAmount: entry?.appliedAmount ?? Number(app.payrollAdjustment.amount) }),
+            ...(wasApplied ? {} : { appliedAmount: entry?.appliedAmount ?? Number(app.payrollAdjustment.amount) }),
           },
         })
       } else {
@@ -1152,10 +1155,11 @@ export async function approveRevision(
 
       // Which revision un-applied each application (the adjustment page labels it), and no skip choice outlives
       // the correction. Only rows that change are written.
+      const reversedCells = new Set(['UNAPPLY_CARRY', 'UNAPPLY_SKIP', 'UNAPPLY_PENDING', 'UNAPPLY_CANCEL'])
       const reversedIds: string[] = []
       const appliedIds: string[] = []
       for (const plan of plans) {
-        if (plan.cell.startsWith('UNAPPLY_')) reversedIds.push(plan.applicationId)
+        if (reversedCells.has(plan.cell)) reversedIds.push(plan.applicationId)
         else if (plan.cell === 'KEEP' || plan.cell === 'APPLY') appliedIds.push(plan.applicationId)
       }
       const byId = new Map(applications.map((app) => [app.id, app]))
