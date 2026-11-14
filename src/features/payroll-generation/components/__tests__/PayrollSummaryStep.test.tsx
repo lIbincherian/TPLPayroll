@@ -50,6 +50,12 @@ function renderStep() {
 }
 
 describe('PayrollSummaryStep', () => {
+  it('explains under the table that Net Pay is rounded', () => {
+    renderStep()
+
+    expect(screen.getByText('Net Pay is rounded to the whole rupee for each employee.')).toBeInTheDocument()
+  })
+
   it('shows the 16 payment columns in order', () => {
     const table = renderStep()
     const headers = within(table).getAllByRole('columnheader').map((th) => th.textContent)
