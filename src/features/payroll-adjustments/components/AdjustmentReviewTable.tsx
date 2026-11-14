@@ -29,7 +29,7 @@ type RowAction = 'APPROVED' | 'SKIPPED' | 'CANCELLED' | null
 
 const DECISION_LABEL: Record<NonNullable<RowAction>, { label: string; className: string }> = {
   APPROVED: { label: 'Approved', className: 'text-emerald-700' },
-  SKIPPED: { label: 'Skipped', className: 'text-zinc-500' },
+  SKIPPED: { label: 'Skipped', className: 'text-zinc-600' },
   CANCELLED: { label: 'Cancelled', className: 'text-rose-600' },
 }
 
