@@ -1,3 +1,4 @@
+import path from 'path'
 import prisma from '@/lib/prisma'
 import * as XLSX from 'xlsx'
 
@@ -15,6 +16,13 @@ import { formatNetPay, isWholeRupees } from '@/features/payroll-generation/lib/f
 
 let fontsConfigured = false
 
+/** The font for every ₹ amount cell: pdfmake's standard fonts have no ₹ glyph. */
+export const AMOUNT_FONT = 'DejaVuSansMono'
+
+/** Shipped to the server output through outputFileTracingIncludes in next.config.ts. */
+export const AMOUNT_FONT_DIR = path.join(process.cwd(), 'src/features/payroll-reports/assets/fonts')
+
+
 function configureFonts() {
   if (fontsConfigured) return
   
@@ -30,6 +38,10 @@ function configureFonts() {
       bold: 'Courier-Bold',
       italics: 'Courier-Oblique',
       bolditalics: 'Courier-BoldOblique',
+    },
+    [AMOUNT_FONT]: {
+      normal: path.join(AMOUNT_FONT_DIR, 'DejaVuSansMono.ttf'),
+      bold: path.join(AMOUNT_FONT_DIR, 'DejaVuSansMono-Bold.ttf'),
     },
   }
   
@@ -301,11 +313,11 @@ export async function generatePayrollSummaryPdf(payrollRunId: string): Promise<{
     { text: '' },
     { text: salaryFromStr, font: 'Helvetica' },
     { text: salaryToStr, font: 'Helvetica' },
-    { text: formatCurrencyPdf(Number(re.regularPay)), font: 'Courier', alignment: 'right' },
-    { text: formatCurrencyPdf(Number(re.overtimePay)), font: 'Courier', alignment: 'right' },
-    { text: formatCurrencyPdf(Number(re.additions)), font: 'Courier', alignment: 'right' },
-    { text: formatCurrencyPdf(Number(re.deductions)), font: 'Courier', alignment: 'right' },
-    { text: formatNetPayPdf(Number(re.netPayable)), font: 'Courier', alignment: 'right' },
+    { text: formatCurrencyPdf(Number(re.regularPay)), font: AMOUNT_FONT, alignment: 'right' },
+    { text: formatCurrencyPdf(Number(re.overtimePay)), font: AMOUNT_FONT, alignment: 'right' },
+    { text: formatCurrencyPdf(Number(re.additions)), font: AMOUNT_FONT, alignment: 'right' },
+    { text: formatCurrencyPdf(Number(re.deductions)), font: AMOUNT_FONT, alignment: 'right' },
+    { text: formatNetPayPdf(Number(re.netPayable)), font: AMOUNT_FONT, alignment: 'right' },
     { text: '' },
     { text: paymentReference(weekStartISO, re.employee.employeeId), font: 'Courier' },
   ])
@@ -313,11 +325,11 @@ export async function generatePayrollSummaryPdf(payrollRunId: string): Promise<{
   const totalsRow = [
     { text: 'TOTALS', colSpan: 9, style: 'totalsLabel', font: 'Helvetica' },
     {}, {}, {}, {}, {}, {}, {}, {},
-    { text: formatCurrencyPdf(Number(run.totalRegularPay)), font: 'Courier', alignment: 'right', bold: true },
-    { text: formatCurrencyPdf(Number(run.totalOvertimePay)), font: 'Courier', alignment: 'right', bold: true },
-    { text: formatCurrencyPdf(Number(run.totalAdditions)), font: 'Courier', alignment: 'right', bold: true },
-    { text: formatCurrencyPdf(Number(run.totalDeductions)), font: 'Courier', alignment: 'right', bold: true },
-    { text: formatNetPayPdf(Number(run.totalNetPayable)), font: 'Courier', alignment: 'right', bold: true },
+    { text: formatCurrencyPdf(Number(run.totalRegularPay)), font: AMOUNT_FONT, alignment: 'right', bold: true },
+    { text: formatCurrencyPdf(Number(run.totalOvertimePay)), font: AMOUNT_FONT, alignment: 'right', bold: true },
+    { text: formatCurrencyPdf(Number(run.totalAdditions)), font: AMOUNT_FONT, alignment: 'right', bold: true },
+    { text: formatCurrencyPdf(Number(run.totalDeductions)), font: AMOUNT_FONT, alignment: 'right', bold: true },
+    { text: formatNetPayPdf(Number(run.totalNetPayable)), font: AMOUNT_FONT, alignment: 'right', bold: true },
     { text: '', colSpan: 2 },
     {},
   ]
@@ -676,33 +688,41 @@ export async function generatePayrollSlipPdf(slip: PayrollSlipData): Promise<Buf
     ],
     [
       {
-        text: `Regular Pay (${formatHours(slip.regularHours)} hrs x ₹${formatHours(slip.hourlyRateUsed)})`,
+        text: [
+          `Regular Pay (${formatHours(slip.regularHours)} hrs x `,
+          { text: `₹${formatHours(slip.hourlyRateUsed)}`, font: AMOUNT_FONT },
+          ')',
+        ],
         font: 'Helvetica',
       },
-      { text: formatCurrencyPdf(slip.regularPay), font: 'Courier', alignment: 'right' },
+      { text: formatCurrencyPdf(slip.regularPay), font: AMOUNT_FONT, alignment: 'right' },
     ],
     [
       {
-        text: `OT Pay (${formatHours(slip.overtimeHours)} hrs x ₹${formatHours(slip.hourlyRateUsed)})`,
+        text: [
+          `OT Pay (${formatHours(slip.overtimeHours)} hrs x `,
+          { text: `₹${formatHours(slip.hourlyRateUsed)}`, font: AMOUNT_FONT },
+          ')',
+        ],
         font: 'Helvetica',
       },
-      { text: formatCurrencyPdf(slip.overtimePay), font: 'Courier', alignment: 'right' },
+      { text: formatCurrencyPdf(slip.overtimePay), font: AMOUNT_FONT, alignment: 'right' },
     ],
     [
       { text: 'Gross Wage', font: 'Helvetica', bold: true },
-      { text: formatCurrencyPdf(slip.grossPay), font: 'Courier', alignment: 'right', bold: true },
+      { text: formatCurrencyPdf(slip.grossPay), font: AMOUNT_FONT, alignment: 'right', bold: true },
     ],
     [
       { text: 'Additions', font: 'Helvetica' },
-      { text: formatCurrencyPdf(slip.additions), font: 'Courier', alignment: 'right' },
+      { text: formatCurrencyPdf(slip.additions), font: AMOUNT_FONT, alignment: 'right' },
     ],
     [
       { text: 'Deductions', font: 'Helvetica' },
-      { text: `(${formatCurrencyPdf(slip.deductions)})`, font: 'Courier', alignment: 'right' },
+      { text: `(${formatCurrencyPdf(slip.deductions)})`, font: AMOUNT_FONT, alignment: 'right' },
     ],
     [
       { text: 'NET PAYABLE', font: 'Helvetica', bold: true, fontSize: 10 },
-      { text: formatNetPayPdf(slip.netPayable), font: 'Courier', alignment: 'right', bold: true, fontSize: 10 },
+      { text: formatNetPayPdf(slip.netPayable), font: AMOUNT_FONT, alignment: 'right', bold: true, fontSize: 10 },
     ],
   ]
 

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createRequire } from 'node:module'
 
@@ -78,6 +79,7 @@ import {
   generatePayrollSlipPdf,
   generatePayrollSlipsZip,
   markInvoiceSnapshotsCleaned,
+  AMOUNT_FONT,
 } from '@/features/payroll-reports/services/report.service'
 import { ReportServiceError, type PayrollSlipData } from '@/features/payroll-reports/types/report.types'
 
@@ -850,6 +852,68 @@ describe('generatePayrollSlipPdf: API-week (eTimeOffice) layout', () => {
 
     expect(buffer).toBeInstanceOf(Buffer)
     expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-')
+  })
+})
+
+// ── PDF amount font: pdfmake's standard fonts have no ₹ glyph ──
+
+/** Builds a PDF for real and returns the document definition pdfmake was handed. */
+async function captureDocDef(build: () => Promise<unknown>): Promise<unknown> {
+  const pdfmake = nodeRequire('pdfmake')
+  const original = pdfmake.createPdf
+  let captured: unknown = null
+  const spy = vi.spyOn(pdfmake, 'createPdf').mockImplementation(function (this: unknown, docDef: unknown, ...rest: unknown[]) {
+    captured = structuredClone(docDef)
+    return original.call(this, docDef, ...rest)
+  })
+  try {
+    await build()
+  } finally {
+    spy.mockRestore()
+  }
+  return captured
+}
+
+/** Every node in a document definition whose own text contains ₹: amount cells and the hourly rate in a slip label. */
+function amountCells(node: unknown, inline = false): Array<PdfCell & { inline: boolean }> {
+  if (Array.isArray(node)) return node.flatMap((child) => amountCells(child, inline))
+  if (!node || typeof node !== 'object') return []
+  const cell = node as PdfCell
+  const own = typeof cell.text === 'string' && cell.text.includes('₹') ? [{ ...cell, inline }] : []
+  // A node inside another node's text array is a run of a sentence, not a cell to align.
+  const children = Object.entries(node).flatMap(([key, value]) => amountCells(value, inline || (key === 'text' && Array.isArray(value))))
+  return [...own, ...children]
+}
+
+describe('PDF amount font', () => {
+  it('draws every ₹ amount in the summary PDF with the rupee font', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makePayrollRun() as never)
+
+    const cells = amountCells(await captureDocDef(() => generatePayrollSummaryPdf('run-uuid-1')))
+
+    expect(cells.length).toBeGreaterThan(0)
+    expect(cells.filter((c) => c.font !== AMOUNT_FONT)).toEqual([])
+    expect(cells.filter((c) => c.alignment !== 'right' && !c.inline)).toEqual([])
+  })
+
+  it('draws every ₹ amount in a payslip with the rupee font', async () => {
+    const cells = amountCells(await captureDocDef(() => generatePayrollSlipPdf(makeApiSlipData())))
+
+    expect(cells.length).toBeGreaterThan(0)
+    expect(cells.filter((c) => c.font !== AMOUNT_FONT)).toEqual([])
+    expect(cells.filter((c) => c.alignment !== 'right' && !c.inline)).toEqual([])
+  })
+
+  it('registers a font file that has a glyph for ₹ (U+20B9)', async () => {
+    await generatePayrollSlipPdf(makeApiSlipData())
+    const registered = nodeRequire('pdfmake').fonts[AMOUNT_FONT] as { normal: string; bold: string }
+    const fontkit = nodeRequire('fontkit') as {
+      openSync: (path: string) => { hasGlyphForCodePoint: (codePoint: number) => boolean }
+    }
+
+    for (const file of [registered.normal, registered.bold]) {
+      expect(fontkit.openSync(file).hasGlyphForCodePoint(0x20b9)).toBe(true)
+    }
   })
 })
 
