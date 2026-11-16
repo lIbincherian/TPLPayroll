@@ -14,6 +14,7 @@ function app(
   weekStart: string,
   approvalStatus: AdjustmentApplicationRecord['approvalStatus'],
   carriedTo: string | null = null,
+  reversedInRevisionNumber: number | null = null,
 ): AdjustmentApplicationRecord {
   return {
     id,
@@ -28,6 +29,7 @@ function app(
     skippedAt: approvalStatus === 'SKIPPED' ? new Date(weekStart) : null,
     carriedForwardToPayrollWeekStartDate: carriedTo ? new Date(carriedTo) : null,
     isReversed: false,
+    reversedInRevisionNumber,
   }
 }
 
@@ -91,6 +93,22 @@ describe('AdjustmentDetail: Application History labels', () => {
     expect(rows[rows.length - 1].getAttribute('data-testid')).toBe('history-cancelled-entry')
     expect(rows[rows.length - 1].textContent).toContain('Cancelled')
     expect(within(historyTable()).queryByText('Pending')).toBeNull()
+  })
+
+  it('labels a row a correction un-applied with its revision, in place of the status', () => {
+    render(
+      <AdjustmentDetail
+        adjustment={adjustment('CANCELLED', [
+          app('a1', '2025-10-09', 'SKIPPED', '2025-10-16', 2),
+          app('a2', '2025-10-16', 'APPROVED'),
+        ])}
+      />,
+    )
+    const history = within(historyTable())
+    expect(history.getByText('Reversed in revision 2')).toBeTruthy()
+    expect(history.queryByText('Skipped')).toBeNull()
+    expect(history.getByText('Carried to week of 16 Oct 2025')).toBeTruthy()
+    expect(history.getByText('Approved')).toBeTruthy()
   })
 
   it('shows the Cancelled entry even when no applications remain', () => {

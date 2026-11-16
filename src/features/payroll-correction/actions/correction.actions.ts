@@ -23,6 +23,7 @@ import type {
   RevisedEmployeeRow,
   StartAttendanceCorrectionInput,
   AbandonCorrectionResult,
+  CorrectionSkipChoice,
 } from '@/features/payroll-correction/types/correction.types'
 import { AttendanceSyncError } from '@/features/attendance-sync/types/attendance-sync.types'
 import { AdjustmentServiceError } from '@/features/payroll-adjustments/types/adjustment.types'
@@ -131,9 +132,10 @@ export async function approveAdjustmentInCorrectionAction(
 
 export async function skipAdjustmentInCorrectionAction(
   applicationId: string,
+  choice: CorrectionSkipChoice = 'CARRY_FORWARD',
 ): Promise<ActionResult<{ applicationId: string; approvalStatus: 'SKIPPED' }>> {
   try {
-    const result = await skipAdjustmentInCorrection(applicationId)
+    const result = await skipAdjustmentInCorrection(applicationId, choice)
     return ok(result)
   } catch (e) {
     return handleError(e)

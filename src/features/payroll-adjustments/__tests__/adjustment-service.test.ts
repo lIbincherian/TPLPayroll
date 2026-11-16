@@ -147,6 +147,8 @@ const makeApplication = (
   skippedAt: null,
   carriedForwardToPayrollWeekStartDate: null,
   isReversed: false,
+  cancelOnCorrectionApproval: false,
+  reversedInRevisionNumber: null,
   ...overrides,
 })
 
@@ -1530,6 +1532,18 @@ describe('Deduplication and Snowball Prevention', () => {
     // THEN it should only return one review item, to keep the UI clean
     expect(results).toHaveLength(1)
     expect(results[0].applicationId).toBe('app-uuid-1')
+  })
+
+  it('getAdjustmentsForWeekReview never offers an application of a CANCELLED adjustment', async () => {
+    vi.mocked(prisma.payrollAdjustmentApplication.findMany).mockResolvedValue([] as never)
+
+    await getAdjustmentsForWeekReview(new Date('2025-03-06'))
+
+    expect(prisma.payrollAdjustmentApplication.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ approvalStatus: 'PENDING', payrollAdjustment: { status: { not: 'CANCELLED' } } }),
+      }),
+    )
   })
 })
 

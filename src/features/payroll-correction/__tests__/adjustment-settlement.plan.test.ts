@@ -1060,3 +1060,38 @@ describe('invariant: the balance stays between 0 and the total', () => {
     expect(single(app, { snapshot: [entry('app-1', 'PENDING')] }).newAmount).toBe(500)
   })
 })
+
+// ─── UNAPPLY_CANCEL ──────────────────────────────────────────────────────────
+
+describe('planSettlement: a skip the user chose to cancel (UNAPPLY_CANCEL)', () => {
+  const adj = totalBalance(1500)
+  const skippedNow = (over: Row = {}) =>
+    application(adj, { approvalStatus: 'SKIPPED', appliedAmount: 500, cancelOnCorrectionApproval: true, ...over })
+  const snapshot = [entry('app-1', 'APPROVED')]
+
+  it('applied before, skipped now with the flag, employee paid: UNAPPLY_CANCEL, N = 0, O = 500 given back', () => {
+    expect(single(skippedNow(), { snapshot })).toMatchObject({ cell: 'UNAPPLY_CANCEL', newAmount: 0, originalAmount: 500 })
+  })
+
+  it('the flag unset: UNAPPLY_CARRY as before', () => {
+    expect(single(skippedNow({ cancelOnCorrectionApproval: false }), { snapshot })).toMatchObject({ cell: 'UNAPPLY_CARRY', newAmount: 0 })
+  })
+
+  it('the employee is left out of the draft: UNAPPLY_CARRY even with the flag set', () => {
+    expect(single(skippedNow(), { snapshot, paid: [] })).toMatchObject({ cell: 'UNAPPLY_CARRY', newAmount: 0 })
+  })
+
+  it('the adjustment is cancelled for the rest of the plan: another application approved now cannot be applied', () => {
+    const other = application(adj, { id: 'app-2', approvalStatus: 'APPROVED', appliedAmount: 500 })
+    const result = plan([skippedNow(), other], { snapshot: [...snapshot, entry('app-2', 'PENDING')] })
+    expect(result.plans.map((p) => p.cell)).toEqual(['UNAPPLY_CANCEL', 'APPLY'])
+    expect(result.problems).toEqual([{ applicationId: 'app-2', employeeId: 'emp-1', reason: 'ADJUSTMENT_NOT_ACTIVE' }])
+  })
+
+  it('draftMatchesPlan: a draft that deducts the cancelled amount is refused, one that deducts nothing matches', () => {
+    const app = skippedNow()
+    const { plans, problems } = plan([app], { snapshot })
+    expect(draftMatchesPlan(plans, problems, [app], [{ employeeId: 'emp-1', additions: 0, deductions: 500 }])).toBe(false)
+    expect(draftMatchesPlan(plans, problems, [app], [{ employeeId: 'emp-1', additions: 0, deductions: 0 }])).toBe(true)
+  })
+})

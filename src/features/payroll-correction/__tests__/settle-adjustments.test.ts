@@ -116,6 +116,8 @@ function app(over: Row = {}): Row {
     skippedAt: null,
     carriedForwardToPayrollWeekStartDate: null,
     isReversed: false,
+    cancelOnCorrectionApproval: false,
+    reversedInRevisionNumber: null,
     ...over,
   }
 }
@@ -1876,5 +1878,103 @@ describe('invariants after a correction is approved', () => {
 
     expectBalanceConsistent()
     expectCarriedOnce(count)
+  })
+})
+
+// ─── Cancel adjustment, and the reversed label ────────────────────────────────
+
+describe('a skip the user chose to cancel, and which revision un-applied an application', () => {
+  const sessionDraft = () => db.rows('payrollCorrectionSession').at(-1)!.draftRevisionId
+
+  it('UNAPPLY_CANCEL: the balance comes back, the application is skipped with no carry, the adjustment is CANCELLED, PENDING rows elsewhere go, APPROVED ones stay', async () => {
+    seedAdjustment(totalBalance(1000), [
+      earlier('app-wk1'),
+      applied(),
+      waiting({ id: 'app-next' }),
+      app({ id: 'app-later', approvalStatus: 'PENDING', payrollRunId: null, appliedAt: null, payrollWeekStartDate: new Date('2025-07-24T00:00:00.000Z'), payrollWeekEndDate: new Date('2025-07-30T00:00:00.000Z') }),
+    ])
+
+    await beginCorrection(RUN)
+    await skipAdjustmentInCorrection('app-1', 'CANCEL')
+    expect(appRow()).toMatchObject({ approvalStatus: 'SKIPPED', cancelOnCorrectionApproval: true })
+    await draft()
+    await approveRevision(DRAFT)
+    expectApproved(true)
+
+    expect(adjRow()).toMatchObject({ status: 'CANCELLED', remainingBalance: 1500, skippedCarryForwardCount: 0 })
+    expect(appRow()).toMatchObject({
+      approvalStatus: 'SKIPPED',
+      carriedForwardToPayrollWeekStartDate: null,
+      cancelOnCorrectionApproval: false,
+      reversedInRevisionNumber: 2,
+    })
+    expect(appsOf().map((r) => r.id).sort()).toEqual(['app-1', 'app-wk1'])
+    expect(appRow('app-wk1')).toMatchObject({ approvalStatus: 'APPROVED' })
+    expect(db.log).not.toContain('payrollAdjustmentApplication.create')
+  })
+
+  it('CANCEL is refused for an application that was not APPROVED before the correction', async () => {
+    seedAdjustment(totalBalance(2000), [pending()])
+    await beginCorrection(RUN)
+
+    await expect(skipAdjustmentInCorrection('app-1', 'CANCEL')).rejects.toMatchObject({ code: 'CANCEL_NOT_ALLOWED' })
+    expect(appRow()).toMatchObject({ approvalStatus: 'PENDING' })
+  })
+
+  it('approving after a Cancel skip clears the flag; each click clears the draft', async () => {
+    seedAdjustment(totalBalance(1500), [applied()])
+    await beginCorrection(RUN)
+    await draft()
+    await skipAdjustmentInCorrection('app-1', 'CANCEL')
+    expect(sessionDraft()).toBeNull()
+    await draft()
+    await skipAdjustmentInCorrection('app-1', 'CARRY_FORWARD')
+    expect(appRow()).toMatchObject({ cancelOnCorrectionApproval: false })
+    expect(sessionDraft()).toBeNull()
+    await skipAdjustmentInCorrection('app-1', 'CANCEL')
+    await draft()
+    await approveAdjustmentInCorrection('app-1')
+    expect(appRow()).toMatchObject({ approvalStatus: 'APPROVED', cancelOnCorrectionApproval: false })
+    expect(sessionDraft()).toBeNull()
+  })
+
+  it('re-skipping a previously applied SKIPPED application changes its choice and clears the draft', async () => {
+    seedAdjustment(totalBalance(1500), [applied()])
+    await beginCorrection(RUN)
+    await skipAdjustmentInCorrection('app-1')
+    await draft()
+    expect(sessionDraft()).toBe(DRAFT)
+
+    await skipAdjustmentInCorrection('app-1', 'CANCEL')
+
+    expect(appRow()).toMatchObject({ approvalStatus: 'SKIPPED', cancelOnCorrectionApproval: true })
+    expect(sessionDraft()).toBeNull()
+  })
+
+  it('abandoning after a Cancel skip leaves the flag false and the adjustment and its applications as before', async () => {
+    seedAdjustment(totalBalance(1500), [applied(), waiting()])
+    const adjustmentsBefore = db.rows('payrollAdjustment')
+    await beginCorrection(RUN)
+    await skipAdjustmentInCorrection('app-1', 'CANCEL')
+
+    await abandonCorrection(RUN)
+
+    expect(db.rows('payrollAdjustment')).toEqual(adjustmentsBefore)
+    expect(appRow()).toMatchObject({ approvalStatus: 'APPROVED', cancelOnCorrectionApproval: false })
+    expect(appsOf()).toHaveLength(2)
+  })
+
+  it('UNAPPLY_CARRY and UNAPPLY_PENDING set the revision number; KEEP and APPLY clear an earlier one', async () => {
+    seedAdjustment(totalBalance(1500, { id: 'adj-carry' }), [applied({ id: 'carry', payrollAdjustmentId: 'adj-carry' })])
+    seedAdjustment(totalBalance(1500, { id: 'adj-pend', employeeId: 'emp-2' }), [applied({ id: 'pend', payrollAdjustmentId: 'adj-pend', employeeId: 'emp-2' })])
+    seedAdjustment(totalBalance(1500, { id: 'adj-keep' }), [applied({ id: 'keep', payrollAdjustmentId: 'adj-keep', reversedInRevisionNumber: 1 })])
+    seedAdjustment(totalBalance(2000, { id: 'adj-apply', employeeId: 'emp-2' }), [pending({ id: 'apply', payrollAdjustmentId: 'adj-apply', employeeId: 'emp-2', reversedInRevisionNumber: 1 })])
+
+    await correct({ skip: ['carry'], approve: ['keep', 'apply'] })
+
+    expect(appRow('carry')).toMatchObject({ approvalStatus: 'SKIPPED', reversedInRevisionNumber: 2 })
+    expect(appRow('pend')).toMatchObject({ approvalStatus: 'PENDING', reversedInRevisionNumber: 2 })
+    expect(appRow('keep')).toMatchObject({ approvalStatus: 'APPROVED', reversedInRevisionNumber: null })
+    expect(appRow('apply')).toMatchObject({ approvalStatus: 'APPROVED', reversedInRevisionNumber: null })
   })
 })

@@ -34,7 +34,14 @@ export interface CorrectionAdjustmentItem {
   reason: string
   approvalStatus: 'PENDING' | 'APPROVED' | 'SKIPPED'
   isReversed: boolean
+  /** The application was APPROVED before this correction (from the session's snapshot). */
+  wasApplied: boolean
+  /** Skipped with "Cancel adjustment": approving the revision cancels the adjustment. */
+  cancelOnApproval: boolean
 }
+
+/** What skipping an application that was applied before the correction does when the revision is approved. */
+export type CorrectionSkipChoice = 'CARRY_FORWARD' | 'CANCEL'
 
 // ─── Correction session ───────────────────────────────────────────────────────
 
@@ -147,6 +154,7 @@ export type CorrectionErrorCode =
   | 'REVISION_NOT_DRAFT'
   | 'REVISION_STALE'
   | 'ADJUSTMENT_NOT_APPLICABLE'
+  | 'CANCEL_NOT_ALLOWED'
 
 export class CorrectionServiceError extends Error {
   constructor(
