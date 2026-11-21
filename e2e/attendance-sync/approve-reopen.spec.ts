@@ -73,7 +73,8 @@ test.describe('E2E-17: Zero-hour employees are left out', () => {
     await expect(page.getByTestId('approval-employees')).toHaveText('1')
     const idleRow = page.getByTestId(`left-out-${IDLE}`)
     await expect(idleRow).toBeVisible()
-    await expect(idleRow).toContainText('Zero hours')
+    // Approving marks the idle active employee inactive (issue #35), and the row says so.
+    await expect(idleRow).toContainText('No punches, marked inactive')
     const leftOut = await leftOutCount()
     await expect(page.getByTestId('approval-left-out')).toContainText(`${leftOut} employee${leftOut === 1 ? '' : 's'} left out, no payslip`)
     await page.getByTestId('approve-confirm').click()

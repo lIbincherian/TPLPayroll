@@ -35,7 +35,7 @@ test('the cards move by exactly what this spec adds, whatever the base holds', a
   const before = await readCards(page)
 
   // Two active employees and an approved payroll run in the last completed week (the newest run, so it is
-  // the "latest payroll total": 6,950.00), one active employee with one pending adjustment, one week in
+  // the "latest payroll total": 6,950), one active employee with one pending adjustment, one week in
   // review and one whose sync failed.
   // approved "now": newer than any approval the base holds, so this run is the latest payroll total
   await seedApprovedPayrollData({ weekStartISO: completed.start, approvedAt: new Date() })
@@ -47,7 +47,7 @@ test('the cards move by exactly what this spec adds, whatever the base holds', a
   expect(after.active).toBe(before.active + 3)
   expect(after.awaitingReview).toBe(before.awaitingReview + 2)
   expect(after.adjustments).toBe(before.adjustments + 1)
-  expect(after.latestTotal).toBe('₹6,950.00')
+  expect(after.latestTotal).toBe('₹6,950')
 
   // Cleanup removes exactly what was added: the cards are back to what the base alone gave
   await cleanupTestData()

@@ -25,6 +25,9 @@ import { CorrectionServiceError } from '@/features/payroll-correction/types/corr
 //   APPLY           not applied, APPROVED paid                      R - N            amount = N; a carry-forward is taken back
 //   UNAPPLY_CARRY   applied, SKIPPED or left out, not carried       R + O (cap)      SKIPPED, carried to the next week, counted
 //   UNAPPLY_SKIP    applied, SKIPPED, already carried               R + O (cap)      SKIPPED, nothing carried
+//   UNAPPLY_CANCEL  applied, SKIPPED paid, the user chose "Cancel   R + O (cap)      SKIPPED, nothing carried; the
+//                   adjustment" (cancelOnCorrectionApproval)                         adjustment's PENDING applications
+//                                                                                    are deleted and it is CANCELLED
 //   UNAPPLY_PENDING applied, PENDING paid                           R + O (cap)      stays PENDING
 //   CARRY           not applied, SKIPPED or left out, not carried   none             SKIPPED, carried, counted
 //   SKIP_ONLY       not applied, SKIPPED, already carried (or it    none             SKIPPED, nothing carried
@@ -33,6 +36,10 @@ import { CorrectionServiceError } from '@/features/payroll-correction/types/corr
 //   NONE            not applied, PENDING paid                       none             unchanged
 //   INERT           adjustment cancelled, or a reversed approved    none             unchanged
 //                   row with no snapshot
+//
+// Once an UNAPPLY_CANCEL has given the balance back, the running status of its adjustment is CANCELLED, so the
+// adjustment's later applications in the plan are never applied (APPLY is a problem) or carried (SKIP_ONLY), and
+// `applySettlement` writes nothing more for it.
 
 /** What an adjustment application looked like before the correction reset it. */
 export interface AdjustmentSnapshotEntry {
@@ -65,6 +72,7 @@ export type SettlementCell =
   | 'APPLY'
   | 'UNAPPLY_CARRY'
   | 'UNAPPLY_SKIP'
+  | 'UNAPPLY_CANCEL'
   | 'UNAPPLY_PENDING'
   | 'CARRY'
   | 'SKIP_ONLY'
@@ -140,7 +148,8 @@ function stepOf(ctx: Context, hasSnapshot: boolean): 1 | 2 | 3 | 4 | 5 | 6 {
  * order (by id inside each step), so a give-back feeds the cap of an approval of the same adjustment:
  *
  *   1. INERT: the adjustment is CANCELLED, or there is no snapshot and the row is APPROVED and reversed.
- *   2. applied before, not APPROVED now: the balance goes back (capped at the total).
+ *   2. applied before, not APPROVED now: the balance goes back (capped at the total). A paid employee's skip the
+ *      user chose to cancel (UNAPPLY_CANCEL) then makes the adjustment CANCELLED for the steps after it.
  *   3. applied before, APPROVED now: KEEP, N = O.
  *   4. not applied before, APPROVED now: APPLY, capped at what is left; a problem when it cannot be.
  *   5. not applied before, SKIPPED now: CARRY, or SKIP_ONLY when already carried, skipped before this correction,
@@ -221,7 +230,14 @@ export function planSettlement(input: {
         } else if (step === 2) {
           if (running.remaining !== null) running.remaining = round2(Math.min(total, running.remaining + context.original))
           if (running.status === 'COMPLETED') running.status = 'ACTIVE'
-          plan.cell = context.final === 'SKIPPED' ? (context.carried ? 'UNAPPLY_SKIP' : 'UNAPPLY_CARRY') : 'UNAPPLY_PENDING'
+          if (context.final !== 'SKIPPED') {
+            plan.cell = 'UNAPPLY_PENDING'
+          } else if (paidEmployeeIds.has(app.employeeId) && app.cancelOnCorrectionApproval) {
+            plan.cell = 'UNAPPLY_CANCEL'
+            running.status = 'CANCELLED'
+          } else {
+            plan.cell = context.carried ? 'UNAPPLY_SKIP' : 'UNAPPLY_CARRY'
+          }
         } else if (step === 3) {
           plan.cell = 'KEEP'
           plan.newAmount = context.original
@@ -396,8 +412,24 @@ export async function applySettlement(
   const byId = new Map(applications.map((app) => [app.id, app]))
   const entries = new Map((snapshot ?? []).map((entry) => [entry.applicationId, entry]))
   const written = new Set<string>()
+  const cancelled = new Set<string>()
 
   for (const plan of plans) {
+    // The adjustment was cancelled by an earlier plan: its PENDING applications are gone and nothing is applied or
+    // carried. Another application it had applied still gives its amount back (the plan counted it) and is skipped.
+    if (cancelled.has(plan.adjustmentId)) {
+      if (plan.cell === 'UNAPPLY_CARRY' || plan.cell === 'UNAPPLY_SKIP') {
+        await tx.payrollAdjustmentApplication.update({
+          where: { id: plan.applicationId },
+          data: { approvalStatus: 'SKIPPED', skippedAt: new Date() },
+        })
+      }
+      if (plan.cell === 'UNAPPLY_CARRY' || plan.cell === 'UNAPPLY_SKIP' || plan.cell === 'UNAPPLY_PENDING') {
+        const current = await tx.payrollAdjustment.findUniqueOrThrow({ where: { id: plan.adjustmentId } })
+        await undoApprovalOnAdjustment(tx, { appliedAmount: plan.originalAmount }, current)
+      }
+      continue
+    }
     if (plan.cell === 'KEEP' || plan.cell === 'NONE' || plan.cell === 'INERT') continue
     const app = byId.get(plan.applicationId)!
 
@@ -439,6 +471,25 @@ export async function applySettlement(
           data: { approvalStatus: 'SKIPPED', skippedAt: new Date() },
         })
         await undoApprovalOnAdjustment(tx, { appliedAmount: plan.originalAmount }, adj)
+        break
+      case 'UNAPPLY_CANCEL':
+        // Applied before, skipped now, and the user chose to stop the adjustment: the balance goes back, nothing is
+        // carried, and the adjustment is cancelled the way the adjustment page does it (APPROVED applications stay).
+        await undoApprovalOnAdjustment(tx, { appliedAmount: plan.originalAmount }, adj)
+        await tx.payrollAdjustmentApplication.update({
+          where: { id: app.id },
+          data: {
+            approvalStatus: 'SKIPPED',
+            skippedAt: new Date(),
+            carriedForwardToPayrollWeekStartDate: null,
+            cancelOnCorrectionApproval: false,
+          },
+        })
+        await tx.payrollAdjustmentApplication.deleteMany({
+          where: { payrollAdjustmentId: plan.adjustmentId, approvalStatus: 'PENDING' },
+        })
+        await tx.payrollAdjustment.update({ where: { id: plan.adjustmentId }, data: { status: 'CANCELLED' } })
+        cancelled.add(plan.adjustmentId)
         break
       case 'UNAPPLY_PENDING':
         await undoApprovalOnAdjustment(tx, { appliedAmount: plan.originalAmount }, adj)

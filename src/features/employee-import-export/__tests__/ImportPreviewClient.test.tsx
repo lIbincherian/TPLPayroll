@@ -41,7 +41,6 @@ function makeRowData(employeeId: string, employeeName: string): ImportRowData {
     aadhaarId: null,
     policeVerificationId: null,
     salary: 12000,
-    hourlyRate: 62.5,
     phone: null,
     dateOfBirth: null,
     healthCardId: null,
@@ -67,7 +66,6 @@ function makeInvalidRow(
     partialData: {
       designation: 'Guard',
       salary: 12000,
-      hourlyRate: 62.5,
       isActive: true,
       ...partialData,
     },
@@ -86,7 +84,6 @@ function setupSessionStorage(overrides: Partial<ParseImportResult> = {}): ParseI
         employeeName: 'Suresh Narayanan',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       }),
     ],
@@ -303,9 +300,9 @@ describe('ImportPreviewClient', () => {
           { rowNumber: 3, action: 'UPDATE', data: makeRowData('EMP-002', 'Bob') },
         ],
         invalidRows: [
-          makeInvalidRow(5, ['MISSING_EMPLOYEE_ID'], { employeeName: 'Suresh', salary: 12000, hourlyRate: 62.5, isActive: true }),
-          makeInvalidRow(6, ['MISSING_EMPLOYEE_ID'], { employeeName: 'Priya', salary: 12000, hourlyRate: 62.5, isActive: true }),
-          makeInvalidRow(7, ['MISSING_EMPLOYEE_ID'], { employeeName: 'Ravi', salary: 12000, hourlyRate: 62.5, isActive: true }),
+          makeInvalidRow(5, ['MISSING_EMPLOYEE_ID'], { employeeName: 'Suresh', salary: 12000, isActive: true }),
+          makeInvalidRow(6, ['MISSING_EMPLOYEE_ID'], { employeeName: 'Priya', salary: 12000, isActive: true }),
+          makeInvalidRow(7, ['MISSING_EMPLOYEE_ID'], { employeeName: 'Ravi', salary: 12000, isActive: true }),
         ],
         duplicateIdRows: [],
       })

@@ -57,6 +57,18 @@ export interface DiscardSummary {
   edits: DiscardedEdit[]
 }
 
+/** An employee whose status a week's approval changed. `employeeId` is the Employee ID code, `id` the database id. */
+export interface StatusChangedEmployee {
+  id: string
+  employeeId: string
+  employeeName: string
+}
+
+export interface StatusChangeSummary {
+  markedInactive: StatusChangedEmployee[]
+  reactivated: StatusChangedEmployee[]
+}
+
 export type SyncOutcome =
   | { outcome: 'LOADED'; punchCount: number; discarded: DiscardSummary | null }
   | { outcome: 'FAILED'; code: SyncFailureCode; message: string }
@@ -262,6 +274,8 @@ export interface ApprovalSummary {
     reason: 'ZERO_HOURS' | 'REJECTED'
   }>
   changedDaysInCorrection?: number
+  /** Live week in review: the employee status changes approving it would make. */
+  statusChanges?: StatusChangeSummary
 }
 
 // ─── Week list ────────────────────────────────────────────────────────────────

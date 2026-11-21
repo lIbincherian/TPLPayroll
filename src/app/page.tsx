@@ -15,6 +15,7 @@ import {
   countPendingAdjustmentApprovals,
 } from '@/services/dashboard.service'
 import { Suspense } from 'react'
+import { formatNetPay } from '@/features/payroll-generation/lib/format-net-pay'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,18 +23,6 @@ export const dynamic = 'force-dynamic'
 export const metadata = {
   title: 'Dashboard — TPL Payroll',
   description: 'Overview of key operational metrics for the current payroll period.',
-}
-
-/**
- * Formats a number as Indian Rupee currency string.
- * Example: 145230.5 → "₹1,45,230.50"
- */
-function formatINR(amount: number): string {
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    minimumFractionDigits: 2,
-  }).format(amount)
 }
 
 async function DashboardMetrics() {
@@ -70,7 +59,7 @@ async function DashboardMetrics() {
         />
         <DashboardCard
           label="Latest Payroll Total"
-          value={payrollTotal === 0 ? '₹0.00' : formatINR(payrollTotal)}
+          value={`₹${formatNetPay(payrollTotal)}`}
           icon={<CurrencyInrIcon size={20} weight="regular" />}
           href="/payroll"
           index={1}

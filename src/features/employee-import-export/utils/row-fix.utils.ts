@@ -22,18 +22,11 @@ export function applyRowFix(
   const designation =
     (formValues.designation?.trim() || invalidRow.partialData.designation) ?? null
 
-  // Salary
+  // Daily wage
   let salary: number | null = invalidRow.partialData.salary ?? null
   if (formValues.salary !== undefined) {
     const parsed = Number(formValues.salary)
     salary = !isNaN(parsed) && parsed >= 0 ? parsed : null
-  }
-
-  // Hourly rate
-  let hourlyRate: number | null = invalidRow.partialData.hourlyRate ?? null
-  if (formValues.hourlyRate !== undefined) {
-    const parsed = Number(formValues.hourlyRate)
-    hourlyRate = !isNaN(parsed) && parsed >= 0 ? parsed : null
   }
 
   // isActive
@@ -48,9 +41,6 @@ export function applyRowFix(
   if (!designation) errors.push('MISSING_DESIGNATION')
   if (salary === null) {
     errors.push(formValues.salary !== undefined ? 'INVALID_SALARY' : 'MISSING_SALARY')
-  }
-  if (hourlyRate === null) {
-    errors.push(formValues.hourlyRate !== undefined ? 'INVALID_HOURLY_RATE' : 'MISSING_HOURLY_RATE')
   }
   if (isActive === null) errors.push('MISSING_ACTIVE')
 
@@ -72,7 +62,6 @@ export function applyRowFix(
       aadhaarId: invalidRow.partialData.aadhaarId ?? null,
       policeVerificationId: invalidRow.partialData.policeVerificationId ?? null,
       salary: salary!,
-      hourlyRate: hourlyRate!,
       phone: invalidRow.partialData.phone ?? null,
       dateOfBirth: invalidRow.partialData.dateOfBirth ?? null,
       healthCardId: invalidRow.partialData.healthCardId ?? null,

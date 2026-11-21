@@ -57,7 +57,6 @@ function makeRowData(employeeId: string, employeeName: string): ImportRowData {
     aadhaarId: null,
     policeVerificationId: null,
     salary: 12000,
-    hourlyRate: 62.5,
     phone: null,
     dateOfBirth: null,
     healthCardId: null,
@@ -83,7 +82,6 @@ function makeInvalidRow(
     partialData: {
       designation: 'Guard',
       salary: 12000,
-      hourlyRate: 62.5,
       isActive: true,
       ...partialData,
     },
@@ -102,7 +100,6 @@ function setupSessionStorage(overrides: Partial<ParseImportResult> = {}): ParseI
         employeeName: 'Suresh Narayanan',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       }),
     ],
@@ -188,7 +185,6 @@ describe('E2E-E01: Manual Row Fix for Invalid Import Rows', () => {
         makeInvalidRow(5, ['MISSING_EMPLOYEE_NAME', 'INVALID_SALARY'], {
           employeeId: 'EMP-010',
           designation: 'Guard',
-          hourlyRate: 62.5,
           isActive: true,
         }),
       ],
@@ -205,7 +201,7 @@ describe('E2E-E01: Manual Row Fix for Invalid Import Rows', () => {
 
     // Only the errored fields should be editable
     expect(within(dialog).getByLabelText(/employee name/i)).toBeInTheDocument()
-    expect(within(dialog).getByLabelText(/salary/i)).toBeInTheDocument()
+    expect(within(dialog).getByLabelText(/daily wage/i)).toBeInTheDocument()
     // Employee ID is NOT in errors — no input for it
     expect(within(dialog).queryByLabelText(/employee id/i)).not.toBeInTheDocument()
 
@@ -213,7 +209,7 @@ describe('E2E-E01: Manual Row Fix for Invalid Import Rows', () => {
     fireEvent.change(within(dialog).getByLabelText(/employee name/i), {
       target: { value: 'Juan dela Cruz' },
     })
-    fireEvent.change(within(dialog).getByLabelText(/salary/i), {
+    fireEvent.change(within(dialog).getByLabelText(/daily wage/i), {
       target: { value: '15000' },
     })
 
@@ -237,7 +233,6 @@ describe('E2E-E01: Manual Row Fix for Invalid Import Rows', () => {
           employeeId: 'EMP-020',
           employeeName: 'Test Person',
           designation: 'Guard',
-          hourlyRate: 62.5,
           isActive: true,
         }),
       ],
@@ -253,7 +248,7 @@ describe('E2E-E01: Manual Row Fix for Invalid Import Rows', () => {
     const dialog = screen.getByTestId('dialog')
 
     // Enter a negative salary (invalid — number inputs coerce non-numeric strings to '', which becomes 0)
-    fireEvent.change(within(dialog).getByLabelText(/salary/i), {
+    fireEvent.change(within(dialog).getByLabelText(/daily wage/i), {
       target: { value: '-1' },
     })
 
@@ -328,21 +323,18 @@ describe('E2E-E01: Manual Row Fix for Invalid Import Rows', () => {
           employeeName: 'Suresh Narayanan',
           designation: 'Guard',
           salary: 12000,
-          hourlyRate: 62.5,
           isActive: true,
         }),
         makeInvalidRow(6, ['MISSING_EMPLOYEE_ID'], {
           employeeName: 'Priya Nair',
           designation: 'Guard',
           salary: 11000,
-          hourlyRate: 57.5,
           isActive: true,
         }),
         makeInvalidRow(7, ['MISSING_EMPLOYEE_ID'], {
           employeeName: 'Ravi Kumar',
           designation: 'Guard',
           salary: 13000,
-          hourlyRate: 67.5,
           isActive: true,
         }),
       ],
@@ -399,7 +391,6 @@ describe('E2E-E01: Manual Row Fix for Invalid Import Rows', () => {
           employeeName: 'Suresh Narayanan',
           designation: 'Guard',
           salary: 12000,
-          hourlyRate: 62.5,
           isActive: true,
         }),
       ],

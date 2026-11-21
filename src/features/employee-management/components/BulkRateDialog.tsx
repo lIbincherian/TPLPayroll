@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { bulkUpdateHourlyRateAction } from '@/features/employee-management/actions/employee.actions'
 import { getEmployeeWageHistoryAction } from '@/features/employee-management/actions/employee.actions'
 import type { EmployeeListItem } from '@/features/employee-management/types/employee.types'
+import { computeHourlyRate } from '@/features/employee-management/utils/wage'
 
 interface BulkRateDialogProps {
   employees: EmployeeListItem[]
@@ -17,7 +18,7 @@ interface EmployeeRateInfo {
   id: string
   employeeId: string
   employeeName: string
-  currentRate: number | null
+  currentWage: number | null
 }
 
 export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialogProps) {
@@ -29,7 +30,7 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
   const [isLoading, setIsLoading] = useState(true)
   const [employeeRates, setEmployeeRates] = useState<EmployeeRateInfo[]>([])
 
-  // Fetch current hourly rates on mount
+  // Fetch current daily wages on mount
   useEffect(() => {
     async function fetchRates() {
       const rates: EmployeeRateInfo[] = []
@@ -40,14 +41,14 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
             id: emp.id,
             employeeId: emp.employeeId,
             employeeName: emp.employeeName,
-            currentRate: Number(result.data[0].hourlyRate),
+            currentWage: Number(result.data[0].weeklySalary),
           })
         } else {
           rates.push({
             id: emp.id,
             employeeId: emp.employeeId,
             employeeName: emp.employeeName,
-            currentRate: null,
+            currentWage: null,
           })
         }
       }
@@ -57,10 +58,13 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
     fetchRates()
   }, [employees])
 
+  const parsedWage = parseFloat(rateValue)
+  const computedRate = !isNaN(parsedWage) && parsedWage > 0 ? computeHourlyRate(parsedWage) : null
+
   const handleConfirm = useCallback(async () => {
-    const rate = parseFloat(rateValue)
-    if (isNaN(rate) || rate <= 0) {
-      setError('Please enter a valid hourly rate greater than 0')
+    const wage = parseFloat(rateValue)
+    if (isNaN(wage) || wage <= 0) {
+      setError('Enter a daily wage greater than 0')
       return
     }
 
@@ -69,11 +73,11 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
 
     const input: {
       ids: string[]
-      newHourlyRate: number
+      newDailyWage: number
       effectiveFrom?: Date
     } = {
       ids: employees.map((e) => e.id),
-      newHourlyRate: rate,
+      newDailyWage: wage,
     }
 
     if (dateValue) {
@@ -87,8 +91,8 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
     if (result.ok) {
       const { succeeded, skipped, failed } = result.data
       if (failed === 0) {
-        let msg = `Hourly rate updated for ${succeeded} employee${succeeded !== 1 ? 's' : ''}`
-        if (skipped > 0) msg += ` (${skipped} already at ₹${rate})`
+        let msg = `Daily wage updated for ${succeeded} employee${succeeded !== 1 ? 's' : ''}`
+        if (skipped > 0) msg += ` (${skipped} already at ₹${wage})`
         toast.success(msg)
       } else {
         toast.warning(`${succeeded} succeeded, ${failed} failed`)
@@ -122,12 +126,12 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
 
         {/* Title */}
         <h2 id="bulk-rate-title" className="text-base font-semibold text-zinc-900 mb-2">
-          Change hourly rate for {employees.length} employee{employees.length !== 1 ? 's' : ''}
+          Change daily wage for {employees.length} employee{employees.length !== 1 ? 's' : ''}
         </h2>
 
         {/* Description */}
         <p className="text-sm text-zinc-500 mb-4">
-          Set a new hourly rate and effective date. Employees with the same rate will be skipped.
+          Set a new daily wage and effective date. The hourly rate is the daily wage ÷ 8. Employees already at this wage are skipped.
         </p>
 
         {/* Employee list with current rates */}
@@ -135,7 +139,7 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
           {isLoading ? (
             <div className="flex items-center gap-2 py-2">
               <SpinnerGap size={14} className="animate-spin text-zinc-400" />
-              <span className="text-sm text-zinc-400">Loading current rates...</span>
+              <span className="text-sm text-zinc-400">Loading current wages...</span>
             </div>
           ) : (
             employeeRates.map((emp) => (
@@ -145,7 +149,7 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
                   <span className="text-sm text-zinc-700">{emp.employeeName}</span>
                 </div>
                 <span className="font-mono text-xs text-zinc-400">
-                  ₹{emp.currentRate?.toFixed(2) ?? '—'}
+                  ₹{emp.currentWage?.toFixed(2) ?? '—'}
                 </span>
               </div>
             ))
@@ -165,10 +169,10 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3 mb-4">
-            {/* New Hourly Rate */}
+            {/* New Daily Wage */}
             <div>
-              <label className="block text-xs font-medium uppercase tracking-wider text-zinc-400 mb-1.5">
-                New Hourly Rate (₹) *
+              <label htmlFor="bulk-rate-input" className="block text-xs font-medium uppercase tracking-wider text-zinc-400 mb-1.5">
+                New Daily Wage (₹) *
               </label>
               <input
                 type="number"
@@ -180,6 +184,9 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
                 className="w-full px-3 py-2 text-sm rounded-xl bg-white border border-zinc-200/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-zinc-900 transition-colors duration-200"
                 id="bulk-rate-input"
               />
+              <p className="text-xs text-zinc-500 mt-1" id="bulk-rate-hourly">
+                Hourly rate: <span className="font-mono text-zinc-700" data-testid="bulk-computed-hourly-rate">{computedRate !== null ? `₹${computedRate.toFixed(2)}` : '—'}</span>
+              </p>
               {error && (
                 <p className="text-rose-600 text-xs mt-1">{error}</p>
               )}
@@ -219,7 +226,7 @@ export function BulkRateDialog({ employees, onClose, onComplete }: BulkRateDialo
             id="bulk-rate-confirm"
           >
             {isProcessing && <SpinnerGap size={14} className="animate-spin" />}
-            {isProcessing ? 'Processing...' : 'Update Rates'}
+            {isProcessing ? 'Processing...' : 'Update Daily Wages'}
           </button>
         </div>
       </div>

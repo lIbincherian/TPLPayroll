@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isWageEffectiveTooFarAhead, WAGE_EFFECTIVE_TOO_FAR_AHEAD } from '../lib/wage-effective-from'
 
 // ─── Status ───────────────────────────────────────────────────────────────────
 
@@ -6,7 +7,7 @@ export type EmployeeStatus = 'ACTIVE' | 'INACTIVE' | 'RESIGNED'
 
 // ─── Zod schemas (shared client + server validation) ──────────────────────────
 
-export const CreateEmployeeSchema = z.object({
+const EmployeeFieldsSchema = z.object({
   employeeId: z.string().min(1, 'Employee ID is required'),
   employeeName: z.string().min(1, 'Employee Name is required'),
   designation: z.string().min(1, 'Designation is required'),
@@ -23,15 +24,34 @@ export const CreateEmployeeSchema = z.object({
   bankAccount: z.string().optional(),
   dateOfResignation: z.date().optional().nullable(),
   isActive: z.boolean().default(true),
-  salary: z.number({ error: 'Salary is required' }).min(0),
-  hourlyRate: z.number({ error: 'Hourly Rate is required' }).min(0),
+  salary: z.number({ error: 'Daily wage is required' }).min(0),
+})
+
+// The wage effective date only applies to the first wage row, so updates never accept it.
+export const CreateEmployeeSchema = EmployeeFieldsSchema.extend({
+  wageEffectiveFrom: z
+    .date()
+    .optional()
+    .nullable()
+    .refine((d) => !d || !isWageEffectiveTooFarAhead(d), WAGE_EFFECTIVE_TOO_FAR_AHEAD),
 })
 
 export type CreateEmployeeInput = z.infer<typeof CreateEmployeeSchema>
 
-export const UpdateEmployeeSchema = CreateEmployeeSchema.partial().omit({
-  employeeId: true,
-})
+// Optional fields accept null on update so a cleared field is written as null.
+export const UpdateEmployeeSchema = EmployeeFieldsSchema.partial()
+  .omit({ employeeId: true })
+  .extend({
+    designationShort: z.string().optional().nullable(),
+    nationalId: z.string().optional().nullable(),
+    aadhaarId: z.string().optional().nullable(),
+    policeVerificationId: z.string().optional().nullable(),
+    phone: z.string().optional().nullable(),
+    site: z.string().optional().nullable(),
+    healthCardId: z.string().optional().nullable(),
+    gPay: z.string().optional().nullable(),
+    bankAccount: z.string().optional().nullable(),
+  })
 
 export type UpdateEmployeeInput = z.infer<typeof UpdateEmployeeSchema>
 
@@ -50,7 +70,7 @@ export type BulkStatusUpdateInput = z.infer<typeof BulkStatusUpdateSchema>
 
 export const BulkHourlyRateUpdateSchema = z.object({
   ids: z.array(z.string().min(1)).min(1, 'At least one employee must be selected'),
-  newHourlyRate: z.number().gt(0, 'Hourly rate must be greater than 0'),
+  newDailyWage: z.number().gt(0, 'Daily wage must be greater than 0'),
   effectiveFrom: z.date().optional(),
 })
 

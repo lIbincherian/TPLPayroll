@@ -1168,6 +1168,7 @@ describe('abandonCorrection', () => {
       data: {
         approvalStatus: 'APPROVED',
         isReversed: false,
+        cancelOnCorrectionApproval: false,
         approvedAt: new Date('2025-03-14T10:00:00.000Z'),
         skippedAt: null,
         appliedAt: new Date('2025-03-14T10:00:00.000Z'),
@@ -1179,6 +1180,7 @@ describe('abandonCorrection', () => {
       data: {
         approvalStatus: 'SKIPPED',
         isReversed: true,
+        cancelOnCorrectionApproval: false,
         approvedAt: null,
         skippedAt: new Date('2025-03-14T11:00:00.000Z'),
         appliedAt: null,

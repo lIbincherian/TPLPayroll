@@ -10,6 +10,7 @@ import {
 } from '@/features/payroll-correction/services/correction.service'
 import { beginPayrollCorrectionAction } from '@/features/payroll-correction/actions/correction.actions'
 import { AppShell } from '@/components/layout/AppShell'
+import { formatNetPay } from '@/features/payroll-generation/lib/format-net-pay'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,13 +27,6 @@ export async function generateMetadata({ params }: Props) {
 function formatWeekRange(start: Date, end: Date) {
   const opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' }
   return `${start.toLocaleDateString('en-IN', opts)} – ${end.toLocaleDateString('en-IN', opts)}`
-}
-
-function formatCurrency(amount: number) {
-  return new Intl.NumberFormat('en-IN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount)
 }
 
 export default async function PayrollRunPage({ params }: Props) {
@@ -146,7 +140,7 @@ export default async function PayrollRunPage({ params }: Props) {
           <div>
             <p className="text-xs font-medium uppercase tracking-wider text-zinc-400">Net Payable</p>
             <p className="mt-1 font-mono text-lg font-semibold tabular-nums text-zinc-900">
-              ₹{formatCurrency(displayTotals.totalNetPayable)}
+              ₹{formatNetPay(displayTotals.totalNetPayable)}
             </p>
           </div>
         </div>
@@ -215,7 +209,7 @@ export default async function PayrollRunPage({ params }: Props) {
                     <td className="py-2 pr-4 font-sans text-zinc-900">{re.employee.employeeName}</td>
                     <td className="py-2 pr-4 text-zinc-500">{re.employee.gPay ?? '—'}</td>
                     <td className="py-2 pr-4 text-zinc-500">{re.employee.bankAccount ?? '—'}</td>
-                    <td className="py-2 text-right font-semibold text-zinc-900">₹{formatCurrency(Number(re.netPayable))}</td>
+                    <td className="py-2 text-right font-semibold text-zinc-900">₹{formatNetPay(Number(re.netPayable))}</td>
                   </tr>
                 ))}
               </tbody>
@@ -225,7 +219,7 @@ export default async function PayrollRunPage({ params }: Props) {
                     Totals
                   </td>
                   <td className="py-2 text-right font-bold text-zinc-900">
-                    ₹{formatCurrency(displayTotals.totalNetPayable)}
+                    ₹{formatNetPay(displayTotals.totalNetPayable)}
                   </td>
                 </tr>
               </tfoot>

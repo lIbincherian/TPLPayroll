@@ -220,8 +220,7 @@ test.describe('E2E-35: Unknown code can be added as a new employee', () => {
 
     await page.getByPlaceholder('EMP-042').fill('E2E-HLP-9999')
     await page.getByPlaceholder('Guard').first().fill('Security Guard')
-    await page.getByPlaceholder('14375').fill('14375')
-    await page.getByPlaceholder('68.75').fill('68.75')
+    await page.getByLabel('Daily Wage (₹)').fill('800')
     await page.getByRole('button', { name: 'Save Employee' }).click()
 
     // Back on the employee check, with the code matched again
@@ -242,8 +241,7 @@ test.describe('E2E-35: Unknown code can be added as a new employee', () => {
     await page.getByTestId('add-new-employee-9999').click()
     await page.getByPlaceholder('EMP-042').fill('E2E-HLP-9099')
     await page.getByPlaceholder('Guard').first().fill('Security Guard')
-    await page.getByPlaceholder('14375').fill('14375')
-    await page.getByPlaceholder('68.75').fill('68.75')
+    await page.getByLabel('Daily Wage (₹)').fill('800')
     await page.getByRole('button', { name: 'Save Employee' }).click()
 
     await expect(page).toHaveURL(new RegExp(`/attendance/${week.start}/employee-check$`), { timeout: 15000 })

@@ -153,8 +153,8 @@ test.describe('E2E-01: Full payroll generation flow', () => {
     await expect(page.locator('text=Ramesh Nair')).toBeVisible()
     await expect(page.locator('text=Sunita Pillai')).toBeVisible()
 
-    // Net payable column header
-    await expect(page.locator('th:has-text("Net Payable")')).toBeVisible()
+    // Net pay column header
+    await expect(page.locator('th:has-text("Net Pay")')).toBeVisible()
 
     // Click "Approve Payroll"
     await page.click('button:has-text("Approve Payroll")')

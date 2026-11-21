@@ -216,10 +216,14 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
 
   const count = (out: string, label: string) => Number(new RegExp(`${label}: (\\d+)`).exec(out)?.[1] ?? NaN)
 
+  let activeBefore: string[] = []
+
   beforeAll(async () => {
     process.env.DIRECT_DATABASE_URL = URL
     process.env.DATABASE_URL = URL
     prisma = (await import('@/lib/prisma')).default
+    // Approving a week sets employee status (issue #35); afterAll puts back who was active.
+    activeBefore = (await prisma.employee.findMany({ where: { isActive: true }, select: { id: true } })).map((e) => e.id)
     ;({ lockWeekRow } = await import('@/features/attendance-sync/services/week-lock.service'))
     ;({ getOrCreateApiWeekRow } = await import('@/features/attendance-sync/services/week-list.service'))
     ;({ approveWeek, reopenWeek } = await import('@/features/attendance-sync/services/week-approval.service'))
@@ -248,6 +252,7 @@ describe.skipIf(!enabled)('F12 fix round (real database)', { timeout: 90000 }, (
   }, 60000)
 
   afterAll(async () => {
+    await prisma.employee.updateMany({ where: { id: { in: activeBefore } }, data: { isActive: true } })
     await cleanup()
     await prisma.$disconnect()
   }, 60000)

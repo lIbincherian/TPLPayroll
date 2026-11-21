@@ -99,3 +99,20 @@ export function formatWeekLabel(week: WeekRange): string {
   const end = toUtcDate(week.end).toLocaleDateString('en-GB', withYear)
   return `${start} – ${end}`
 }
+
+/** ISO 8601 week-year and week number of a date (weeks start Monday; week 1 holds the first Thursday). */
+export function isoWeekOf(iso: ISODate): { year: number; week: number } {
+  const date = toUtcDate(iso)
+  const isoDow = date.getUTCDay() || 7
+  // The Thursday of the same ISO week decides its year.
+  date.setUTCDate(date.getUTCDate() + 4 - isoDow)
+  const year = date.getUTCFullYear()
+  const dayOfYear = Math.round((date.getTime() - Date.UTC(year, 0, 1)) / 86_400_000)
+  return { year, week: Math.floor(dayOfYear / 7) + 1 }
+}
+
+/** `YYYY-WW-<EMP ID>`: the ISO week of the payroll week start, then the Emp ID. */
+export function paymentReference(weekStart: ISODate, employeeId: string): string {
+  const { year, week } = isoWeekOf(weekStart)
+  return `${year}-${String(week).padStart(2, '0')}-${employeeId}`
+}

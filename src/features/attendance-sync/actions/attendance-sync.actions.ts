@@ -6,6 +6,7 @@ import {
   AttendanceSyncError,
   type ActionResult,
   type ApprovalSummary,
+  type StatusChangeSummary,
   type AttendanceWeekListItem,
   type DayValidation,
   type EmployeeCheck,
@@ -263,12 +264,12 @@ export async function getApprovalSummaryAction(
 
 export async function approveWeekAction(
   weekId: ISODate,
-): Promise<ActionResult<{ approvedAt: string; summary: ApprovalSummary }>> {
+): Promise<ActionResult<{ approvedAt: string; summary: ApprovalSummary; statusChanges: StatusChangeSummary }>> {
   if (!isoDate.safeParse(weekId).success) return invalid()
   try {
-    const { approvedAt, summary } = await approveWeek(weekId)
+    const { approvedAt, summary, statusChanges } = await approveWeek(weekId)
     revalidateAttendance()
-    return ok({ approvedAt: approvedAt.toISOString(), summary })
+    return ok({ approvedAt: approvedAt.toISOString(), summary, statusChanges })
   } catch (e) {
     return handleError(e)
   }

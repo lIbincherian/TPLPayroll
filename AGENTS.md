@@ -9,6 +9,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - **Fresh checkout or worktree**: `npm ci`, then `npx prisma generate` (the client in `src/generated/prisma` is gitignored). Env files are gitignored too: copy `.env` from the main checkout (or fill one in from `.env.example`). Never commit an env file.
 - **Dev server on a given port**: `npx next dev -p <port>` (`npm run dev` uses port 3000). Pages that read data need the database in `.env`.
 - **Validation** (what `factory/checks.sh` runs, mirroring CI's `lint-typecheck`, `unit` and `build` jobs and its migration-history guard): `npx prisma generate`, `npm run lint`, `npx tsc --noEmit`, `npm run test:run` (vitest, no watch), `npm run build`. CI's `migrations` and `e2e` jobs need PostgreSQL and run on the PR; locally, run E2E tests separately (see Testing Rules).
+- **PDF amount font**: pdfmake's standard fonts have no ₹ glyph, so every ₹ amount in the summary and payslip PDFs uses DejaVu Sans Mono from `src/features/payroll-reports/assets/fonts/` (licence alongside). pdfmake reads it from disk at runtime, so `outputFileTracingIncludes` in `next.config.ts` ships it with the `/api/payroll/reports/**` routes. Keep both in step if the font or those routes move.
 
 ## Architecture Rules
 
@@ -58,6 +59,7 @@ The schema is managed with Prisma Migrate. `prisma/migrations/` is the source of
 
 - **eTimeOffice Attendance Sync (F12)**:
   - Attendance enters only via eTimeOffice sync (F12); the Excel upload is removed.
+  - Approving a completed week (when no later eTimeOffice week is approved) sets employee status in the approval transaction; a pull never does: active with no matched punches becomes inactive, inactive with punches becomes active (unless resigned before today). New joiners (joined on or after the week start), duplicate-code candidates and employees rejected in the employee check are skipped. Each change writes an `EMPLOYEE` audit row with `changeSource: 'AUTO_ATTENDANCE'` (`src/features/attendance-sync/lib/employee-status.ts`).
   - Set these five variables separately for Vercel **Production** and **Preview** before the F12 build deploys, so the first scheduled sync after the release finds them. All are server-only; never prefix them with `NEXT_PUBLIC_`, never log them, and never return them from an action or route.
     - `ETIMEOFFICE_CORPORATE_ID`, `ETIMEOFFICE_USERNAME`, `ETIMEOFFICE_PASSWORD`: the eTimeOffice API login. Only `src/features/attendance-sync/services/etimeoffice.client.ts` reads them.
     - `ETIMEOFFICE_BASE_URL`: optional, defaults to `https://api.etimeoffice.com/api/`.

@@ -2,7 +2,7 @@ import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { TRANSACTION_TIMEOUT_MS } from '../lib/constants'
 import { buildApprovalSummary, buildAttendanceRecords, canReopenWeek, getAttendanceWeekStatus } from '../lib/review'
-import { toISODate, toUtcDate } from '../lib/week'
+import { toISODate, toUtcDate, todayInIST } from '../lib/week'
 import {
   AttendanceSyncError,
   type ApprovalDecisionInput,
@@ -10,8 +10,10 @@ import {
   type EmployeeDecisionValue,
   type PunchReview,
   type ReviewMode,
+  type StatusChangeSummary,
 } from '../types/attendance-sync.types'
 import { auditEntry } from './attendance-audit.service'
+import { applyApprovalStatusChanges, previewApprovalStatusChanges } from './employee-status.service'
 import { getPunchReview } from './punch-review.service'
 import { requireApiWeek } from './week-list.service'
 import { assertNotSyncing, lockWeekRow } from './week-lock.service'
@@ -34,6 +36,10 @@ async function loadDecisionInputs(
     employeeName: row.employee.employeeName,
     decision: row.decision as EmployeeDecisionValue,
   }))
+}
+
+function rejectedIdsOf(decisions: ApprovalDecisionInput[]): Set<string> {
+  return new Set(decisions.filter((d) => d.decision === 'REJECTED').map((d) => d.employeeId))
 }
 
 /** For a correction: how many employee-days differ from the approved punches. */
@@ -65,8 +71,18 @@ async function countChangedDays(uploadId: string, correctionId: string): Promise
 /** The numbers shown before approving: employee count, hours, edited days, who is left out. */
 export async function getApprovalSummary(weekId: string, mode: ReviewMode = { kind: 'LIVE' }): Promise<ApprovalSummary> {
   const review = await getPunchReview(weekId, mode)
-  const { upload } = await requireApiWeek(weekId)
-  const summary = buildApprovalSummary(review, await loadDecisionInputs(upload.id))
+  const { upload, week } = await requireApiWeek(weekId)
+  const decisions = await loadDecisionInputs(upload.id)
+  const summary = buildApprovalSummary(review, decisions)
+
+  if (mode.kind === 'LIVE' && review.status === 'REVIEW') {
+    summary.statusChanges = await previewApprovalStatusChanges({
+      uploadId: upload.id,
+      week,
+      today: todayInIST(new Date()),
+      rejectedIds: rejectedIdsOf(decisions),
+    })
+  }
 
   if (mode.kind === 'CORRECTION') {
     summary.changedDaysInCorrection = await countChangedDays(upload.id, mode.correctionId)
@@ -91,7 +107,9 @@ function describeBlockers(review: PunchReview): string {
  * from that same snapshot, so a punch edit, a decision or a pull cannot slip in between the
  * check and the write. Nothing is written if any check fails.
  */
-export async function approveWeek(weekId: string): Promise<{ approvedAt: Date; summary: ApprovalSummary }> {
+export async function approveWeek(
+  weekId: string,
+): Promise<{ approvedAt: Date; summary: ApprovalSummary; statusChanges: StatusChangeSummary }> {
   const { upload, week } = await requireApiWeek(weekId)
   const approvedAt = new Date()
 
@@ -141,6 +159,14 @@ export async function approveWeek(weekId: string): Promise<{ approvedAt: Date; s
       await tx.attendanceRecord.deleteMany({ where: { attendanceUploadId: upload.id } })
       if (records.length > 0) await tx.attendanceRecord.createMany({ data: records })
 
+      // The approved week decides who is active: no punches marks an employee inactive, punches reactivate.
+      const statusChanges = await applyApprovalStatusChanges(tx, {
+        uploadId: upload.id,
+        week,
+        today: todayInIST(approvedAt),
+        rejectedIds: rejectedIdsOf(decisions),
+      })
+
       await auditEntry(
         {
           actionType: 'APPROVE',
@@ -155,12 +181,13 @@ export async function approveWeek(weekId: string): Promise<{ approvedAt: Date; s
             totalOvertimeHours: summary.totalOvertimeHours,
             editedDays: summary.editedDays,
             leftOut: summary.leftOut,
+            statusChanges,
           },
         },
         tx,
       )
 
-      return { approvedAt, summary }
+      return { approvedAt, summary, statusChanges }
     },
     { timeout: TRANSACTION_TIMEOUT_MS },
   )

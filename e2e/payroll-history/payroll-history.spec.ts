@@ -79,6 +79,6 @@ test.describe('F09: Payroll History E2E', () => {
     await expect(page.locator('h2:has-text("Earnings")')).toBeVisible()
     
     // Net Payable should be visible (seeded as 2750)
-    await expect(page.locator('text=₹2,750.00').first()).toBeVisible()
+    await expect(page.locator('text=₹2,750').first()).toBeVisible()
   })
 })

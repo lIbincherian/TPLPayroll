@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createRequire } from 'node:module'
 
@@ -62,12 +63,15 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 
+import * as XLSX from 'xlsx'
 import prisma from '@/lib/prisma'
 import {
   formatSlipDate,
   formatZipFileName,
   formatSlipPdfName,
   formatCurrencyPdf,
+  formatNetPayPdf,
+  netPayXlsxFormat,
   formatHours,
   buildSlipData,
   generatePayrollSummaryPdf,
@@ -75,6 +79,7 @@ import {
   generatePayrollSlipPdf,
   generatePayrollSlipsZip,
   markInvoiceSnapshotsCleaned,
+  AMOUNT_FONT,
 } from '@/features/payroll-reports/services/report.service'
 import { ReportServiceError, type PayrollSlipData } from '@/features/payroll-reports/types/report.types'
 
@@ -92,6 +97,7 @@ function makeEmployee(overrides: Partial<{
   designation: string
   site: string | null
   gPay: string | null
+  phone: string | null
   bankAccount: string | null
 }> = {}) {
   return {
@@ -101,6 +107,7 @@ function makeEmployee(overrides: Partial<{
     designation: 'Guard',
     site: 'Site A',
     gPay: '9876543210',
+    phone: '9123456780',
     bankAccount: 'ACC123456',
     ...overrides,
   }
@@ -260,6 +267,23 @@ describe('formatCurrencyPdf', () => {
 
   it('formats zero correctly', () => {
     expect(formatCurrencyPdf(0)).toBe('₹0.00')
+  })
+})
+
+describe('formatNetPayPdf', () => {
+  it('shows whole-rupee net pay without decimals', () => {
+    expect(formatNetPayPdf(2950)).toBe('₹2,950')
+  })
+
+  it('keeps the paise of an older stored amount', () => {
+    expect(formatNetPayPdf(1331.25)).toBe('₹1,331.25')
+  })
+})
+
+describe('netPayXlsxFormat', () => {
+  it('uses no decimals for a whole amount and two for an amount with paise', () => {
+    expect(netPayXlsxFormat(2950)).toBe('"₹"#,##0')
+    expect(netPayXlsxFormat(1331.25)).toBe('"₹"#,##0.00')
   })
 })
 
@@ -444,6 +468,35 @@ describe('generatePayrollSummaryPdf', () => {
     expect(result.fileName).toMatch(/\.pdf$/)
   })
 
+  it('lays out the same 16 columns as the summary Excel', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makePayrollRun() as never)
+    const pdfmake = nodeRequire('pdfmake')
+    const original = pdfmake.createPdf
+    let captured: { content: Array<{ table?: PdfTable }> } | null = null
+    const spy = vi.spyOn(pdfmake, 'createPdf').mockImplementation(function (this: unknown, docDef: unknown, ...rest: unknown[]) {
+      captured = structuredClone(docDef) as typeof captured
+      return original.call(this, docDef, ...rest)
+    })
+    try {
+      await generatePayrollSummaryPdf('run-uuid-1')
+    } finally {
+      spy.mockRestore()
+    }
+    const docDef = captured as unknown as { content: Array<{ table?: PdfTable }> }
+    const body = docDef.content.find((c) => c.table)!.table!.body
+    expect(body[0].map((c) => plainText(c))).toEqual([
+      'Sl No.', 'Emp ID', 'Emp Name', 'GPay No.', 'WhatsApp No.', 'Bank Acct.', 'Paid Name (if diff.)',
+      'Salary from', 'Salary to', 'Reg. Hrs Pay', 'Overtime Hrs Pay', 'Additions', 'Deductions', 'Net Pay',
+      'Payment Date', 'Payment Reference',
+    ])
+    const row = body[1].map((c) => plainText(c))
+    expect(row[0]).toBe('1')
+    expect(row[4]).toBe('')
+    expect(row[5]).toBe('ACC123456')
+    expect(row[7]).toBe('06 Mar 2025')
+    expect(row[15]).toBe('2025-10-EMP-001')
+  })
+
   it('throws PAYROLL_RUN_NOT_FOUND when run does not exist', async () => {
     vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(null)
 
@@ -495,6 +548,96 @@ describe('generatePayrollSummaryXlsx', () => {
     expect(result.buffer.length).toBeGreaterThan(0)
     expect(result.fileName).toMatch(/^payroll_summary_/)
     expect(result.fileName).toMatch(/\.xlsx$/)
+  })
+
+  it('writes the 16 payment columns, one row per employee and totals for the pay columns', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makePayrollRun() as never)
+
+    const { buffer } = await generatePayrollSummaryXlsx('run-uuid-1')
+    // sheetStubs keeps formula-only cells, which carry no cached value
+    const ws = XLSX.read(buffer, { type: 'buffer', sheetStubs: true }).Sheets.Summary
+    const cell = (ref: string) => ws[ref]?.v
+
+    const headers = 'ABCDEFGHIJKLMNOP'.split('').map((col) => cell(`${col}5`))
+    expect(headers).toEqual([
+      'Sl No.',
+      'Emp ID',
+      'Emp Name',
+      'GPay No.',
+      'WhatsApp No.',
+      'Bank Acct.',
+      'Paid Name (if diff.)',
+      'Salary from',
+      'Salary to',
+      'Reg. Hrs Pay',
+      'Overtime Hrs Pay',
+      'Additions',
+      'Deductions',
+      'Net Pay',
+      'Payment Date',
+      'Payment Reference',
+    ])
+    expect(cell('Q5')).toBeUndefined()
+
+    expect(cell('A6')).toBe(1)
+    expect(cell('B6')).toBe('EMP-001')
+    expect(cell('D6')).toBe('9876543210')
+    // WhatsApp numbers aren't stored yet, so the phone number never fills this column
+    expect(ws.E6).toBeUndefined()
+    expect(cell('F6')).toBe('ACC123456')
+    expect(ws.G6).toBeUndefined()
+    expect(cell('H6')).toBe('06 Mar 2025')
+    expect(cell('I6')).toBe('12 Mar 2025')
+    expect(cell('J6')).toBe(2875)
+    expect(cell('K6')).toBe(375)
+    expect(cell('L6')).toBe(200)
+    expect(cell('M6')).toBe(500)
+    expect(cell('N6')).toBe(2950)
+    expect(ws.O6).toBeUndefined()
+    expect(cell('P6')).toBe('2025-10-EMP-001')
+
+    expect(cell('A7')).toBe('TOTALS')
+    for (const col of 'JKLMN') {
+      expect(ws[`${col}7`].f).toBe(`SUM(${col}6:${col}6)`)
+    }
+  })
+
+  it('freezes the title, header rows and the columns through Emp Name', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makePayrollRun() as never)
+
+    const { buffer } = await generatePayrollSummaryXlsx('run-uuid-1')
+    const sheetXml = XLSX.CFB.find(XLSX.CFB.read(buffer, { type: 'buffer' }), '/xl/worksheets/sheet1.xml')!
+    expect(Buffer.from(sheetXml.content as Uint8Array).toString('utf8')).toContain(
+      '<pane xSplit="3" ySplit="5" topLeftCell="D6" activePane="bottomRight" state="frozen"/>',
+    )
+  })
+
+  it('formats whole net pay without decimals and keeps the other columns at two', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makePayrollRun() as never)
+
+    const { buffer } = await generatePayrollSummaryXlsx('run-uuid-1')
+    // sheetStubs keeps the totals row's SUM cells, which are written without a cached value.
+    const wb = XLSX.read(buffer, { cellNF: true, cellFormula: true, sheetStubs: true })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+
+    expect(ws.N6.v).toBe(2950)
+    expect(ws.N6.z).toBe('"₹"#,##0')
+    expect(ws.N7.z).toBe('"₹"#,##0')
+    expect(ws.J6.z).toBe('"₹"#,##0.00')
+  })
+
+  it('keeps two decimals on a stored net amount with paise', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(
+      makePayrollRun({ runEmployees: [makeRunEmployee({ netPayable: 1331.25 })] }) as never,
+    )
+
+    const { buffer } = await generatePayrollSummaryXlsx('run-uuid-1')
+    // sheetStubs keeps the totals row's SUM cells, which are written without a cached value.
+    const wb = XLSX.read(buffer, { cellNF: true, cellFormula: true, sheetStubs: true })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+
+    expect(ws.N6.z).toBe('"₹"#,##0.00')
+    expect(ws.N7.z).toBe('"₹"#,##0.00')
   })
 
   it('throws PAYROLL_RUN_NOT_FOUND when run does not exist', async () => {
@@ -709,6 +852,68 @@ describe('generatePayrollSlipPdf: API-week (eTimeOffice) layout', () => {
 
     expect(buffer).toBeInstanceOf(Buffer)
     expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-')
+  })
+})
+
+// ── PDF amount font: pdfmake's standard fonts have no ₹ glyph ──
+
+/** Builds a PDF for real and returns the document definition pdfmake was handed. */
+async function captureDocDef(build: () => Promise<unknown>): Promise<unknown> {
+  const pdfmake = nodeRequire('pdfmake')
+  const original = pdfmake.createPdf
+  let captured: unknown = null
+  const spy = vi.spyOn(pdfmake, 'createPdf').mockImplementation(function (this: unknown, docDef: unknown, ...rest: unknown[]) {
+    captured = structuredClone(docDef)
+    return original.call(this, docDef, ...rest)
+  })
+  try {
+    await build()
+  } finally {
+    spy.mockRestore()
+  }
+  return captured
+}
+
+/** Every node in a document definition whose own text contains ₹: amount cells and the hourly rate in a slip label. */
+function amountCells(node: unknown, inline = false): Array<PdfCell & { inline: boolean }> {
+  if (Array.isArray(node)) return node.flatMap((child) => amountCells(child, inline))
+  if (!node || typeof node !== 'object') return []
+  const cell = node as PdfCell
+  const own = typeof cell.text === 'string' && cell.text.includes('₹') ? [{ ...cell, inline }] : []
+  // A node inside another node's text array is a run of a sentence, not a cell to align.
+  const children = Object.entries(node).flatMap(([key, value]) => amountCells(value, inline || (key === 'text' && Array.isArray(value))))
+  return [...own, ...children]
+}
+
+describe('PDF amount font', () => {
+  it('draws every ₹ amount in the summary PDF with the rupee font', async () => {
+    vi.mocked(prisma.payrollRun.findUnique).mockResolvedValue(makePayrollRun() as never)
+
+    const cells = amountCells(await captureDocDef(() => generatePayrollSummaryPdf('run-uuid-1')))
+
+    expect(cells.length).toBeGreaterThan(0)
+    expect(cells.filter((c) => c.font !== AMOUNT_FONT)).toEqual([])
+    expect(cells.filter((c) => c.alignment !== 'right' && !c.inline)).toEqual([])
+  })
+
+  it('draws every ₹ amount in a payslip with the rupee font', async () => {
+    const cells = amountCells(await captureDocDef(() => generatePayrollSlipPdf(makeApiSlipData())))
+
+    expect(cells.length).toBeGreaterThan(0)
+    expect(cells.filter((c) => c.font !== AMOUNT_FONT)).toEqual([])
+    expect(cells.filter((c) => c.alignment !== 'right' && !c.inline)).toEqual([])
+  })
+
+  it('registers a font file that has a glyph for ₹ (U+20B9)', async () => {
+    await generatePayrollSlipPdf(makeApiSlipData())
+    const registered = nodeRequire('pdfmake').fonts[AMOUNT_FONT] as { normal: string; bold: string }
+    const fontkit = nodeRequire('fontkit') as {
+      openSync: (path: string) => { hasGlyphForCodePoint: (codePoint: number) => boolean }
+    }
+
+    for (const file of [registered.normal, registered.bold]) {
+      expect(fontkit.openSync(file).hasGlyphForCodePoint(0x20b9)).toBe(true)
+    }
   })
 })
 

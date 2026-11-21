@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import prisma from '../../src/lib/prisma'
 import { cleanupTestData } from '../utils/db'
+import { testEmployeeId } from '../utils/test-namespace'
 
 // The directory lists every employee, and the real-data base has hundreds. These 12 test employees all have an ID
 // starting with "E2E-DIR-", so every test searches for that prefix first: the sorting, filtering and pagination
@@ -210,5 +211,35 @@ test.describe('E02: Sorting, Filtering, and Pagination E2E Tests', () => {
     // Table updates to page 2 (showing 11–12 of 12)
     await expect(page.locator('text=Showing 11–12 of 12')).toBeVisible({ timeout: 5000 })
     await expect(page2Button).toHaveClass(/bg-emerald-50/)
+  })
+})
+
+test.describe('Daily wage and computed hourly rate', () => {
+  test('the form computes the hourly rate from the daily wage and the profile shows both', async ({ page }) => {
+    const employeeId = testEmployeeId('WAGE', 101)
+
+    await page.goto('/employees/new')
+    await page.getByPlaceholder('EMP-042').fill(employeeId)
+    await page.getByPlaceholder('Lakshmi Venkatesh').fill('Wage Tester')
+    await page.getByPlaceholder('Guard').fill('Security Guard')
+
+    // No hourly-rate input: the rate is shown read-only, computed from the daily wage
+    await expect(page.locator('input[name="hourlyRate"]')).toHaveCount(0)
+    const computedRate = page.getByTestId('computed-hourly-rate')
+    await expect(computedRate).toHaveText('—')
+
+    const dailyWage = page.getByLabel('Daily Wage (₹)')
+    await dailyWage.fill('800')
+    await expect(computedRate).toHaveText('₹100.00')
+    await dailyWage.fill('')
+    await expect(computedRate).toHaveText('—')
+    await dailyWage.fill('800')
+
+    await page.getByRole('button', { name: 'Save Employee' }).click()
+    await expect(page).toHaveURL(/\/employees\/[^/]+$/, { timeout: 10000 })
+
+    const compensation = page.locator('dl', { hasText: 'Daily Wage' })
+    await expect(compensation).toContainText(/₹800(\.00)?/)
+    await expect(compensation).toContainText(/₹100(\.00)?/)
   })
 })

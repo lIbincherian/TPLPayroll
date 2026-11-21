@@ -288,7 +288,7 @@ describe('bulkUpdateHourlyRate', () => {
     vi.clearAllMocks()
   })
 
-  it('updates hourly rates and creates wage history entries', async () => {
+  it('stores the new daily wage and its computed hourly rate', async () => {
     const employees = [
       makeEmployee({ id: 'uuid-1', employeeId: 'EMP-010' }),
       makeEmployee({ id: 'uuid-2', employeeId: 'EMP-011' }),
@@ -314,19 +314,20 @@ describe('bulkUpdateHourlyRate', () => {
 
     const result = await bulkUpdateHourlyRate({
       ids: ['uuid-1', 'uuid-2', 'uuid-3'],
-      newHourlyRate: 75.00,
+      newDailyWage: 800,
     })
 
     expect(result.succeeded).toBe(3)
     expect(capturedWageCreates).toHaveLength(3)
     capturedWageCreates.forEach((wc) => {
-      expect(Number(wc.data.hourlyRate)).toBe(75)
+      expect(Number(wc.data.weeklySalary)).toBe(800)
+      expect(Number(wc.data.hourlyRate)).toBe(100)
     })
     // Previous wage entries should be closed
     expect(capturedWageUpdates).toHaveLength(3)
   })
 
-  it('skips employees with matching rate', async () => {
+  it('skips employees already at the new daily wage', async () => {
     const employees = [
       makeEmployee({ id: 'uuid-1' }),
       makeEmployee({ id: 'uuid-2' }),
@@ -334,7 +335,7 @@ describe('bulkUpdateHourlyRate', () => {
     ]
     const wages = [
       makeWageHistory({ employeeId: 'uuid-1', hourlyRate: 62.5 as unknown as EmployeeWageHistory['hourlyRate'] }),
-      makeWageHistory({ employeeId: 'uuid-2', hourlyRate: 75 as unknown as EmployeeWageHistory['hourlyRate'] }), // matches!
+      makeWageHistory({ employeeId: 'uuid-2', weeklySalary: 800 as unknown as EmployeeWageHistory['weeklySalary'] }), // matches!
       makeWageHistory({ employeeId: 'uuid-3', hourlyRate: 70 as unknown as EmployeeWageHistory['hourlyRate'] }),
     ]
 
@@ -352,14 +353,14 @@ describe('bulkUpdateHourlyRate', () => {
 
     const result = await bulkUpdateHourlyRate({
       ids: ['uuid-1', 'uuid-2', 'uuid-3'],
-      newHourlyRate: 75.00,
+      newDailyWage: 800,
     })
 
     expect(result.succeeded).toBe(2)
     expect(result.skipped).toBe(1)
   })
 
-  it('preserves weekly salary in new wage history', async () => {
+  it('replaces the daily wage and records both wages in the audit log', async () => {
     const employee = makeEmployee({ id: 'uuid-1' })
     const wage = makeWageHistory({
       employeeId: 'uuid-1',
@@ -370,16 +371,22 @@ describe('bulkUpdateHourlyRate', () => {
     vi.mocked(prisma.employee.findUnique).mockResolvedValue(employee)
     vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([wage])
 
-    const { capturedWageCreates } = setupTransactionMock()
+    const { capturedWageCreates, capturedAuditLogs } = setupTransactionMock()
 
     await bulkUpdateHourlyRate({
       ids: ['uuid-1'],
-      newHourlyRate: 75.00,
+      newDailyWage: 555,
     })
 
     expect(capturedWageCreates).toHaveLength(1)
-    expect(Number(capturedWageCreates[0].data.weeklySalary)).toBe(14000)
-    expect(Number(capturedWageCreates[0].data.hourlyRate)).toBe(75)
+    expect(Number(capturedWageCreates[0].data.weeklySalary)).toBe(555)
+    expect(Number(capturedWageCreates[0].data.hourlyRate)).toBe(69.38)
+    expect(capturedAuditLogs[0].data.detailsJson).toMatchObject({
+      oldDailyWage: 14000,
+      newDailyWage: 555,
+      oldHourlyRate: 62.5,
+      newHourlyRate: 69.38,
+    })
   })
 
   it('creates audit logs for each changed employee', async () => {
@@ -408,7 +415,7 @@ describe('bulkUpdateHourlyRate', () => {
 
     await bulkUpdateHourlyRate({
       ids: ['uuid-1', 'uuid-2', 'uuid-3'],
-      newHourlyRate: 75.00,
+      newDailyWage: 800,
     })
 
     expect(capturedAuditLogs).toHaveLength(3)
@@ -430,7 +437,7 @@ describe('bulkUpdateHourlyRate', () => {
 
     await bulkUpdateHourlyRate({
       ids: ['uuid-1'],
-      newHourlyRate: 80.00,
+      newDailyWage: 1000,
       effectiveFrom: customDate,
     })
 
@@ -440,9 +447,9 @@ describe('bulkUpdateHourlyRate', () => {
     expect(capturedWageUpdates[0].data.effectiveTo).toEqual(customDate)
   })
 
-  it('rejects zero hourly rate', async () => {
+  it('rejects a zero daily wage', async () => {
     await expect(
-      bulkUpdateHourlyRate({ ids: ['uuid-1'], newHourlyRate: 0 })
+      bulkUpdateHourlyRate({ ids: ['uuid-1'], newDailyWage: 0 })
     ).rejects.toMatchObject({
       code: 'VALIDATION_ERROR',
     })

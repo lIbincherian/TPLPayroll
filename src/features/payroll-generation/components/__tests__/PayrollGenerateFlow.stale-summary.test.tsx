@@ -128,7 +128,7 @@ describe('PayrollGenerateFlow: the attendance changed after the summary was calc
     // The old message is cleared when the calculation starts; React commits that update together with
     // the end of the async transition, which can be a tick after the new summary shows.
     await waitFor(() => expect(screen.queryByText(CHANGED)).not.toBeInTheDocument())
-    expect(screen.getAllByText('₹3,100.00').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('₹3,100').length).toBeGreaterThan(0)
   })
 
   it('a recalculated summary approves with its own approval time', async () => {

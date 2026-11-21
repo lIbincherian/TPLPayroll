@@ -5,10 +5,12 @@ import { ExcelWeekView } from '@/features/attendance-sync/components/ExcelWeekVi
 import { LoadErrorBanner } from '@/features/attendance-sync/components/LoadErrorBanner'
 import { PunchReviewGrid } from '@/features/attendance-sync/components/PunchReviewGrid'
 import { ReviewGridSkeleton } from '@/features/attendance-sync/components/ReviewGridSkeleton'
+import { StatusChangesNotice } from '@/features/attendance-sync/components/StatusChangesNotice'
 import { getAttendanceWeekStatus } from '@/features/attendance-sync/lib/review'
 import { parseWeekId, toISODate, toUtcDate } from '@/features/attendance-sync/lib/week'
 import { getExcelWeekData } from '@/features/attendance-sync/services/excel-week.service'
 import { getPunchReview } from '@/features/attendance-sync/services/punch-review.service'
+import { getWeekStatusChanges } from '@/features/attendance-sync/services/status-changes.service'
 import { getWeekByStart } from '@/features/attendance-sync/services/week-list.service'
 import { AttendanceSyncError, type LiveReview } from '@/features/attendance-sync/types/attendance-sync.types'
 
@@ -63,7 +65,18 @@ async function ReviewContent({ weekId }: { weekId: string }) {
     redirect(`/attendance/${weekId}/employee-check`)
   }
 
-  return <PunchReviewGrid initialReview={review} backHref="/attendance" backLabel="Attendance" title="Punch review" />
+  // Only an approved week has made status changes; a reopened week shows them again once re-approved.
+  const statusChanges = review.status === 'APPROVED' ? await getWeekStatusChanges(review.week.start) : null
+  return (
+    <PunchReviewGrid
+      initialReview={review}
+      backHref="/attendance"
+      backLabel="Attendance"
+      title="Punch review"
+      notice={statusChanges && <StatusChangesNotice changes={statusChanges} />}
+      markedInactiveCount={statusChanges?.markedInactive.length ?? 0}
+    />
+  )
 }
 
 export default async function ReviewPage({ params }: Props) {

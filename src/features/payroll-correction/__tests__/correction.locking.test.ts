@@ -869,6 +869,7 @@ describe('item 15: abandonCorrection discards under the week lock', () => {
       data: {
         approvalStatus: 'SKIPPED',
         isReversed: true,
+        cancelOnCorrectionApproval: false,
         approvedAt: null,
         skippedAt: new Date('2025-03-14T11:00:00.000Z'),
         appliedAt: null,

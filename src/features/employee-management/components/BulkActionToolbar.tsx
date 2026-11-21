@@ -55,7 +55,7 @@ export function BulkActionToolbar({
           Mark Inactive
         </button>
 
-        {/* Change Hourly Rate */}
+        {/* Change Daily Wage */}
         <button
           type="button"
           onClick={onChangeHourlyRate}
@@ -63,7 +63,7 @@ export function BulkActionToolbar({
           id="bulk-change-rate-btn"
         >
           <CurrencyCircleDollar size={15} />
-          Change Hourly Rate
+          Change Daily Wage
         </button>
 
         {/* Divider */}

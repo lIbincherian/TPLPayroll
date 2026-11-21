@@ -21,7 +21,6 @@ function makeRowData(employeeId: string, employeeName: string): ImportRowData {
     aadhaarId: null,
     policeVerificationId: null,
     salary: 12000,
-    hourlyRate: 62.5,
     phone: null,
     dateOfBirth: null,
     healthCardId: null,
@@ -47,7 +46,6 @@ function makeInvalidRow(
     partialData: {
       designation: 'Guard',
       salary: 12000,
-      hourlyRate: 62.5,
       isActive: true,
       ...partialData,
     },
@@ -64,7 +62,6 @@ describe('applyRowFix', () => {
         employeeName: 'Suresh Narayanan',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
       const formValues: FixRowFormValues = { employeeId: 'EMP-099' }
@@ -89,7 +86,6 @@ describe('applyRowFix', () => {
         employeeName: 'Ravi Kumar',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
       const formValues: FixRowFormValues = { employeeId: 'EMP-001' }
@@ -110,7 +106,6 @@ describe('applyRowFix', () => {
         employeeId: 'EMP-042',
         employeeName: 'Alice',
         designation: 'Guard',
-        hourlyRate: 62.5,
         isActive: true,
       })
       const formValues: FixRowFormValues = { salary: 'not-a-number' }
@@ -131,7 +126,6 @@ describe('applyRowFix', () => {
         employeeId: 'EMP-010',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
       const formValues: FixRowFormValues = { employeeName: '' }
@@ -152,7 +146,6 @@ describe('applyRowFix', () => {
         employeeName: 'Juan dela Cruz',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
         site: 'North Gate',
       })
@@ -175,7 +168,6 @@ describe('applyRowFix', () => {
         employeeId: 'EMP-020',
         employeeName: 'Priya',
         designation: 'Guard',
-        hourlyRate: 62.5,
         isActive: true,
       })
       const formValues: FixRowFormValues = { salary: '-100' }
@@ -196,7 +188,6 @@ describe('applyRowFix', () => {
         employeeName: 'Test Employee',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
       })
       // partialData intentionally lacks isActive to force formValues to supply it
       const formValues: FixRowFormValues = { employeeId: 'EMP-088', isActive: 'true' }
@@ -217,7 +208,6 @@ describe('applyRowFix', () => {
         employeeName: 'Test Employee',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
       })
       const formValues: FixRowFormValues = { employeeId: 'EMP-089', isActive: 'false' }
       const existingIds = new Set<string>()
@@ -238,7 +228,6 @@ describe('applyRowFix', () => {
         employeeName: 'OldName',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
       const formValues: FixRowFormValues = { employeeName: 'NewName' }
@@ -259,7 +248,6 @@ describe('applyRowFix', () => {
         employeeId: 'EMP-031',
         employeeName: 'Zero Salary',
         designation: 'Guard',
-        hourlyRate: 62.5,
         isActive: true,
       })
       const formValues: FixRowFormValues = { salary: '0' }
@@ -286,7 +274,6 @@ describe('applyRowFix', () => {
         partialData: {
           employeeName: 'Multi Error',
           designation: 'Guard',
-          hourlyRate: 62.5,
           isActive: true,
           // No salary — it was unparseable, so the parser left it out of partialData
         },
@@ -310,7 +297,6 @@ describe('applyRowFix', () => {
         employeeId: 'EMP-060',
         employeeName: 'Good Salary',
         designation: 'Guard',
-        hourlyRate: 62.5,
         isActive: true,
       })
       const formValues: FixRowFormValues = { salary: '15000' }
@@ -331,7 +317,6 @@ describe('applyRowFix', () => {
         employeeName: 'Suresh Narayanan',
         designation: 'Guard',
         salary: 12000,
-        hourlyRate: 62.5,
         isActive: true,
       })
       const formValues: FixRowFormValues = { employeeId: 'TPLGOAHLP002007' }

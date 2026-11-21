@@ -101,7 +101,16 @@ function summaryText(log: AuditLogRecord): string {
     }
     if (newVals?.salary !== undefined) {
       const oldVals = d.old as Record<string, unknown> | undefined
-      return `Salary: ${oldVals?.salary ?? '—'} → ${newVals.salary}`
+      return `Daily wage: ${oldVals?.salary ?? '—'} → ${newVals.salary}`
+    }
+    // Entries written by updateEmployee and the bulk change use flat old/new keys
+    const newWage = d.newDailyWage ?? d.newSalary
+    const oldWage = d.oldDailyWage ?? d.oldSalary
+    if (newWage !== undefined && newWage !== oldWage) {
+      return `Daily wage: ${oldWage ?? '—'} → ${newWage}`
+    }
+    if (d.newHourlyRate !== undefined) {
+      return `Hourly rate: ${d.oldHourlyRate ?? '—'} → ${d.newHourlyRate}`
     }
     return 'Wage updated'
   }
