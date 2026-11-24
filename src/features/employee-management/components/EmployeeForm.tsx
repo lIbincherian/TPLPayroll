@@ -4,7 +4,7 @@ import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
-import { ArrowLeft, FloppyDisk, Circle } from '@phosphor-icons/react'
+import { ArrowLeft, FloppyDisk, Circle, Lock } from '@phosphor-icons/react'
 import {
   CreateEmployeeSchema,
   UpdateEmployeeSchema,
@@ -49,6 +49,8 @@ interface EmployeeFormProps {
   /** Present when the form was opened from another screen (the attendance employee check).
    * Re-routes the back link and the post-save navigation back there. */
   returnContext?: EmployeeReturnContext
+  /** The Employee Master sheet sync is on: the fields the sheet owns are read-only (edit only). */
+  sheetManaged?: boolean
 }
 
 // ─── Internal form value shape ────────────────────────────────────────────────
@@ -134,7 +136,8 @@ function FieldWrapper({
 const inputCls =
   'w-full px-3 py-2 text-sm text-zinc-900 rounded-xl bg-white border border-zinc-200/60 ' +
   'focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 ' +
-  'transition-colors duration-200 placeholder:text-zinc-400 disabled:bg-zinc-50 disabled:text-zinc-500 disabled:cursor-not-allowed'
+  'transition-colors duration-200 placeholder:text-zinc-400 disabled:bg-zinc-50 disabled:text-zinc-500 disabled:cursor-not-allowed ' +
+  'read-only:bg-zinc-50 read-only:text-zinc-600 read-only:focus:ring-0 read-only:focus:border-zinc-200/60'
 
 const errorInputCls =
   'w-full px-3 py-2 text-sm text-zinc-900 rounded-xl bg-white border border-rose-400 ' +
@@ -171,12 +174,16 @@ export function EmployeeForm({
   currentSalary,
   currentHourlyRate,
   returnContext,
+  sheetManaged = false,
 }: EmployeeFormProps) {
   const router = useRouter()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [serverError, setServerError] = useState<string | null>(null)
 
   const isEdit = mode === 'edit'
+  const lockSheetFields = isEdit && sheetManaged
+  // Read-only rather than disabled, so the values still submit unchanged and assistive tech can reach them.
+  const sheetOwnedProps = lockSheetFields ? ({ readOnly: true, 'aria-readonly': true } as const) : {}
   const pageTitle = isEdit
     ? `Edit — ${employee?.employeeName ?? 'Employee'}`
     : 'Add Employee'
@@ -353,6 +360,20 @@ export function EmployeeForm({
         </div>
       )}
 
+      {lockSheetFields && (
+        <div
+          role="note"
+          data-testid="sheet-managed-note"
+          className="mb-6 flex items-start gap-3 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3"
+        >
+          <Lock size={16} className="mt-0.5 shrink-0 text-zinc-500" aria-hidden />
+          <p className="text-sm text-zinc-700">
+            <span className="font-medium text-zinc-900">Managed in the Employee Master sheet.</span> The read-only fields
+            change there and reach the app on the next sync. Daily wage and status can still be edited here.
+          </p>
+        </div>
+      )}
+
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-0" noValidate>
 
         {/* ── Section: Personal Details ────────────────────────────────────── */}
@@ -377,6 +398,7 @@ export function EmployeeForm({
             <FieldWrapper label="Employee Name" required error={errors.employeeName?.message}>
               <input
                 {...register('employeeName', { required: 'Employee Name is required' })}
+                {...sheetOwnedProps}
                 placeholder="Lakshmi Venkatesh"
                 className={errors.employeeName ? errorInputCls : inputCls}
               />
@@ -385,6 +407,7 @@ export function EmployeeForm({
             <FieldWrapper label="Designation" required error={errors.designation?.message}>
               <input
                 {...register('designation', { required: 'Designation is required' })}
+                {...sheetOwnedProps}
                 placeholder="Guard"
                 className={errors.designation ? errorInputCls : inputCls}
               />
@@ -393,6 +416,7 @@ export function EmployeeForm({
             <FieldWrapper label="Designation Short" error={errors.designationShort?.message}>
               <input
                 {...register('designationShort')}
+                {...sheetOwnedProps}
                 placeholder="GRD"
                 className={inputCls}
               />
@@ -401,6 +425,7 @@ export function EmployeeForm({
             <FieldWrapper label="National ID" error={errors.nationalId?.message}>
               <input
                 {...register('nationalId')}
+                {...sheetOwnedProps}
                 placeholder="XXXXX-1234567-X"
                 className={inputCls}
               />
@@ -409,6 +434,7 @@ export function EmployeeForm({
             <FieldWrapper label="Aadhaar ID" error={errors.aadhaarId?.message}>
               <input
                 {...register('aadhaarId')}
+                {...sheetOwnedProps}
                 placeholder="XXXX XXXX XXXX"
                 className={inputCls}
               />
@@ -417,6 +443,7 @@ export function EmployeeForm({
             <FieldWrapper label="Date of Birth" error={errors.dateOfBirth?.message}>
               <input
                 {...register('dateOfBirth')}
+                {...sheetOwnedProps}
                 type="date"
                 className={inputCls}
               />
@@ -425,6 +452,7 @@ export function EmployeeForm({
             <FieldWrapper label="Phone" error={errors.phone?.message}>
               <input
                 {...register('phone')}
+                {...sheetOwnedProps}
                 placeholder="+91 98765 43210"
                 className={inputCls}
               />
@@ -433,6 +461,7 @@ export function EmployeeForm({
             <FieldWrapper label="Date of Joining" error={errors.dateOfJoining?.message}>
               <input
                 {...register('dateOfJoining')}
+                {...sheetOwnedProps}
                 type="date"
                 className={inputCls}
               />
@@ -441,6 +470,7 @@ export function EmployeeForm({
             <FieldWrapper label="Site" error={errors.site?.message}>
               <input
                 {...register('site')}
+                {...sheetOwnedProps}
                 placeholder="North Gate"
                 className={inputCls}
               />
@@ -449,6 +479,7 @@ export function EmployeeForm({
             <FieldWrapper label="Police Verification ID" error={errors.policeVerificationId?.message}>
               <input
                 {...register('policeVerificationId')}
+                {...sheetOwnedProps}
                 placeholder="PV-XXXXXXXX"
                 className={inputCls}
               />
@@ -457,6 +488,7 @@ export function EmployeeForm({
             <FieldWrapper label="Health Card ID" error={errors.healthCardId?.message}>
               <input
                 {...register('healthCardId')}
+                {...sheetOwnedProps}
                 placeholder="HC-XXXXXXXX"
                 className={inputCls}
               />
@@ -529,6 +561,7 @@ export function EmployeeForm({
             <FieldWrapper label="GPay Number" error={errors.gPay?.message}>
               <input
                 {...register('gPay')}
+                {...sheetOwnedProps}
                 placeholder="+91 98765 43210"
                 className={inputCls}
               />
@@ -537,6 +570,7 @@ export function EmployeeForm({
             <FieldWrapper label="Bank Account" error={errors.bankAccount?.message}>
               <input
                 {...register('bankAccount')}
+                {...sheetOwnedProps}
                 placeholder="HDFC xxxxxx1234"
                 className={inputCls}
               />
@@ -573,6 +607,7 @@ export function EmployeeForm({
             <FieldWrapper label="Date of Resignation" error={errors.dateOfResignation?.message}>
               <input
                 {...register('dateOfResignation')}
+                {...sheetOwnedProps}
                 type="date"
                 className={inputCls}
                 style={{ width: '200px' }}

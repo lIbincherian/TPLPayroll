@@ -137,6 +137,32 @@ export interface EmployeeRecord {
   dateOfResignation: Date | null
   site: string | null
   isActive: boolean
+  // F13: profile fields the Employee Master sheet owns. Sensitive ones show only on the detail page.
+  photoUrl: string | null
+  aadhaarPhotoUrl: string | null
+  panNumber: string | null
+  panPhotoUrl: string | null
+  whatsappNumber: string | null
+  gPayName: string | null
+  gPayRelation: string | null
+  bankName: string | null
+  bankHolderName: string | null
+  bankHolderRelation: string | null
+  ifscCode: string | null
+  passbookPhotoUrl: string | null
+  height: string | null
+  bloodGroup: string | null
+  emergencyContactName: string | null
+  emergencyContactNumber: string | null
+  emergencyContactRelation: string | null
+  homeAddress: string | null
+  homeState: string | null
+  language: string | null
+  relativesOnSite: string | null
+  roomNumber: string | null
+  distinctiveFeatures: string | null
+  otherSkills: string | null
+  remarks: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -157,7 +183,7 @@ export interface WageHistoryEntry {
 
 export class EmployeeServiceError extends Error {
   constructor(
-    public readonly code: 'DUPLICATE_EMPLOYEE_ID' | 'EMPLOYEE_NOT_FOUND' | 'VALIDATION_ERROR',
+    public readonly code: 'DUPLICATE_EMPLOYEE_ID' | 'EMPLOYEE_NOT_FOUND' | 'VALIDATION_ERROR' | 'SHEET_MANAGED',
     message: string,
   ) {
     super(message)

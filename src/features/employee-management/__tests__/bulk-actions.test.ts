@@ -19,11 +19,16 @@ vi.mock('@/lib/prisma', () => ({
     auditLog: {
       create: vi.fn(),
     },
+    // No settings row: the Employee Master sheet sync is off, so bulk resign is allowed.
+    settings: {
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
     $transaction: vi.fn(),
   },
 }))
 
 import prisma from '@/lib/prisma'
+import { EMPTY_SHEET_PROFILE } from '@/features/employee-management/lib/sheet-profile'
 import { plainPromiseMock } from '@/__tests__/helpers/plain-promise-mock'
 import {
   bulkUpdateStatus,
@@ -35,6 +40,7 @@ import {
 const makeEmployee = (overrides: Partial<Employee> = {}): Employee => ({
   id: 'uuid-1',
   employeeImportBatchId: null,
+  ...EMPTY_SHEET_PROFILE,
   employeeId: 'EMP-100',
   serialNumber: null,
   employeeName: 'Ravi Kumar',

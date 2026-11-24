@@ -4,6 +4,7 @@ import { EmployeeForm } from '@/features/employee-management/components/Employee
 import { getEmployeeById, getEmployeeWageHistory } from '@/features/employee-management/services/employee.service'
 import { buildEditReturnContext } from '@/features/employee-management/lib/return-context'
 import { EmployeeServiceError } from '@/features/employee-management/types/employee.types'
+import { getEmployeeSheetSyncState } from '@/features/settings/services/settings.service'
 
 export const dynamic = 'force-dynamic'
 
@@ -46,6 +47,7 @@ export default async function EditEmployeePage({ params, searchParams }: EditEmp
   }
 
   const currentWage = wageHistory[0]
+  const { enabled: sheetManaged } = await getEmployeeSheetSyncState()
 
   return (
     <AppShell>
@@ -55,6 +57,7 @@ export default async function EditEmployeePage({ params, searchParams }: EditEmp
         currentSalary={currentWage?.weeklySalary}
         currentHourlyRate={currentWage?.hourlyRate}
         returnContext={buildEditReturnContext({ returnTo })}
+        sheetManaged={sheetManaged}
       />
     </AppShell>
   )

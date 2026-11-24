@@ -26,10 +26,36 @@ model Employee {
   site                  String?
   isActive              Boolean   @default(true)
   designationShort      String?
+  // F13: profile fields owned by the Employee Master sheet (sensitive ones show only on the detail page)
+  photoUrl                 String?
+  aadhaarPhotoUrl          String?
+  panNumber                String?
+  panPhotoUrl              String?
+  whatsappNumber           String?
+  gPayName                 String?
+  gPayRelation             String?
+  bankName                 String?
+  bankHolderName           String?
+  bankHolderRelation       String?
+  ifscCode                 String?
+  passbookPhotoUrl         String?
+  height                   String?
+  bloodGroup               String?
+  emergencyContactName     String?
+  emergencyContactNumber   String?
+  emergencyContactRelation String?
+  homeAddress              String?
+  homeState                String?
+  language                 String?
+  relativesOnSite          String?
+  roomNumber               String?
+  distinctiveFeatures      String?
+  otherSkills              String?
+  remarks                  String?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
-  importBatch            EmployeeImportBatch?           @relation(fields: [employeeImportBatchId], references: [id])
+  importBatch           EmployeeImportBatch?           @relation(fields: [employeeImportBatchId], references: [id])
   wageHistory            EmployeeWageHistory[]
   attendanceRecords      AttendanceRecord[]
   adjustments            PayrollAdjustment[]
@@ -54,8 +80,11 @@ model EmployeeImportBatch {
   rejectedRowCount            Int       @default(0)
   duplicateEmployeeIdRowCount Int       @default(0)
   sourceFileDeletedAt         DateTime?
+  source                      String    @default("EXCEL") // 'EXCEL' | 'SHEET_SYNC'
+  trigger                     String? // 'MANUAL' | 'SCHEDULED' (sheet sync runs)
+  report                      Json? // sheet sync: the applied plan, or { error, message } for a FAILED run
 
-  employees     Employee[]
+  employees    Employee[]
   wageHistories EmployeeWageHistory[]
 }
 
@@ -73,6 +102,10 @@ model EmployeeWageHistory {
 
   employee    Employee             @relation(fields: [employeeId], references: [id])
   importBatch EmployeeImportBatch? @relation(fields: [employeeImportBatchId], references: [id])
+
+  // F13: a partial unique index "EmployeeWageHistory_one_open_per_employee" ON ("employeeId") WHERE
+  // "effectiveTo" IS NULL allows one open wage row per employee. Prisma cannot express it, so it
+  // exists only in the migration SQL.
 }
 
 model AttendanceUpload {
@@ -369,4 +402,7 @@ model Settings {
   id                  String    @id @default("singleton")
   payrollWeekStartDay DayOfWeek @default(THURSDAY)
   updatedAt           DateTime  @updatedAt
+  // F13: temporary one-way sync from the Employee Master sheet
+  employeeSheetSyncEnabled        Boolean   @default(false)
+  employeeSheetSyncFirstAppliedAt DateTime? // set by the first successful MANUAL apply; unlocks the nightly sync
 }

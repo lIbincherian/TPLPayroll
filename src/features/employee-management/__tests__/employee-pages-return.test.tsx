@@ -28,6 +28,10 @@ vi.mock('@/features/employee-management/services/employee.service', () => ({
   getEmployeeWageHistory: vi.fn(),
 }))
 
+vi.mock('@/features/settings/services/settings.service', () => ({
+  getEmployeeSheetSyncState: vi.fn().mockResolvedValue({ enabled: false, firstApplied: false }),
+}))
+
 vi.mock('next/navigation', () => ({
   notFound: vi.fn(() => {
     throw new Error('NEXT_NOT_FOUND')
