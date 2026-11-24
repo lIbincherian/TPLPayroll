@@ -500,7 +500,7 @@ export function EmployeeListTable({
     {/* ── Floating bulk-action toolbar ──────────────────────────────────── */}
     <BulkActionToolbar
       selectedCount={selectedIds.size}
-      onMarkResigned={() => setOpenDialog('resigned')}
+      onMarkResigned={sheetSyncEnabled ? undefined : () => setOpenDialog('resigned')}
       onMarkInactive={() => setOpenDialog('inactive')}
       onChangeHourlyRate={() => setOpenDialog('rate')}
       onClear={clearSelection}

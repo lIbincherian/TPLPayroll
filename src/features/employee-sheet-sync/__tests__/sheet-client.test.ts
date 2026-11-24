@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { generateKeyPairSync } from 'crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fetchEmployeeSheet, getSheetSourceConfig } from '../services/sheet.client'
+import { fetchEmployeeSheet, getSheetSourceConfig, isLocalDatabaseUrl } from '../services/sheet.client'
 
 const { privateKey } = generateKeyPairSync('rsa', {
   modulusLength: 2048,
@@ -35,6 +35,7 @@ beforeEach(() => {
   vi.stubEnv('EMPLOYEE_SHEET_ID', '')
   vi.stubEnv('EMPLOYEE_SHEET_TAB', '')
   vi.stubEnv('VERCEL', '')
+  vi.stubEnv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/payroll')
 })
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -168,5 +169,31 @@ describe('fetchEmployeeSheet', () => {
     const f = fetchSeq(tokenOk(), new Response(JSON.stringify({ values: [['Sr.'], [1], [null]] }), { status: 200 }))
     const r = await fetchEmployeeSheet({ fetch: f })
     expect(r.values.rows).toEqual([['1'], ['']])
+  })
+})
+
+describe('fixture is local-database only', () => {
+  it.each([
+    ['postgresql://u:p@localhost:5432/db', true],
+    ['postgres://u:p@127.0.0.1/db', true],
+    ['postgresql://u:p@[::1]:5432/db', true],
+    ['postgresql://u:p@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?pgbouncer=true', false],
+    ['postgresql://u:p@localhost.evil.com/db', false],
+    ['not a url', false],
+    [undefined, false],
+  ])('isLocalDatabaseUrl(%s) is %s', (url, expected) => {
+    expect(isLocalDatabaseUrl(url)).toBe(expected)
+  })
+
+  it('refuses the fixture against a remote DATABASE_URL, with no fetch', async () => {
+    vi.stubEnv('DATABASE_URL', 'postgresql://u:p@aws-1-ap-south-1.pooler.supabase.com:6543/postgres')
+    const f = vi.fn()
+    await expect(fetchEmployeeSheet({ fetch: f as unknown as typeof fetch })).rejects.toMatchObject({ code: 'FIXTURE_NOT_LOCAL' })
+    expect(f).not.toHaveBeenCalled()
+  })
+
+  it('refuses the fixture when DATABASE_URL is unset', async () => {
+    vi.stubEnv('DATABASE_URL', '')
+    await expect(fetchEmployeeSheet()).rejects.toMatchObject({ code: 'FIXTURE_NOT_LOCAL' })
   })
 })

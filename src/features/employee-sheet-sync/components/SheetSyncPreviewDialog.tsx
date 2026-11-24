@@ -249,6 +249,14 @@ function Body({ onClose, onApplied }: { onClose: () => void; onApplied: () => vo
               </p>
             </div>
           )}
+          {state.plan.mode === 'FIXTURE' && (
+            <div role="note" data-testid="sheet-sync-fixture" className="mt-4 flex items-start gap-3 rounded-xl border border-amber-200/60 bg-amber-50 p-3">
+              <WarningCircle size={16} className="mt-0.5 shrink-0 text-amber-600" aria-hidden />
+              <p className="text-sm text-amber-800">
+                Sample data: Google Sheets isn&apos;t configured, so this preview uses the built-in sample sheet (local database only).
+              </p>
+            </div>
+          )}
           <Summary plan={state.plan} />
           {!hasChanges(state.plan) && (
             <p className="pt-3 text-sm text-zinc-600" data-testid="sheet-sync-nothing">

@@ -14,7 +14,7 @@ vi.mock('@/lib/prisma', () => ({
 
 import prisma from '@/lib/prisma'
 import { EMPTY_SHEET_PROFILE } from '@/features/employee-management/lib/sheet-profile'
-import { updateEmployee } from '@/features/employee-management/services/employee.service'
+import { bulkUpdateStatus, updateEmployee } from '@/features/employee-management/services/employee.service'
 
 const employee = {
   id: 'uuid-1',
@@ -128,5 +128,63 @@ describe('updateEmployee server guard (sync off)', () => {
   it('lets them change when there is no settings row', async () => {
     vi.mocked(prisma.settings.findUnique).mockResolvedValue(null)
     await expect(updateEmployee('uuid-1', { site: 'Z' })).resolves.toBeDefined()
+  })
+})
+
+describe('updateEmployee date and text round-trips (sync on)', () => {
+  beforeEach(() => syncOn(true))
+
+  it('a stored date that is not UTC midnight, resubmitted as the same day, is not an edit and is not written', async () => {
+    vi.mocked(prisma.employee.findUnique).mockResolvedValue({
+      ...employee,
+      dateOfJoining: new Date('2025-01-01T05:30:00.000Z'),
+      phone: ' 9876543210 ',
+      nationalId: '',
+    } as unknown as Employee)
+    await expect(
+      updateEmployee('uuid-1', {
+        dateOfJoining: new Date('2025-01-01T00:00:00.000Z'),
+        phone: '9876543210',
+        nationalId: null,
+        salary: 900,
+      }),
+    ).resolves.toBeDefined()
+    const data = vi.mocked(prisma.employee.update).mock.calls[0][0].data as Record<string, unknown>
+    expect(data).not.toHaveProperty('dateOfJoining')
+    expect(data).not.toHaveProperty('phone')
+    expect(prisma.employeeWageHistory.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('a different calendar day is still refused', async () => {
+    vi.mocked(prisma.employee.findUnique).mockResolvedValue({
+      ...employee,
+      dateOfJoining: new Date('2025-01-01T05:30:00.000Z'),
+    } as unknown as Employee)
+    await expect(
+      updateEmployee('uuid-1', { dateOfJoining: new Date('2025-01-02T00:00:00.000Z') }),
+    ).rejects.toMatchObject({ code: 'SHEET_MANAGED' })
+  })
+})
+
+describe('bulkUpdateStatus while the sheet sync is on', () => {
+  it('refuses MARK RESIGNED with SHEET_MANAGED and writes nothing', async () => {
+    syncOn(true)
+    await expect(
+      bulkUpdateStatus({ ids: ['uuid-1'], status: 'RESIGNED', dateOfResignation: new Date('2026-11-01') }),
+    ).rejects.toMatchObject({ code: 'SHEET_MANAGED' })
+    expect(prisma.employee.findUnique).not.toHaveBeenCalled()
+    expect(prisma.$transaction).not.toHaveBeenCalled()
+  })
+
+  it('still allows MARK INACTIVE (status is app-owned)', async () => {
+    syncOn(true)
+    await expect(bulkUpdateStatus({ ids: ['uuid-1'], status: 'INACTIVE' })).resolves.toMatchObject({ succeeded: 1 })
+  })
+
+  it('allows MARK RESIGNED when the sync is off', async () => {
+    syncOn(false)
+    await expect(
+      bulkUpdateStatus({ ids: ['uuid-1'], status: 'RESIGNED', dateOfResignation: new Date('2026-11-01') }),
+    ).resolves.toMatchObject({ succeeded: 1 })
   })
 })

@@ -42,6 +42,18 @@ export function getSheetSourceConfig(): SheetSourceConfig {
   return { mode: 'UNCONFIGURED', tab }
 }
 
+const LOCAL_DB_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+
+/** True only for a Postgres URL whose host is this machine. Unset or unreadable counts as not local. */
+export function isLocalDatabaseUrl(url: string | undefined): boolean {
+  if (!url) return false
+  try {
+    return LOCAL_DB_HOSTS.has(new URL(url).hostname)
+  } catch {
+    return false
+  }
+}
+
 export interface FetchedSheet {
   values: SheetValues
   mode: SheetSourceMode
@@ -69,6 +81,13 @@ export async function fetchEmployeeSheet(
   }
 
   if (config.mode === 'FIXTURE') {
+    // The fixture is sample data: never let it reach a shared (Staging or Production) database.
+    if (!isLocalDatabaseUrl(process.env.DATABASE_URL)) {
+      throw new SheetSyncError(
+        'FIXTURE_NOT_LOCAL',
+        "Google Sheets access isn't configured, and the built-in sample sheet only runs against a local database.",
+      )
+    }
     return {
       values: { header: [...fixture.header], rows: fixture.rows.map((r) => [...r]) },
       mode: 'FIXTURE',

@@ -4,7 +4,8 @@ import { UserMinus, Prohibit, CurrencyCircleDollar, X } from '@phosphor-icons/re
 
 interface BulkActionToolbarProps {
   selectedCount: number
-  onMarkResigned: () => void
+  /** Omitted while the Employee Master sheet sync owns Date of Resignation. */
+  onMarkResigned?: () => void
   onMarkInactive: () => void
   onChangeHourlyRate: () => void
   onClear: () => void
@@ -34,15 +35,17 @@ export function BulkActionToolbar({
         <div className="w-px h-5 bg-zinc-200" />
 
         {/* Mark Resigned */}
-        <button
-          type="button"
-          onClick={onMarkResigned}
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-rose-600 bg-rose-50 hover:bg-rose-100 px-3 py-1.5 rounded-lg transition-[background-color,transform] duration-150 ease-out active:scale-[0.98]"
-          id="bulk-mark-resigned-btn"
-        >
-          <UserMinus size={15} />
-          Mark Resigned
-        </button>
+        {onMarkResigned && (
+          <button
+            type="button"
+            onClick={onMarkResigned}
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-rose-600 bg-rose-50 hover:bg-rose-100 px-3 py-1.5 rounded-lg transition-[background-color,transform] duration-150 ease-out active:scale-[0.98]"
+            id="bulk-mark-resigned-btn"
+          >
+            <UserMinus size={15} />
+            Mark Resigned
+          </button>
+        )}
 
         {/* Mark Inactive */}
         <button

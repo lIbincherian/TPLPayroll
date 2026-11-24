@@ -19,6 +19,10 @@ vi.mock('@/lib/prisma', () => ({
     auditLog: {
       create: vi.fn(),
     },
+    // No settings row: the Employee Master sheet sync is off, so bulk resign is allowed.
+    settings: {
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
     $transaction: vi.fn(),
   },
 }))

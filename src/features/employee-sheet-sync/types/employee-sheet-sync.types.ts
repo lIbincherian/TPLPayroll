@@ -101,6 +101,7 @@ export type SheetSyncErrorCode =
   | 'FETCH_FAILED'
   | 'SYNC_DISABLED'
   | 'STALE_PLAN'
+  | 'FIXTURE_NOT_LOCAL'
 
 export class SheetSyncError extends Error {
   constructor(

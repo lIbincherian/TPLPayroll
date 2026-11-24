@@ -277,6 +277,17 @@ export async function getEmployeeWageHistory(employeeId: string): Promise<WageHi
   }))
 }
 
+/** Same calendar day for dates, same trimmed text for strings; blank and null are equal. */
+function sameProfileValue(a: unknown, b: unknown): boolean {
+  const norm = (v: unknown): string | null => {
+    if (v === null || v === undefined) return null
+    if (v instanceof Date) return v.toISOString().slice(0, 10)
+    const text = String(v).trim()
+    return text === '' ? null : text
+  }
+  return norm(a) === norm(b)
+}
+
 // ─── updateEmployee ───────────────────────────────────────────────────────────
 
 export async function updateEmployee(
@@ -334,13 +345,32 @@ export async function updateEmployee(
   }
 
   // While the Employee Master sheet sync is on, the sheet owns these fields: the next sync would undo the edit.
+  // The form sends every field back, so a sheet-owned field counts as edited only when its value really differs:
+  // dates by calendar day (a stored date that isn't UTC midnight round-trips as UTC midnight), text trimmed,
+  // blank and null alike. Unedited sheet-owned fields are then not written at all, so the sheet's value stays.
   const sheetOwned = new Set<string>(SHEET_OWNED_FIELDS)
-  const blockedFields = Object.keys(changedFields).filter((field) => sheetOwned.has(field))
-  if (blockedFields.length > 0 && (await isEmployeeSheetSyncEnabled())) {
-    throw new EmployeeServiceError(
-      'SHEET_MANAGED',
-      'These fields are managed in the Employee Master sheet. Change them there: ' + blockedFields.join(', ') + '.',
-    )
+  const sheetSyncOn = Object.keys(changedFields).some((field) => sheetOwned.has(field))
+    ? await isEmployeeSheetSyncEnabled()
+    : false
+  const skipSheetFields = new Set<string>()
+  if (sheetSyncOn) {
+    const blockedFields: string[] = []
+    for (const field of Object.keys(changedFields)) {
+      if (!sheetOwned.has(field)) continue
+      const { old, new: next } = changedFields[field]
+      if (sameProfileValue(old, next)) {
+        delete changedFields[field]
+        skipSheetFields.add(field)
+      } else {
+        blockedFields.push(field)
+      }
+    }
+    if (blockedFields.length > 0) {
+      throw new EmployeeServiceError(
+        'SHEET_MANAGED',
+        'These fields are managed in the Employee Master sheet. Change them there: ' + blockedFields.join(', ') + '.',
+      )
+    }
   }
 
   if (wageChanged) {
@@ -351,7 +381,7 @@ export async function updateEmployee(
   // Pre-generate a UUID for the new wage history entry (used only if wageChanged)
   const newWageHistoryId = randomUUID()
 
-  const updateData = {
+  const updateData: Prisma.EmployeeUpdateInput = {
     ...(parsed.data.employeeName !== undefined && { employeeName: parsed.data.employeeName }),
     ...(parsed.data.designation !== undefined && { designation: parsed.data.designation }),
     ...(parsed.data.designationShort !== undefined && { designationShort: parsed.data.designationShort }),
@@ -368,6 +398,7 @@ export async function updateEmployee(
     ...(parsed.data.dateOfResignation !== undefined && { dateOfResignation: parsed.data.dateOfResignation }),
     ...(parsed.data.isActive !== undefined && { isActive: parsed.data.isActive }),
   }
+  for (const field of skipSheetFields) delete (updateData as Record<string, unknown>)[field]
 
   const promises: ReturnType<typeof prisma.employee.update | typeof prisma.auditLog.create | typeof prisma.employeeWageHistory.updateMany | typeof prisma.employeeWageHistory.create>[] = [
     // 1. Update the employee record
@@ -458,6 +489,14 @@ export async function bulkUpdateStatus(input: BulkStatusUpdateInput): Promise<Bu
     throw new EmployeeServiceError(
       'VALIDATION_ERROR',
       firstIssue?.message ?? 'Invalid bulk status update data'
+    )
+  }
+
+  // Date of Resignation is owned by the Employee Master sheet while its sync is on: the next sync would undo it.
+  if (parsed.data.status === 'RESIGNED' && (await isEmployeeSheetSyncEnabled())) {
+    throw new EmployeeServiceError(
+      'SHEET_MANAGED',
+      'Date of Resignation is managed in the Employee Master sheet. Enter it there; it reaches the app on the next sync.',
     )
   }
 
