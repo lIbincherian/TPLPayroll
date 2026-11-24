@@ -12,6 +12,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   payrollWeekStartDay: 'THURSDAY',
   currency: 'INR',
   docExpiryThresholdDays: 7,
+  employeeSheetSyncEnabled: false,
+  employeeSheetSyncFirstAppliedAt: null,
 }
 
 export default async function SettingsPage() {

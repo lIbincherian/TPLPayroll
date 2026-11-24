@@ -66,6 +66,16 @@ The schema is managed with Prisma Migrate. `prisma/migrations/` is the source of
     - `CRON_SECRET`: Vercel Cron sends it as `Authorization: Bearer <CRON_SECRET>` to `/api/cron/attendance-sync` (schedule in `vercel.json`, `30 0 * * 4` UTC). The route rejects every request when it is missing or wrong, and when `CRON_SECRET` is unset.
   - The in-app mock eTimeOffice API (`/api/mock-etimeoffice/...`) is active only when `ETIMEOFFICE_CORPORATE_ID` is unset and `VERCEL` is unset (local dev and e2e). Local `.env` needs `CRON_SECRET=local-cron-secret` for e2e and leaves `ETIMEOFFICE_*` unset. On Vercel with no login configured, every sync fails with "eTimeOffice login isn't configured."
 
+- **Employee Master sheet sync (F13)**:
+  - Employees are onboarded in the "Employee Master List" tab of a Google Sheet; the app syncs it one way, every night and on demand (`Sync from sheet` on the Employees page). The Excel employee import is removed (the export stays). It is temporary: the `Settings` switch `employeeSheetSyncEnabled` (default off) hides the button, stops the cron and makes the profile fields editable again.
+  - The sheet owns every mapped profile field (an empty cell clears the app value). After creation the app owns Employee ID, salary and wage history, and Active/Inactive; a disagreement is only a warning. Rows match on the employee number (Sr. = trailing digits of the Employee ID). Each change writes an `EMPLOYEE` audit row with `changeSource: 'SHEET_SYNC'`; runs are saved as `EmployeeImportBatch` rows with `source: 'SHEET_SYNC'`.
+  - The nightly run (`/api/cron/employee-sheet-sync`, `30 23 * * *` UTC in `vercel.json`, same `CRON_SECRET` auth as the attendance cron) does nothing until the first manual Apply has succeeded.
+  - Set these variables separately for Vercel **Production** and **Preview**. All are server-only; never prefix them with `NEXT_PUBLIC_`, never log them, and never return them from an action or route. Only `src/features/employee-sheet-sync/services/sheet.client.ts` reads them.
+    - `GOOGLE_SHEETS_CLIENT_EMAIL`, `GOOGLE_SHEETS_PRIVATE_KEY` (keep the literal `\n` sequences), `EMPLOYEE_SHEET_ID`: share the sheet, view only, with the service account email.
+    - `EMPLOYEE_SHEET_TAB`: optional, defaults to `Employee Master List`. Only this tab is read.
+  - The built-in fixture (`src/features/employee-sheet-sync/fixtures/`) is used only when `GOOGLE_SHEETS_CLIENT_EMAIL` is unset and `VERCEL` is unset (local dev and e2e), and only against a local `DATABASE_URL` (localhost): anything else fails with FIXTURE_NOT_LOCAL so sample employees never reach Staging or Production. On Vercel with no credentials, every sync fails with "Google Sheets access isn't configured."
+  - The F13 migration (`20261124090000_f13_employee_sheet_sync`) also repairs duplicate open wage rows (keeps the MANUAL one, stops with `RAISE EXCEPTION` if a pair differs) and adds the partial unique index `EmployeeWageHistory_one_open_per_employee`. Never `db push` it.
+
 ## Software factory
 
 `/factory run` builds every open GitHub issue labeled `factory` through

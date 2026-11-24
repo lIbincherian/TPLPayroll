@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useTransition, useEffect, useRef, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
-import { MagnifyingGlass, UsersThree, WarningCircle, Plus, CaretLeft, CaretRight, UploadSimple, DownloadSimple, CaretDown, CaretUp, SpinnerGap } from '@phosphor-icons/react'
+import { MagnifyingGlass, UsersThree, WarningCircle, Plus, CaretLeft, CaretRight, DownloadSimple, CaretDown, CaretUp, SpinnerGap } from '@phosphor-icons/react'
 import { computePageRange } from '../utils/computePageRange'
 import { StatusBadge } from './StatusBadge'
 import { SkeletonRows } from './SkeletonRows'
@@ -10,7 +10,9 @@ import { BulkActionToolbar } from './BulkActionToolbar'
 import { BulkStatusDialog } from './BulkStatusDialog'
 import { BulkInactiveDialog } from './BulkInactiveDialog'
 import { BulkRateDialog } from './BulkRateDialog'
-import { ImportDialog } from '@/features/employee-import-export/components/ImportDialog'
+import { SheetSyncButton } from '@/features/employee-sheet-sync/components/SheetSyncButton'
+import { SheetSyncStatus } from '@/features/employee-sheet-sync/components/SheetSyncStatus'
+import type { LastSheetSync } from '@/features/employee-sheet-sync/types/employee-sheet-sync.types'
 import { getEmployeeListAction, getDistinctDesignationsAction, getDistinctSitesAction } from '@/features/employee-management/actions/employee.actions'
 import type { EmployeeListItem, EmployeeStatus, SortableField } from '@/features/employee-management/types/employee.types'
 
@@ -27,7 +29,19 @@ const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
 const PAGE_SIZE = 10
 const COL_COUNT = 6 // checkbox + 5 data columns
 
-export function EmployeeListTable() {
+interface EmployeeListTableProps {
+  /** The Employee Master sheet sync is turned on in Settings. */
+  sheetSyncEnabled?: boolean
+  /** The first manual Apply has succeeded, so the nightly sync runs. */
+  sheetSyncFirstApplied?: boolean
+  lastSheetSync?: LastSheetSync | null
+}
+
+export function EmployeeListTable({
+  sheetSyncEnabled = false,
+  sheetSyncFirstApplied = false,
+  lastSheetSync = null,
+}: EmployeeListTableProps = {}) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
@@ -46,8 +60,6 @@ export function EmployeeListTable() {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
 
   const [loadState, setLoadState] = useState<'loading' | 'loaded' | 'error'>('loading')
-  const [showImportDialog, setShowImportDialog] = useState(false)
-  const [showImportMenu, setShowImportMenu] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
 
   // ── Bulk action state ──────────────────────────────────────────────────────
@@ -247,29 +259,7 @@ export function EmployeeListTable() {
             Export
           </button>
 
-          {/* Import dropdown */}
-          <div className="relative">
-            <button
-              onClick={() => setShowImportMenu((v) => !v)}
-              onBlur={() => setTimeout(() => setShowImportMenu(false), 150)}
-              className="inline-flex items-center gap-2 text-sm font-medium text-zinc-700 px-3.5 py-2 rounded-xl border border-zinc-200 hover:bg-zinc-50 transition-colors duration-200"
-            >
-              <UploadSimple size={15} />
-              Import
-              <CaretDown size={13} className="text-zinc-400" />
-            </button>
-            {showImportMenu && (
-              <div className="popover-enter origin-top-right absolute right-0 top-full mt-1.5 w-48 rounded-xl bg-white border border-zinc-200/60 shadow-[0_8px_24px_-8px_rgba(0,0,0,0.08)] py-1 z-20">
-                <button
-                  onClick={() => { setShowImportMenu(false); setShowImportDialog(true) }}
-                  className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 text-sm text-zinc-700 hover:bg-zinc-50 transition-colors"
-                >
-                  <UploadSimple size={15} className="text-zinc-400" />
-                  Import from Excel
-                </button>
-              </div>
-            )}
-          </div>
+          {sheetSyncEnabled && <SheetSyncButton />}
 
           <button
             onClick={() => router.push('/employees/new')}
@@ -280,6 +270,8 @@ export function EmployeeListTable() {
           </button>
         </div>
       </div>
+
+      {sheetSyncEnabled && <SheetSyncStatus last={lastSheetSync} firstApplied={sheetSyncFirstApplied} />}
 
       {/* ── Filter bar ──────────────────────────────────────────────────── */}
       <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3">
@@ -508,7 +500,7 @@ export function EmployeeListTable() {
     {/* ── Floating bulk-action toolbar ──────────────────────────────────── */}
     <BulkActionToolbar
       selectedCount={selectedIds.size}
-      onMarkResigned={() => setOpenDialog('resigned')}
+      onMarkResigned={sheetSyncEnabled ? undefined : () => setOpenDialog('resigned')}
       onMarkInactive={() => setOpenDialog('inactive')}
       onChangeHourlyRate={() => setOpenDialog('rate')}
       onClear={clearSelection}
@@ -537,11 +529,6 @@ export function EmployeeListTable() {
         onClose={handleBulkClose}
         onComplete={handleBulkComplete}
       />
-    )}
-
-    {/* ── Import dialog ─────────────────────────────────────────────────── */}
-    {showImportDialog && (
-      <ImportDialog onClose={() => setShowImportDialog(false)} />
     )}
     </>
   )

@@ -46,7 +46,7 @@ describe('updateSettingsAction — week start lock (real service)', () => {
 
     const result = await updateSettingsAction({ payrollWeekStartDay: 'THURSDAY' })
 
-    expect(result).toEqual({ ok: true, data: { payrollWeekStartDay: 'THURSDAY', currency: 'INR', docExpiryThresholdDays: 7 } })
+    expect(result).toEqual({ ok: true, data: { payrollWeekStartDay: 'THURSDAY', currency: 'INR', docExpiryThresholdDays: 7, employeeSheetSyncEnabled: false, employeeSheetSyncFirstAppliedAt: null } })
     expect(prisma.settings.update).not.toHaveBeenCalled()
     expect(prisma.settings.upsert).not.toHaveBeenCalled()
   })
