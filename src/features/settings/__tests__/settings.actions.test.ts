@@ -17,6 +17,8 @@ const makeAppSettings = (payrollWeekStartDay: AppSettings['payrollWeekStartDay']
   payrollWeekStartDay,
   currency: 'INR',
   docExpiryThresholdDays: 7,
+  employeeSheetSyncEnabled: false,
+  employeeSheetSyncFirstAppliedAt: null,
 })
 
 // ─────────────────────────────────────────────────────────────────────────────

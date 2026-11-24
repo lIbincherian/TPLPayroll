@@ -21,6 +21,9 @@ import {
   type EmployeeStatus,
 } from '@/features/employee-management/types/employee.types'
 import { computeHourlyRate } from '@/features/employee-management/utils/wage'
+import { EMPTY_SHEET_PROFILE } from '../lib/sheet-profile'
+import { SHEET_OWNED_FIELDS } from '@/features/employee-sheet-sync/lib/columns'
+import { isEmployeeSheetSyncEnabled } from '@/features/settings/services/settings.service'
 
 // ─── Helper: compute status ───────────────────────────────────────────────────
 
@@ -189,6 +192,7 @@ export async function createEmployee(input: CreateEmployeeInput): Promise<Employ
     bankAccount: parsed.data.bankAccount ?? null,
     dateOfResignation: parsed.data.dateOfResignation ?? null,
     isActive: parsed.data.isActive,
+    ...EMPTY_SHEET_PROFILE,
     createdAt: today,
     updatedAt: today,
   } as EmployeeRecord
@@ -327,6 +331,16 @@ export async function updateEmployee(
     if (String(oldVal) !== String(newValue)) {
       changedFields[field] = { old: oldVal, new: newValue }
     }
+  }
+
+  // While the Employee Master sheet sync is on, the sheet owns these fields: the next sync would undo the edit.
+  const sheetOwned = new Set<string>(SHEET_OWNED_FIELDS)
+  const blockedFields = Object.keys(changedFields).filter((field) => sheetOwned.has(field))
+  if (blockedFields.length > 0 && (await isEmployeeSheetSyncEnabled())) {
+    throw new EmployeeServiceError(
+      'SHEET_MANAGED',
+      'These fields are managed in the Employee Master sheet. Change them there: ' + blockedFields.join(', ') + '.',
+    )
   }
 
   if (wageChanged) {

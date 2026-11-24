@@ -15,8 +15,8 @@ vi.mock('@/lib/prisma', () => ({
 }))
 
 import prisma from '@/lib/prisma'
+import { EMPTY_SHEET_PROFILE } from '@/features/employee-management/lib/sheet-profile'
 import { generateExportWorkbook } from '@/features/employee-import-export/services/export.service'
-import { parseImportFile } from '@/features/employee-import-export/services/import.service'
 import { IMPORT_COLUMNS } from '@/features/employee-import-export/types/import-export.types'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -24,6 +24,7 @@ import { IMPORT_COLUMNS } from '@/features/employee-import-export/types/import-e
 const makeEmployee = (overrides: Partial<Employee> = {}): Employee => ({
   id: 'uuid-1',
   employeeImportBatchId: null,
+  ...EMPTY_SHEET_PROFILE,
   employeeId: 'EMP-001',
   serialNumber: '1',
   employeeName: 'Ravi Kumar',
@@ -125,21 +126,6 @@ describe('generateExportWorkbook', () => {
     expect(headers).toContain('Daily Wage')
     expect(headers).toContain('Hourly Rate')
     expect(headers).not.toContain('Salary')
-  })
-
-  it('exports a file that re-imports without errors', async () => {
-    vi.mocked(prisma.employee.findMany).mockResolvedValue([makeEmployee()])
-    vi.mocked(prisma.employeeWageHistory.findMany).mockResolvedValue([
-      { employeeId: 'uuid-1', weeklySalary: 800, hourlyRate: 62.5 },
-    ] as never)
-
-    const workbook = await generateExportWorkbook()
-    const buf = Buffer.from(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }))
-    const result = await parseImportFile(buf)
-
-    expect(result.invalidRows).toHaveLength(0)
-    expect(result.validRows).toHaveLength(1)
-    expect(result.validRows[0].data.salary).toBe(800)
   })
 
   it('formats dates as readable strings (e.g., "01 Mar 2023")', async () => {

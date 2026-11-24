@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, PencilSimple, ClockCounterClockwise } from '@phosphor-icons/react/dist/ssr'
+import { ArrowLeft, PencilSimple, ClockCounterClockwise, ArrowSquareOut } from '@phosphor-icons/react/dist/ssr'
 import { StatusBadge } from './StatusBadge'
 import { WageHistoryTable } from './WageHistoryTable'
 import { DeactivateDialog } from './DeactivateDialog'
@@ -40,6 +40,84 @@ function Detail({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
+// ─── Drive link ───────────────────────────────────────────────────────────────
+
+// Photo columns hold Google Drive links. Only https links become links; anything else is shown as text.
+function DriveLink({ url }: { url: string | null | undefined }) {
+  if (!url) return null
+  if (!url.startsWith('https://')) return <span className="break-all text-zinc-900">{url}</span>
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1 text-emerald-700 underline-offset-2 hover:text-emerald-800 hover:underline"
+    >
+      Open in Drive
+      <ArrowSquareOut size={13} aria-hidden />
+    </a>
+  )
+}
+
+// ─── Profile sections (fields the Employee Master sheet owns) ─────────────────
+
+type ProfileRow = { label: string; value: string | null | undefined; link?: boolean }
+
+function profileSections(employee: EmployeeRecord): Array<{ title: string; rows: ProfileRow[] }> {
+  return [
+    {
+      title: 'Identity & documents',
+      rows: [
+        { label: 'PAN', value: employee.panNumber },
+        { label: 'Photo', value: employee.photoUrl, link: true },
+        { label: 'Aadhaar photo', value: employee.aadhaarPhotoUrl, link: true },
+        { label: 'PAN photo', value: employee.panPhotoUrl, link: true },
+      ],
+    },
+    {
+      title: 'Bank',
+      rows: [
+        { label: 'Bank name', value: employee.bankName },
+        { label: 'Account holder', value: employee.bankHolderName },
+        { label: 'Holder relation', value: employee.bankHolderRelation },
+        { label: 'IFSC', value: employee.ifscCode },
+        { label: 'Passbook photo', value: employee.passbookPhotoUrl, link: true },
+        { label: 'GPay name', value: employee.gPayName },
+        { label: 'GPay relation', value: employee.gPayRelation },
+      ],
+    },
+    {
+      title: 'Contact & emergency',
+      rows: [
+        { label: 'WhatsApp', value: employee.whatsappNumber },
+        { label: 'Emergency contact', value: employee.emergencyContactName },
+        { label: 'Emergency number', value: employee.emergencyContactNumber },
+        { label: 'Emergency relation', value: employee.emergencyContactRelation },
+      ],
+    },
+    {
+      title: 'Home',
+      rows: [
+        { label: 'Address', value: employee.homeAddress },
+        { label: 'State', value: employee.homeState },
+        { label: 'Language', value: employee.language },
+        { label: 'Relatives on site', value: employee.relativesOnSite },
+        { label: 'Room', value: employee.roomNumber },
+      ],
+    },
+    {
+      title: 'Other',
+      rows: [
+        { label: 'Height', value: employee.height },
+        { label: 'Blood group', value: employee.bloodGroup },
+        { label: 'Distinctive features', value: employee.distinctiveFeatures },
+        { label: 'Other skills', value: employee.otherSkills },
+        { label: 'Remarks', value: employee.remarks },
+      ],
+    },
+  ].filter((section) => section.rows.some((row) => row.value))
+}
+
 // ─── Section divider ─────────────────────────────────────────────────────────
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
@@ -68,6 +146,7 @@ function computeStatus(employee: { isActive: boolean; dateOfResignation: Date | 
 export function EmployeeProfile({ employee, wageHistory }: EmployeeProfileProps) {
   const status = computeStatus(employee)
   const currentWage = wageHistory[0]
+  const sections = profileSections(employee)
 
   return (
     <div className="space-y-0">
@@ -188,6 +267,29 @@ export function EmployeeProfile({ employee, wageHistory }: EmployeeProfileProps)
           </div>
         </div>
       </div>
+
+      {/* ── Sheet-owned profile sections (shown only when they hold something) ── */}
+      {sections.length > 0 && (
+        <div
+          className="card-reveal grid grid-cols-1 gap-x-8 gap-y-8 border-t border-zinc-200/60 pt-8 mt-8 md:grid-cols-2"
+          data-testid="employee-sheet-sections"
+        >
+          {sections.map((section) => (
+            <div key={section.title}>
+              <SectionTitle>{section.title}</SectionTitle>
+              <dl className="grid grid-cols-2 gap-y-4 gap-x-8">
+                {section.rows.map((row) => (
+                  <Detail
+                    key={row.label}
+                    label={row.label}
+                    value={row.link && row.value ? <DriveLink url={row.value} /> : row.value}
+                  />
+                ))}
+              </dl>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ── Wage History ───────────────────────────────────────────────────── */}
       <div

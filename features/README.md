@@ -25,6 +25,7 @@ Each feature has its own folder under `features/` containing:
 | F10 | [Settings](./features/F10-settings/) | `F10-settings` | ✅ Done | Payroll week start day configuration |
 | F11 | [Audit Logging](./features/F11-audit-logging/) | `F11-audit-logging` | ✅ Done | Automatic logging of employee create/update and wage changes |
 | F12 | [eTimeOffice Attendance Sync & Punch Review](./F12-etimeoffice-attendance/) | `F12-etimeoffice-attendance` | 🚧 In progress | Weekly API sync, punch review and approval; replaces F04 Excel upload |
+| F13 | [Employee Master Sheet Sync](./F13-employee-sheet-sync/) | `F13-employee-sheet-sync` | 📝 Planned | Nightly / on-demand one-way sync from the Employee Master Google Sheet; replaces the F03 Excel import ([#54](https://github.com/lIbincherian/TPLPayroll/issues/54)) |
 
 ---
 
@@ -60,7 +61,7 @@ F01 Dashboard (aggregation — needs all other features)
 
 | Metric | Count |
 |--------|-------|
-| Total Features | 12 |
+| Total Features | 13 |
 | Total User Stories | 44 |
 | Total E2E Tests | 96 |
 | Total Screens | 18 |

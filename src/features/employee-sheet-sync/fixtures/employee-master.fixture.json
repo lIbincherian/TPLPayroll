@@ -1,0 +1,16 @@
+{
+  "header": [
+    "Sr.", "Employee ID", "Employee Name", "Designation", "Designation Short", "Salary", "Hourly Rate",
+    "Date of Joining", "D.O.B", "Phone", "WhatsApp", "National ID", "Aadhaar Card", "PAN Card",
+    "Bank Account No.", "Bank Name", "IFSC Code", "GPay", "Site", "Active", "Date of Resignation",
+    "Emergency Contact Name", "Emergency Contact No.", "Photo", "State", "Remarks"
+  ],
+  "rows": [
+    ["901", "TPLGOAMSN901", "Ravi Kumar", "MASON", "MSN", "900", "112.5", "03/11/26", "7 December 1989", "9567031213", "wa.me/919567031213", "NID-901", "\"123412341234\"", "ABCDE1234F", "\"0009201700065570\"", "HDFC Bank", "HDFC0001234", "9567031213", "Goa North", "", "", "Sita Kumar", "+91 98765 43210", "https://drive.google.com/file/d/example901/view", "Kerala", "X"],
+    ["XXX", "#N/A", "Not Numbered Yet", "HELPER", "HLP", "800", "100", "X", "X", "X", "X", "X", "X", "X", "X", "X", "X", "X", "X", "", "", "", "", "", "", ""],
+    ["902", "#N/A", "Joseph Mathew", "DRIVER", "DRV", "1000", "125", "05/11/2026", "19-03-1990", "9446000001", "", "", "", "", "", "", "", "", "Goa South", "Active", "", "", "", "", "Kerala", ""],
+    ["903", "TPLGOAHLP903", "Anil Das", "HELPER", "HLP", "4000/week", "", "19-03-2026", "", "", "", "", "", "", "", "", "", "", "Goa South", "Active", "", "", "", "", "", ""],
+    ["1", "TPLGOAMSN001", "Existing Worker", "MASON", "MSN", "800", "100", "01/01/2025", "", "9000000001", "", "", "", "", "", "", "", "", "Goa North", "Inactive", "", "", "", "", "Goa", "Designation prefix changed in the sheet"],
+    ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
+  ]
+}

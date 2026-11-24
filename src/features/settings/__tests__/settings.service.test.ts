@@ -168,7 +168,7 @@ describe('updateSettings — week start lock (F12)', () => {
 
     const result = await updateSettings({ payrollWeekStartDay: 'THURSDAY' })
 
-    expect(result).toEqual({ payrollWeekStartDay: 'THURSDAY', currency: 'INR', docExpiryThresholdDays: 7 })
+    expect(result).toEqual({ payrollWeekStartDay: 'THURSDAY', currency: 'INR', docExpiryThresholdDays: 7, employeeSheetSyncEnabled: false, employeeSheetSyncFirstAppliedAt: null })
     expect(prisma.settings.update).not.toHaveBeenCalled()
     expect(prisma.settings.findUnique).toHaveBeenCalledTimes(1)
     expect(prisma.settings.upsert).not.toHaveBeenCalled()

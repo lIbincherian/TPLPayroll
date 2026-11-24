@@ -19,11 +19,14 @@ vi.mock('@/lib/prisma', () => ({
     auditLog: {
       create: vi.fn(),
     },
+    // F13: the server guard reads the sheet sync switch; no row means the sync is off.
+    settings: { findUnique: vi.fn().mockResolvedValue(null) },
     $transaction: vi.fn(),
   },
 }))
 
 import prisma from '@/lib/prisma'
+import { EMPTY_SHEET_PROFILE } from '@/features/employee-management/lib/sheet-profile'
 import {
   createEmployee,
   getEmployeeList,
@@ -40,6 +43,7 @@ import { EmployeeServiceError, UpdateEmployeeSchema } from '@/features/employee-
 const makeEmployee = (overrides: Partial<Employee> = {}): Employee => ({
   id: 'uuid-1',
   employeeImportBatchId: null,
+  ...EMPTY_SHEET_PROFILE,
   employeeId: 'EMP-100',
   serialNumber: null,
   employeeName: 'Ravi Kumar',

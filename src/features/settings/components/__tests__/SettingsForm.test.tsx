@@ -6,7 +6,7 @@ import type { AppSettings } from '@/features/settings/types/settings.types'
 // US-12.36 AC1/AC2: the payroll week start shows Thursday, read-only. Nothing on the page
 // can change it, so there is no form, no field and no Save.
 
-const THURSDAY: AppSettings = { payrollWeekStartDay: 'THURSDAY', currency: 'INR', docExpiryThresholdDays: 7 }
+const THURSDAY: AppSettings = { payrollWeekStartDay: 'THURSDAY', currency: 'INR', docExpiryThresholdDays: 7, employeeSheetSyncEnabled: false, employeeSheetSyncFirstAppliedAt: null }
 
 describe('SettingsForm — payroll week start is read-only', () => {
   it('shows Thursday as the payroll week start', () => {

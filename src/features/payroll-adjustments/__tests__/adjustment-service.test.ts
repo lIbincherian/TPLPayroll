@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import type { Employee, PayrollAdjustment, PayrollAdjustmentApplication } from '@prisma/client'
+import { EMPTY_SHEET_PROFILE } from '@/features/employee-management/lib/sheet-profile'
 
 // ─── Mock Prisma ──────────────────────────────────────────────────────────────
 vi.mock('@/lib/prisma', () => ({
@@ -85,6 +86,7 @@ beforeEach(() => {
 const makeEmployee = (overrides: Partial<Employee> = {}): Employee => ({
   id: 'emp-uuid-1',
   employeeImportBatchId: null,
+  ...EMPTY_SHEET_PROFILE,
   employeeId: 'EMP-001',
   serialNumber: null,
   employeeName: 'Lakshmi Venkatesh',

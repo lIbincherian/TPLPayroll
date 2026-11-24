@@ -1,5 +1,6 @@
 {
   "crons": [
-    { "path": "/api/cron/attendance-sync", "schedule": "30 0 * * 4" }
+    { "path": "/api/cron/attendance-sync", "schedule": "30 0 * * 4" },
+    { "path": "/api/cron/employee-sheet-sync", "schedule": "30 23 * * *" }
   ]
 }

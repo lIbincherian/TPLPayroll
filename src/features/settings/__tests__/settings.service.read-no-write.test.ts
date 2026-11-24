@@ -27,7 +27,7 @@ describe('getSettings: a read that finds Thursday writes nothing', () => {
 
     const result = await getSettings()
 
-    expect(result).toEqual({ payrollWeekStartDay: 'THURSDAY', currency: 'INR', docExpiryThresholdDays: 7 })
+    expect(result).toEqual({ payrollWeekStartDay: 'THURSDAY', currency: 'INR', docExpiryThresholdDays: 7, employeeSheetSyncEnabled: false, employeeSheetSyncFirstAppliedAt: null })
     expect(prisma.settings.findUnique).toHaveBeenCalledTimes(1)
     expect(prisma.settings.findUnique).toHaveBeenCalledWith({ where: { id: 'singleton' } })
     expect(writes()).toEqual([])
